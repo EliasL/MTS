@@ -1,0 +1,9 @@
+.venv/
+.DS_Store
+.mts/
+MTS.app/
+MTS.desktop
+MTS.html
+__pycache__/
+*.egg-info/
+CHECKUP-*.md

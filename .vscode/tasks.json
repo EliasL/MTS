@@ -1,0 +1,33 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build managed simulator",
+            "type": "process",
+            "command": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "-m",
+                "MTS_Management",
+                "--sites",
+                "${workspaceFolder}/MTSManager/sites.toml",
+                "build",
+                "--site",
+                "local"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Plot benchmark",
+            "type": "process",
+            "command": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "${workspaceFolder}/MTSPlot/examples/benchmark_figures.py"
+            ],
+            "options": {
+                "env": {
+                    "MPLBACKEND": "Agg"
+                }
+            }
+        }
+    ]
+}

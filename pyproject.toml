@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mts-desktop"
+version = "0.1.0"
+description = "Local browser interface and setup for mesoscopic tensorial simulations"
+requires-python = ">=3.11"
+dependencies = ["MTS_Management[mesh]>=0.1.0", "MTS_Plotting[math]>=0.1.0"]
+
+[project.scripts]
+mts-gui = "MTS_GUI.__main__:main"
+
+[tool.uv.sources]
+MTS_Management = { path = "MTSManager", editable = true }
+MTS_Plotting = { path = "MTSPlot", editable = true }
+
+[tool.setuptools.packages.find]
+include = ["MTS_GUI*"]
+
+[tool.setuptools.package-data]
+MTS_GUI = ["static/*"]
