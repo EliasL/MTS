@@ -14,7 +14,13 @@
                 "--site",
                 "local"
             ],
-            "group": "build"
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
         },
         {
             "label": "Plot benchmark",

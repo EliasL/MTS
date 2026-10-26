@@ -7,3 +7,7 @@ MTS.html
 __pycache__/
 *.egg-info/
 CHECKUP-*.md
+/build*/
+/.vscode/settings.json
+/.vscode/c_cpp_properties.json
+/.vscode/launch.json

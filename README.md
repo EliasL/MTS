@@ -51,6 +51,8 @@ rerun the command if instructed. Install Homebrew separately if it is missing.
 On Ubuntu/Debian it uses apt and may request an administrator password in Terminal.
 Other Linux distributions need a C++17 compiler, CMake, OpenMP and zlib development
 files installed manually. The Setup page can rebuild the simulator afterward.
+Setup, the manager and the VS Code managed build task share `MTS2D/build/release/MTS2D`. Generated build
+directories are ignored by Git; optional Debug builds live in `MTS2D/build/debug`.
 
 The locally generated macOS launcher is a development convenience. A downloadable
 macOS release would require a separate signing/notarization workflow.
@@ -74,7 +76,14 @@ of opening the application. Remote execution uses the site profiles in
 
 ## Development and troubleshooting
 
-Open the MTS folder in VS Code and select `.venv/bin/python`. Editable installations
+Open the MTS folder in VS Code and select `.venv/bin/python`. Choose
+`MTS2D/CMakeLists.txt` if asked for a CMake project, then the `release` preset.
+Use **Terminal → Run Build Task → Build managed simulator** (the default build
+task) to rebuild and record the executable identity required by managed runs.
+On macOS use Apple Clang at `/usr/bin/clang++`; C++17 is the language standard,
+not the compiler version. Personal `.vscode/settings.json`, compiler and launch
+settings are ignored; shared tasks and CMake presets are versioned. More editor
+guidance is in InstallationGuide.html. Editable installations
 link imports to local sources. GUI code and architecture are described in
 [MTS_GUI/README.md](MTS_GUI/README.md).
 

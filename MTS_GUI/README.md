@@ -10,6 +10,11 @@ a desktop launcher. `bash setup.sh --start` reopens the same workspace without
 installing packages. See [InstallationGuide.html](../InstallationGuide.html) for
 optional simulator compilation.
 
+The browser remembers a validated session token in local storage for its local
+address, allowing tabs to be closed and reopened while the backend is running.
+Quit MTS clears the saved token; a restarted server requires a new launcher link.
+Blocked browser storage does not prevent access through the launcher link.
+
 `install.py` handles component retrieval, package setup and launcher generation.
 `server.py` exposes the supported operations; `__main__.py` manages the on-demand
 server lifecycle. The buildless interface is in `static/`. Long operations run in

@@ -50,16 +50,21 @@ class Workspace:
         packages = {name: importlib.util.find_spec(module) is not None for name, module in modules.items()}
         site_file = ROOT / "MTSManager/sites.toml"
         sites = []
+        local_build = False
         if packages["MTSManager"] and site_file.exists():
-            from MTS_Management.cluster import load_sites
+            from MTS_Management.cluster import load_sites, paths
+            profiles = load_sites(site_file)
             sites = [{"name": s.name, "remote": bool(s.ssh), "mode": s.mode}
-                     for s in load_sites(site_file).values()]
+                     for s in profiles.values()]
+            if "local" in profiles and not profiles["local"].ssh:
+                executable = Path(paths(profiles["local"])["executable"])
+                local_build = executable.is_file() and (executable.parent / "build-manifest.json").is_file()
         with self.lock:
             task = dict(self.task, logs=list(self.task["logs"]))
         return {"workspace": str(ROOT), "python": sys.version.split()[0],
                 "components": {name: (ROOT / name / ("CMakeLists.txt" if name == "MTS2D"
                                                     else "pyproject.toml")).exists() for name in COMPONENTS},
-                "packages": packages, "local_build": (ROOT / "MTSManager/build/build-manifest.json").exists(),
+                "packages": packages, "local_build": local_build,
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "sites": sites, "task": task,

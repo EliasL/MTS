@@ -1,7 +1,8 @@
 const $ = id => document.getElementById(id);
-const token = location.hash.slice(1);
-if (token) sessionStorage.setItem('mts-token', token);
-const accessToken = token || sessionStorage.getItem('mts-token') || '';
+let accessToken = location.hash.slice(1);
+try {
+  accessToken ||= localStorage.getItem('mts-token') || sessionStorage.getItem('mts-token') || '';
+} catch {} // A launcher link still works when browser storage is blocked.
 history.replaceState(null, '', location.pathname);
 let lastState, lastResult, firstState = true, currentAction = '', poller;
 const names = {size: 'System size L', threads: 'Threads', preconditioner: 'Preconditioner', reconnection: 'Reconnection'};
@@ -72,6 +73,10 @@ async function refresh() {
     $('quit').disabled = busy;
     if (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites)) fillSites(state.sites);
     if (firstState) {
+      try {
+        localStorage.setItem('mts-token', accessToken);
+        sessionStorage.removeItem('mts-token');
+      } catch {} // Remember only a token accepted by this running server.
       $('plot-data').value = state.data_folders[0] || state.workspace + '/MTSManager/output';
       $('data-folders').replaceChildren(...state.data_folders.map(path => new Option(path, path)));
       if (!ready) view('setup');
@@ -142,7 +147,9 @@ $('plot-form').onsubmit = event => {
   } catch (error) {message(error.message);}
 };
 $('quit').onclick = async () => {
-  try {await api('quit', {}); clearInterval(poller); document.querySelector('.workspace').innerHTML = '<div class="guide"><div class="eyebrow">Session ended</div><h1>MTS is closed.</h1><p>You can close this tab. Open the desktop launcher whenever you want to return.</p><p class="muted">Simulation workers continue under the manager.</p></div>';}
+  try {await api('quit', {}); clearInterval(poller);
+    try {localStorage.removeItem('mts-token'); sessionStorage.removeItem('mts-token');} catch {}
+    document.querySelector('.workspace').innerHTML = '<div class="guide"><div class="eyebrow">Session ended</div><h1>MTS is closed.</h1><p>You can close this tab. Open the desktop launcher whenever you want to return.</p><p class="muted">Simulation workers continue under the manager.</p></div>';}
   catch (error) {message(error.message);}
 };
 refresh(); poller = setInterval(refresh, 2000);
