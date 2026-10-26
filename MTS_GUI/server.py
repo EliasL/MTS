@@ -89,6 +89,8 @@ class Workspace:
             path = folder / (config.config_hash + ".conf")
             config.write(path, data.get("label") or None)
             command = ["run", path, "--site", data.get("site", "local"), "--campaign", "GUI"]
+            if data.get("label"):
+                command += ["--label", data["label"]]
             if data.get("site", "local") == "local":
                 command += ["--mode", "detached"]
             self.manager(*command)
@@ -207,8 +209,10 @@ def serve(install=False, local_sim=False):
     server.authority = f"127.0.0.1:{server.server_port}"
     url = f"http://{server.authority}/#{app.token}"
     record = STATE / "server.json"
-    record.write_text(json.dumps({"url": url, "pid": os.getpid(), "workspace": str(ROOT)}))
-    record.chmod(0o600)
+    temporary = STATE / "server.json.tmp"
+    temporary.write_text(json.dumps({"url": url, "pid": os.getpid(), "workspace": str(ROOT)}))
+    temporary.chmod(0o600)
+    temporary.replace(record)
     write_entry(url)
     if install:
         def setup():

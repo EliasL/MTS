@@ -46,7 +46,8 @@ def install_packages(log):
     saved = STATE / "uv-path"
     uv = os.environ.get("MTS_UV") or (saved.read_text().strip() if saved.exists() else None)
     uv = uv or shutil.which("uv") or str(STATE / "tools/uv")
-    run([uv, "sync", "--locked", "--inexact", "--python", sys.executable,
+    log("Installing the recorded Python package versions…")
+    run([uv, "sync", "--quiet", "--locked", "--inexact", "--python", sys.executable,
          "--config-setting", "editable_mode=compat"], log)
     for directory in site.getsitepackages():
         site.addsitedir(directory)  # Load editable links installed after this server started.
@@ -74,8 +75,16 @@ def generate_launcher():
             "CFBundlePackageType": "APPL", "CFBundleExecutable": "MTS", "LSUIElement": True,
         }))
         script = contents / "MacOS/MTS"
-        script.write_text('#!/bin/bash\nMTS_ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"\n'
-                          'exec /bin/bash "$MTS_ROOT/setup.sh" --start >> "$MTS_ROOT/.mts/launcher.log" 2>&1\n')
+        script.write_text('''#!/bin/bash
+MTS_ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
+if ! /bin/bash "$MTS_ROOT/setup.sh" --start >> "$MTS_ROOT/.mts/launcher.log" 2>&1; then
+    /usr/bin/osascript - "$MTS_ROOT" <<'APPLESCRIPT'
+on run argv
+    display alert "MTS could not start" message ("Open InstallationGuide.html in " & item 1 of argv & ". Startup details are in .mts/launcher.log.") as warning
+end run
+APPLESCRIPT
+fi
+''')
         script.chmod(0o755)
     elif platform.system() == "Linux":
         # Desktop Exec is not shell syntax. Escape its reserved characters directly.
@@ -96,7 +105,8 @@ def write_entry(url=None):
     command = html.escape(shlex.join(["bash", str(ROOT / "setup.sh"), "--start"]))
     link = (f'<a class="button" href="{html.escape(url, quote=True)}">Open current MTS session →</a>'
             if url else '<p>MTS is not running. Open the desktop launcher to start it.</p>')
-    (ROOT / "MTS.html").write_text(f'''<!doctype html><html lang="en"><meta charset="utf-8">
+    entry = ROOT / "MTS.html"
+    entry.write_text(f'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>MTS</title>
 <link rel="stylesheet" href="MTS_GUI/static/style.css"><main class="guide">
 <a class="wordmark" href="InstallationGuide.html">MTS<span> / simulation workspace</span></a>
@@ -105,6 +115,7 @@ def write_entry(url=None):
 It starts MTS only when you need it. Use <strong>Quit MTS</strong> in the browser to stop it.</p>
 <p>If the current session has ended, use the launcher or run:</p><pre>{command}</pre>
 <a href="InstallationGuide.html">Installation and troubleshooting</a></main></html>''')
+    entry.chmod(0o600)
 
 
 def install_build_tools():

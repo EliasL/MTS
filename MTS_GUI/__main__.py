@@ -56,7 +56,9 @@ def main():
                 command.append("--install")
             if args.local_sim:
                 command.append("--local-sim")
-            env = os.environ | {"MPLBACKEND": "Agg", "MPLCONFIGDIR": str(STATE / "matplotlib")}
+            env = os.environ | {"MPLBACKEND": "Agg", "MPLCONFIGDIR": str(STATE / "matplotlib"),
+                                "UV_CACHE_DIR": str(STATE / "cache"),
+                                "UV_PYTHON_INSTALL_DIR": str(STATE / "python")}
             with (STATE / "server.log").open("a") as log:
                 child = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
                                          stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
