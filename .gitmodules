@@ -1,0 +1,9 @@
+[submodule "MTS2D"]
+	path = MTS2D
+	url = https://github.com/EliasL/MTS2D.git
+[submodule "MTSManager"]
+	path = MTSManager
+	url = https://github.com/EliasL/MTSManager.git
+[submodule "MTSPlot"]
+	path = MTSPlot
+	url = https://github.com/EliasL/MTSPlot.git
