@@ -4,18 +4,17 @@ const here = location.protocol === 'file:' ? decodeURIComponent(location.pathnam
 document.getElementById('os-badge').textContent = detected;
 document.getElementById('launcher-name').textContent = detected === 'macOS' ? 'MTS.app' : 'MTS.desktop';
 if (detected === 'macOS') {
-  document.getElementById('terminal-instructions').textContent = 'Open Terminal (Applications → Utilities, or search for Terminal with Spotlight), then paste this command. You do not need to navigate to the folder first.';
-  document.getElementById('tools-description').textContent = 'Request Apple Command Line Tools if missing, then use Homebrew to install CMake and OpenMP. If Homebrew is not installed, follow the instructions at brew.sh and rerun this command. Apple installation dialogs may require you to finish setup and run the command again.';
-  document.getElementById('launcher-note').textContent = 'MTS.app is generated locally by setup. Downloaded applications may be subject to macOS Gatekeeper approval; this development launcher is not a signed, notarized release.';
+  document.getElementById('tools-description').textContent = 'Requires Homebrew. Installs Apple tools if missing; installs or upgrades CMake and OpenMP.';
+  document.getElementById('launcher-note').textContent = 'Locally generated, unsigned launcher.';
 } else if (detected === 'Linux') {
-  document.getElementById('terminal-instructions').textContent = 'Open your terminal application and paste this command. You do not need to navigate to the folder first.';
-  document.getElementById('launcher-note').textContent = 'Your desktop environment may require you to mark MTS.desktop as trusted or choose “Allow Launching” once. You can always start it using bash setup.sh --start.';
+  document.getElementById('tools-description').textContent = 'Ubuntu/Debian: installs compiler tools, CMake and zlib using apt. Administrator access required.';
+  document.getElementById('launcher-note').textContent = 'Allow launching MTS.desktop if prompted.';
 }
 function updateCommand() {const mode = document.querySelector('[name=mode]:checked').value; document.getElementById('setup-command').value = 'bash ' + quote(here + '/setup.sh') + (mode ? ' ' + mode : '');}
 document.querySelectorAll('[name=mode]').forEach(el => el.addEventListener('change', updateCommand)); updateCommand();
 document.getElementById('copy-command').onclick = async event => {
   const input = document.getElementById('setup-command'); input.select();
   try {await navigator.clipboard.writeText(input.value); event.target.textContent = 'Copied';}
-  catch {event.target.textContent = 'Selected — copy now';}
-  setTimeout(() => event.target.textContent = 'Copy command', 2500);
+  catch {event.target.textContent = 'Copy selected text';}
+  setTimeout(() => event.target.textContent = 'Copy', 2500);
 };

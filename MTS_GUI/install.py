@@ -103,18 +103,17 @@ fi
 def write_entry(url=None):
     """A local HTML entry page; it never attempts to execute programs in a browser."""
     command = html.escape(shlex.join(["bash", str(ROOT / "setup.sh"), "--start"]))
-    link = (f'<a class="button" href="{html.escape(url, quote=True)}">Open current MTS session →</a>'
+    link = (f'<a class="button" href="{html.escape(url, quote=True)}">Open MTS</a>'
             if url else '<p>MTS is not running. Open the desktop launcher to start it.</p>')
     entry = ROOT / "MTS.html"
     entry.write_text(f'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>MTS</title>
 <link rel="stylesheet" href="MTS_GUI/static/style.css"><main class="guide">
-<a class="wordmark" href="InstallationGuide.html">MTS<span> / simulation workspace</span></a>
-<h1>Your simulation workspace.</h1>{link}
-<p>For everyday use, open <strong>{launcher_name()}</strong> in this folder.
-It starts MTS only when you need it. Use <strong>Quit MTS</strong> in the browser to stop it.</p>
-<p>If the current session has ended, use the launcher or run:</p><pre>{command}</pre>
-<a href="InstallationGuide.html">Installation and troubleshooting</a></main></html>''')
+<a class="wordmark" href="InstallationGuide.html">MTS</a>
+<small class="product-name">Mesoscopic Tensorial Simulation</small>
+<h1>Session</h1>{link}
+<p>Launch: <strong>{launcher_name()}</strong> or:</p><pre>{command}</pre>
+<a href="InstallationGuide.html">Installation guide</a></main></html>''')
     entry.chmod(0o600)
 
 

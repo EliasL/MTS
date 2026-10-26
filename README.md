@@ -19,11 +19,11 @@ bash setup.sh
 Setup downloads missing submodules automatically, prepares a Python 3.11
 environment and installs the recorded package versions. Most installation progress
 appears in the browser after the initial Python bootstrap. Internet access and
-Git are required for first installation. ZIP installation is not supported yet.
+Git are required for first installation. ZIP installation is not supported.
 
 After setup, open **MTS.app** on macOS or **MTS.desktop** on Linux, directly inside
 this folder. The launcher starts the local backend and opens your browser. It
-reuses an existing session if MTS is already running. Nothing starts at login.
+reuses an existing session if MTS is already running.
 Use **Quit MTS** in the browser to stop the backend; separately managed simulation
 jobs continue. `MTS.html` links to the current session and provides startup help.
 
@@ -51,11 +51,9 @@ rerun the command if instructed. Install Homebrew separately if it is missing.
 On Ubuntu/Debian it uses apt and may request an administrator password in Terminal.
 Other Linux distributions need a C++17 compiler, CMake, OpenMP and zlib development
 files installed manually. The Setup page can rebuild the simulator afterward.
-Setup, the manager and the VS Code managed build task share `MTS2D/build/release/MTS2D`. Generated build
-directories are ignored by Git; optional Debug builds live in `MTS2D/build/debug`.
-
-The locally generated macOS launcher is a development convenience. A downloadable
-macOS release would require a separate signing/notarization workflow.
+Setup, the manager and the VS Code managed build task share
+`MTS2D/build/release/MTS2D`. Generated build directories are ignored by Git;
+optional Debug builds live in `MTS2D/build/debug`.
 
 ## Project structure
 
@@ -80,8 +78,8 @@ Open the MTS folder in VS Code and select `.venv/bin/python`. Choose
 `MTS2D/CMakeLists.txt` if asked for a CMake project, then the `release` preset.
 Use **Terminal → Run Build Task → Build managed simulator** (the default build
 task) to rebuild and record the executable identity required by managed runs.
-On macOS use Apple Clang at `/usr/bin/clang++`; C++17 is the language standard,
-not the compiler version. Personal `.vscode/settings.json`, compiler and launch
+On macOS use Apple Clang at `/usr/bin/clang++`.
+Personal `.vscode/settings.json`, compiler and launch
 settings are ignored; shared tasks and CMake presets are versioned. More editor
 guidance is in InstallationGuide.html. Editable installations
 link imports to local sources. GUI code and architecture are described in

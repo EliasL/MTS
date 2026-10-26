@@ -25,7 +25,7 @@ The session token, environment, generated figures and logs live in the ignored
 `.mts/` directory or generated entry files. Do not expose the server to a network
 or publish these generated files.
 
-Run the high-value GUI boundary checks from the MTS root:
+Run the interface tests from the MTS root:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v

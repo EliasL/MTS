@@ -7,6 +7,12 @@ Write README files for newcomers without chat context. Explain what each project
 does and how to use it; omit conversation history and implementation chronology.
 Introduce names and examples before referring to them, and keep the text concise.
 
+Apply this rule to all user-facing text, including the interface, installation
+guide, generated pages and README files. Use brief, formal scientific language.
+Document the product and its use; omit explanations answering a particular chat
+question, conversational corrections, slogans and speculative future work.
+Every statement must be useful to a reader encountering the project independently.
+
 Only add high-value tests that can catch a plausible, consequential future error.
 Do not add tests merely for coverage, trivial helpers, cosmetic output, routine
 argument forwarding, or assertions that restate the implementation. Small changes

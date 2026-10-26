@@ -24,7 +24,7 @@ $('go-jobs').addEventListener('click', () => $('jobs-card').scrollIntoView({beha
 async function operation(action, data = {}) {
   try {
     message(''); currentAction = action; lastResult = null;
-    await api(action, data); $('activity').open = true; await refresh();
+    await api(action, data); await refresh();
   } catch (error) {message(error.message);}
 }
 function fillSites(sites) {
@@ -60,10 +60,10 @@ async function refresh() {
     $('workspace-path').textContent = state.workspace;
     $('tools-command').textContent = state.setup_command;
     const ready = Object.values(state.packages).every(Boolean), busy = state.task.state === 'running';
-    $('ready-badge').textContent = ready ? 'Python workspace ready' : 'Setup required';
+    $('ready-badge').textContent = ready ? 'Installed' : 'Installation required';
     $('ready-badge').className = 'badge' + (ready ? ' ready' : '');
     const entries = [...Object.entries(state.packages), ['Local simulator', state.local_build]];
-    const list = entries.map(([name, ok]) => `<div class="readiness-row"><span>${escape(name)}</span><span class="badge ${ok ? 'ready' : ''}">${ok ? 'Ready' : 'Not installed'}</span></div>`).join('');
+    const list = entries.map(([name, ok]) => `<div class="readiness-row"><span>${escape(name)}</span><span class="badge ${ok ? 'ready' : ''}">${ok ? 'Installed' : 'Not installed'}</span></div>`).join('');
     $('readiness-list').innerHTML = list; $('setup-readiness').innerHTML = list;
     for (const id of ['install-packages','build-simulator','run-button','plot-button','refresh-jobs']) $(id).disabled = busy;
     $('build-simulator').disabled ||= !ready;
@@ -85,9 +85,8 @@ async function refresh() {
     const task = state.task;
     $('task-badge').textContent = task.state;
     $('task-badge').className = 'badge ' + (task.state === 'complete' ? 'ready' : task.state);
-    $('task-title').textContent = task.title || 'Activity & logs';
-    $('task-log').textContent = task.logs.join('\n') || 'Operations and errors appear here.';
-    if (task.state === 'running' || task.state === 'failed') $('activity').open = true;
+    $('task-title').textContent = task.title || 'Log';
+    $('task-log').textContent = task.logs.join('\n') || 'No output.';
     if (task.state === 'failed') $('task-result').textContent = task.error;
     if (task.state === 'complete' && lastResult !== JSON.stringify(task)) {
       lastResult = JSON.stringify(task); $('task-result').textContent = 'Operation completed.';
@@ -95,13 +94,13 @@ async function refresh() {
       if (task.result?.pdf) {
         const link = document.createElement('a'); link.className = 'button primary'; link.target = '_blank'; link.rel = 'noopener';
         link.href = '/figures/' + task.result.pdf.split('/').map(encodeURIComponent).join('/') + '?token=' + encodeURIComponent(accessToken);
-        link.textContent = 'Open PDF ↗'; $('plot-result').replaceChildren(link);
+        link.textContent = 'Open PDF'; $('plot-result').replaceChildren(link);
         $('task-result').textContent = 'Figure saved: ' + task.result.name;
       }
-      if (task.result?.config_hash) $('task-result').textContent = 'Simulation submitted. Refresh the run inventory to follow its progress.';
+      if (task.result?.config_hash) $('task-result').textContent = 'Submitted.';
     }
     message('');
-  } catch (error) {message('Cannot reach this MTS session. Open the desktop launcher to reconnect. ' + error.message);}
+  } catch (error) {message('Connection failed. ' + error.message);}
 }
 $('install-packages').onclick = () => operation('install');
 $('build-simulator').onclick = () => operation('build');
@@ -149,7 +148,7 @@ $('plot-form').onsubmit = event => {
 $('quit').onclick = async () => {
   try {await api('quit', {}); clearInterval(poller);
     try {localStorage.removeItem('mts-token'); sessionStorage.removeItem('mts-token');} catch {}
-    document.querySelector('.workspace').innerHTML = '<div class="guide"><div class="eyebrow">Session ended</div><h1>MTS is closed.</h1><p>You can close this tab. Open the desktop launcher whenever you want to return.</p><p class="muted">Simulation workers continue under the manager.</p></div>';}
+    document.querySelector('.workspace').innerHTML = '<div class="guide"><h1>MTS is closed.</h1><p>Use the desktop launcher to restart. Simulation jobs continue.</p></div>';}
   catch (error) {message(error.message);}
 };
 refresh(); poller = setInterval(refresh, 2000);
