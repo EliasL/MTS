@@ -1,19 +1,154 @@
 """Protect privileged local operations and existing scientific source checkouts."""
 
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 from MTS_GUI.install import synchronize_components
 from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_restart_loads_new_backend_code_and_preserves_session(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(Path(__file__).resolve().parents[1] / "MTS_GUI", root / "MTS_GUI",
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            with (root / "backend.log").open("w") as log:
+                process = subprocess.Popen([sys.executable, "-m", "MTS_GUI", "--serve"], cwd=root,
+                                           stdout=log, stderr=subprocess.STDOUT)
+            def wait_for(read):
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        self.fail((root / "backend.log").read_text())
+                    try:
+                        value = read()
+                        if value:
+                            return value
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                    time.sleep(0.05)
+                self.fail("Backend did not become ready: " + (root / "backend.log").read_text())
+            try:
+                record = root / ".mts/server.json"
+                saved = wait_for(lambda: json.loads(record.read_text()))
+                parts = urlsplit(saved["url"])
+                base = f"http://{parts.netloc}"
+                headers = {"Content-Type": "application/json", "X-MTS-Token": parts.fragment}
+                def health():
+                    with urlopen(base + "/health", timeout=1) as response:
+                        return json.load(response)
+                wait_for(health)
+                source = root / "MTS_GUI/server.py"
+                source.write_text(source.read_text().replace('"application": "MTS",',
+                                  '"application": "MTS", "generation": "reloaded",', 1))
+                with urlopen(Request(base + "/api/restart", data=b"{}", headers=headers), timeout=2) as response:
+                    self.assertTrue(json.load(response)["restarting"])
+                wait_for(lambda: health().get("generation") == "reloaded")
+                self.assertEqual(json.loads(record.read_text()), saved)
+                with urlopen(Request(base + "/api/state", headers=headers), timeout=2) as response:
+                    self.assertEqual(json.load(response)["task"]["state"], "idle")
+                with urlopen(Request(base + "/api/quit", data=b"{}", headers=headers), timeout=2):
+                    pass
+                process.wait(timeout=5)
+                self.assertEqual(process.returncode, 0)
+                self.assertFalse(record.exists())
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+
+    def test_inventory_cache_is_local_persistent_and_isolated_by_site_configuration(self):
+        from MTS_Management.cluster import Site
+        sites = {name: Site(name=name, ssh=name) for name in ("first", "second")}
+        rows = [{"config_hash": "example", "status": {"state": "running"}}]
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(StringIO()), \
+                patch("MTS_GUI.server.STATE", Path(temporary)), \
+                patch("MTS_GUI.server.ROOT", Path(temporary)), \
+                patch("MTS_Management.cluster.load_sites", return_value=sites), \
+                patch("MTS_Management.cluster.call", return_value=rows) as remote:
+            workspace = Workspace()
+            self.assertIsNone(workspace.inventory_cache("first")["updated_at"])
+            remote.assert_not_called()
+            workspace.operation("inventory", {"site": "first"})
+            snapshot = workspace.inventory_cache("first")
+            self.assertEqual(Workspace().inventory_cache("first"), snapshot)
+            sites["first"].manager_directory = "~/new-manager-version"
+            self.assertEqual(workspace.inventory_cache("first"), snapshot)
+            self.assertIsNone(workspace.inventory_cache("second")["updated_at"])
+            remote.assert_called_once()
+            with patch("MTS_Management.cluster.call", side_effect=TimeoutError("unreachable")):
+                with self.assertRaises(TimeoutError):
+                    workspace.operation("inventory", {"site": "first"})
+            self.assertEqual(workspace.inventory_cache("first"), snapshot)
+            sites["first"].output_root = "another-output"
+            self.assertIsNone(workspace.inventory_cache("first")["updated_at"])
+            sites["first"].output_root = "output"
+            remote.return_value = []
+            workspace.operation("inventory", {"site": "first"})
+            self.assertEqual(Workspace().inventory_cache("first")["rows"], [])
+
+    def test_campaign_reuses_cached_configurations_and_retains_failed_server_data(self):
+        from MTS_Management.cluster import Site
+        from MTS_Management.config import Config
+        configs = [Config(seed=seed) for seed in range(3)]
+        sites = {name: Site(name=name, ssh=name) for name in ("first", "second")}
+        rows = [{"config_hash": config.config_hash, "folder": "example", "campaign": "Shared",
+                 "attempt": None, "status": {"state": "running"}, "progress": {"fraction": 0.1}}
+                for config in configs[:2]]
+        rows[0]["campaign"] = "Another campaign"
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(StringIO()), \
+                patch("MTS_GUI.server.ROOT", Path(temporary)), \
+                patch("MTS_GUI.server.STATE", Path(temporary) / ".mts"), \
+                patch("MTS_Management.cluster.load_sites", return_value=sites):
+            definition = Path(temporary) / "MTSManager/campaigns/shared/campaign.json"
+            definition.parent.mkdir(parents=True)
+            definition.write_text(json.dumps({"name": "Shared", "runs": [
+                {"label": "Expected", "settings": config.as_dict()} for config in configs]}))
+            workspace = Workspace()
+            workspace.inventory_cache("first", rows=rows[:1])
+            original = workspace.inventory_cache("second", rows=rows[1:])
+            overview = workspace.inventory_overview(campaign="Shared")
+            self.assertEqual((overview["expected"], overview["found"], overview["missing"]), (3, 2, 1))
+            self.assertEqual({row["site"] for row in overview["rows"] if not row.get("missing")}, set(sites))
+            with patch("MTS_Management.cluster.call", side_effect=[rows[:1], TimeoutError("offline")]):
+                result = workspace.operation("inventory", {"campaign": "Shared"})
+            self.assertEqual(result["updated_sites"], ["first"])
+            self.assertIn("second", result["errors"])
+            self.assertEqual(workspace.inventory_cache("second"), original)
+            with patch("MTS_GUI.server.threading.Thread") as worker:
+                workspace.start("Inventory", lambda: workspace.operation("inventory", {"campaign": "Shared"}),
+                                cancellable=True)
+                workspace.abort()
+                worker.call_args.kwargs["target"]()
+            self.assertEqual(workspace.task["state"], "aborted")
+            self.assertEqual(workspace.inventory_cache("second"), original)
+
+    def test_clearing_terminal_does_not_release_a_running_operation(self):
+        workspace = Workspace()
+        with patch("MTS_GUI.server.threading.Thread") as worker, redirect_stdout(StringIO()):
+            workspace.start("Inventory", lambda: {"site": "first"})
+            workspace.clear_terminal()
+            with self.assertRaises(ValueError):
+                workspace.start("Run", lambda: None)
+            worker.call_args.kwargs["target"]()
+        self.assertEqual(workspace.history, [])
+        self.assertEqual(workspace.task["state"], "complete")
+        self.assertEqual(workspace.task["result"], {"site": "first"})
+
     def test_local_operations_require_session_token_and_same_origin(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.app = Workspace()
@@ -30,6 +165,13 @@ class Boundaries(unittest.TestCase):
             with urlopen(Request(f"http://{server.authority}/api/state",
                          headers={"X-MTS-Token": server.app.token}), timeout=2) as response:
                 self.assertEqual(json.load(response)["task"]["state"], "idle")
+            server.app.task["state"] = "running"
+            with self.assertRaises(HTTPError) as error:
+                urlopen(Request(f"http://{server.authority}/api/restart", data=b"{}",
+                        headers={"Content-Type": "application/json", "X-MTS-Token": server.app.token}), timeout=2)
+            self.assertEqual(error.exception.code, 400)
+            self.assertFalse(server.app.stopping)
+            server.app.task["state"] = "idle"
             traversal = f"http://{server.authority}/figures/%2e%2e/%2e%2e/pyproject.toml"
             with self.assertRaises(HTTPError) as error:
                 urlopen(Request(traversal, headers={"X-MTS-Token": server.app.token}), timeout=2)

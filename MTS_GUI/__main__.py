@@ -39,13 +39,16 @@ def main():
     parser.add_argument("--local-sim", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     STATE.mkdir(exist_ok=True)
     if args.serve:
         from .server import serve
         with (STATE / "server.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            serve(args.install, args.local_sim)
+            restart = serve(args.install, args.local_sim, args.restart)
+        if restart:
+            os.execv(sys.executable, [sys.executable, "-m", "MTS_GUI", "--serve", "--restart"])
         return
     with (STATE / "launch.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

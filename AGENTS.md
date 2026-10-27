@@ -20,5 +20,13 @@ often need no new test. Prefer focused regressions for bugs actually encountered
 Apply this policy when reviewing existing tests as well; remove redundant and
 low-value tests rather than maintaining them indefinitely.
 
+Keep verification quick and economical in time and tokens. Prefer the smallest
+focused test or syntax check that meaningfully verifies a change, with concise
+output. Avoid repeated checks, extensive browser verification, screenshots and
+broad test suites for routine GUI, management or plotting changes unless a
+specific failure or consequential risk justifies them. Minor interface errors
+can be identified through user feedback. Choose lower-token verification methods
+when they provide sufficient confidence.
+
 The simulator warrants more careful scientific/numerical testing. Preserve its
 existing tests; do not apply management/plotting test reductions to MTS2D.

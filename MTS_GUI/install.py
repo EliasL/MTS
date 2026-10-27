@@ -14,20 +14,33 @@ import shutil
 import site
 import subprocess
 import sys
+import threading
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".mts"
 COMPONENTS = ("MTS2D", "MTSManager", "MTSPlot")
 
 
-def run(command, log=print, *, env=None):
+def run(command, log=print, *, env=None, json_result=False):
     log("$ " + shlex.join(map(str, command)))
-    with subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
-        for line in process.stdout:
+    def forward(stream):
+        for line in stream:
             log(line.rstrip())
+    with subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE if json_result else subprocess.STDOUT,
+                          text=True, bufsize=1) as process:
+        output = None
+        if json_result:
+            worker = threading.Thread(target=forward, args=(process.stderr,))
+            worker.start()
+            output = process.stdout.read()
+            worker.join()
+        else:
+            forward(process.stdout)
         if process.wait():
-            raise subprocess.CalledProcessError(process.returncode, command)
+            raise subprocess.CalledProcessError(process.returncode, command, output=output)
+        if json_result:
+            return json.loads(output)
 
 
 def synchronize_components(log):
@@ -157,7 +170,7 @@ def build_simulator(log):
             env["CPATH"] = prefix + "/include" + os.pathsep + env.get("CPATH", "")
             env["LIBRARY_PATH"] = prefix + "/lib" + os.pathsep + env.get("LIBRARY_PATH", "")
     run([sys.executable, "-m", "MTS_Management", "--sites", str(ROOT / "MTSManager/sites.toml"),
-         "build", "--site", "local"], log, env=env)
+         "build", "--site", "local"], log, env=env, json_result=True)
 
 
 if __name__ == "__main__":
