@@ -3,6 +3,10 @@
 Keep code simple, reuse existing functions, and raise errors for unexpected data
 instead of silently inventing behavior.
 
+When asked to push, publish completed changes to GitHub's default branch
+(`main`), unless another branch is explicitly requested. Publishing only a
+feature branch does not complete this request. Preserve existing remote work.
+
 Write README files for newcomers without chat context. Explain what each project
 does and how to use it; omit conversation history and implementation chronology.
 Introduce names and examples before referring to them, and keep the text concise.
