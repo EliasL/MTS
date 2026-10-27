@@ -33,7 +33,7 @@
 <div class="setup-item"><div><h3>Compiler tools</h3><p>Optional installation. See the <a href="/InstallationGuide.html" target="_blank" rel="noopener">installation guide</a>.</p><pre id="tools-command">bash setup.sh --local-sim --install-build-tools</pre></div></div></article>
 <details class="card" id="advanced-tools"><summary>Advanced</summary>
 <div class="setup-item"><div><h3>Inventory</h3><p>Rebuild the selected server inventories and reread finished simulations. Simulation files are retained.</p><div class="inline-fields"><select id="hard-refresh-site" aria-label="Hard reset server"><option value="local">local</option></select><button id="hard-refresh" class="danger">Hard reset inventory</button></div></div></div>
-<div class="setup-item"><div><h3>Server managers</h3><p>Deploy the installed local MTSManager version to all configured remote servers. Existing jobs retain their manager version.</p><button id="update-managers">Update all server managers</button></div></div>
+<div class="setup-item"><div><h3>Server managers</h3><p>Update the shared MTSManager installation on each remote server. Jobs retain their executable, configuration and checkpoint checks.</p><button id="update-managers">Update all server managers</button></div></div>
 </details></section>
 </div><aside class="activity card" id="activity" aria-label="Operation log"><div class="section-row"><h2>Terminal</h2><button id="clear-terminal" class="small">Clear terminal</button><span id="task-badge" class="badge">Idle</span><button id="abort" class="small danger hidden" disabled>Abort</button></div><div id="terminal-history" class="terminal-history"><p class="muted">No messages.</p></div><div id="task-result" class="result" role="status"></div></aside></div>
 </main></div></body></html>

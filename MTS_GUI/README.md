@@ -47,10 +47,14 @@ deleting simulation files. Update all server managers deploys the installed
 local manager version once per SSH destination and verifies each profile before
 activating it. Failures are reported per server profile in the terminal.
 
-Manager versions are stored in separate remote directories. Existing queued
-and running jobs retain their original code. Activated locations are recorded
-in `MTSManager/.state/manager-deployments.json`; CLI calls using the same site
-file also use these locations. Updating the transport preserves GUI snapshots.
+Manager updates replace the shared `~/.local/share/mts/manager/` installation;
+they do not create a package copy per update. Submission and execution manager
+identities are recorded for provenance without requiring an exact version match.
+Executable, configuration and checkpoint checks remain enforced. Saved job
+requests must remain compatible with manager updates. Other manager directories
+referenced by existing submission scripts are left untouched. Active locations
+are recorded in `MTSManager/.state/manager-deployments.json`; CLI calls using the
+same site file also use these locations. Updates preserve GUI snapshots.
 
 Campaign definitions are read from `MTSManager/campaigns/**/campaign.json`.
 Expected configurations are matched by their full configuration hash against
