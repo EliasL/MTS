@@ -36,6 +36,10 @@ class Workspace:
         self.cancel = threading.Event()
         self.campaign_files = {}
         self.local_files = {}
+        self.ssh_results = []
+        self.ssh_proposals = {}
+        self.ssh_addresses = {}
+        self.ssh_config_stamp = None
 
     def log(self, line, *, command=False):
         with self.lock:
@@ -118,6 +122,7 @@ class Workspace:
         site = site or load_sites(ROOT / "MTSManager/sites.toml")[site_name]
         identity_settings = asdict(site)
         identity_settings.pop("manager_directory", None)
+        identity_settings.pop("disabled", None)
         identity = hashlib.sha256(json.dumps(identity_settings, sort_keys=True).encode()).hexdigest()
         STATE.mkdir(exist_ok=True)
         with closing(sqlite3.connect(STATE / "inventory.sqlite3")) as database, database:
@@ -134,13 +139,12 @@ class Workspace:
                 "rows": json.loads(record[1]) if record else []}
 
     def campaign_definitions(self):
-        from MTS_Management.campaign import campaign_entries
+        from MTS_Management.campaign import campaign_identity
         definitions = {}
         for path in sorted((ROOT / "MTSManager/campaigns").rglob("campaign.json")):
             stamp = path.stat().st_mtime_ns
             if path not in self.campaign_files or self.campaign_files[path][0] != stamp:
-                name, entries = campaign_entries(path)
-                expected = {config.config_hash: config.folder_name(label) for config, label in entries}
+                name, expected = campaign_identity(path)
                 self.campaign_files[path] = (stamp, name, expected)
             _, name, expected = self.campaign_files[path]
             if name in definitions and definitions[name] != expected:
@@ -268,10 +272,94 @@ class Workspace:
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "sites": sites, "servers": servers, "task": task, "history": history, "interface_version": 3,
+                "ssh_connections": self.connection_status(site_file) if packages["MTSManager"] and site_file.exists() else [],
                 "setup_command": f'bash "{ROOT}/setup.sh" --local-sim --install-build-tools'}
 
+    def connection_status(self, site_file):
+        from .ssh_connections import connections, effective
+        config = Path.home() / ".ssh/config"
+        stamp = config.stat().st_mtime_ns if config.exists() else 0
+        if stamp != self.ssh_config_stamp:
+            self.ssh_addresses = {}
+            self.ssh_config_stamp = stamp
+        checked = {row["host"]: row for row in self.ssh_results}
+        result = []
+        for row in connections(site_file):
+            host = row["host"]
+            if host not in self.ssh_addresses:
+                try:
+                    settings = effective(host)
+                    self.ssh_addresses[host] = f"{settings['user']}@{settings['hostname']}:{settings['port']}"
+                except (OSError, subprocess.SubprocessError):
+                    self.ssh_addresses[host] = host
+            entry = checked.get(host, {}) | row | {"address": self.ssh_addresses[host]}
+            if row["disabled"]:
+                entry.update(status="Disabled", repair=False)
+            elif checked.get(host, {}).get("disabled"):
+                entry.update(status="Unchecked", repair=False)
+            result.append(entry)
+        return result
+
     def operation(self, action, data):
-        self.log(f"Workspace.operation({action!r}, {data!r})", command=True)
+        safe_data = {k: "[redacted]" if k == "password" else v for k, v in data.items()}
+        self.log(f"Workspace.operation({action!r}, {safe_data!r})", command=True)
+        if action.startswith("ssh_"):
+            from . import ssh_connections as ssh
+            site_file = ROOT / "MTSManager/sites.toml"
+            host = data.get("host")
+            if action == "ssh_check":
+                result = ssh.check_connections(site_file, self.log, self.ssh_proposals)
+                self.ssh_results = result["connections"]
+                return result
+            if action == "ssh_add":
+                return ssh.add_connection(site_file, data)
+            rows = {row["host"]: row for row in ssh.connections(site_file)}
+            if host not in rows:
+                raise ValueError("Unknown SSH connection")
+            if action == "ssh_toggle":
+                result = ssh.set_disabled(site_file, host, data["disabled"])
+                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
+                self.ssh_proposals.pop(host, None)
+                return result
+            if action == "ssh_configure":
+                result = ssh.configure_address(host, data)
+                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
+                self.ssh_proposals.pop(host, None)
+                return result
+            if action == "ssh_profile":
+                result = ssh.save_profile(site_file, host, data)
+                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
+                return result
+            if rows[host]["disabled"]:
+                raise ValueError("Enable this connection before installing keys or accepting a host key")
+            if action == "ssh_inspect":
+                return ssh.inspect_server(host, self.log, setup=data.get("setup", ""))
+            if action == "ssh_deploy":
+                from MTS_Management.deployments import update_managers
+                result = update_managers(site_file, host=host, log=self.log)
+                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
+                return result
+            if action == "ssh_scan":
+                proposal = ssh.scan_key(host)
+                self.ssh_proposals[host] = proposal
+                self.ssh_results = [row | {"repair": True, "fingerprint": proposal["fingerprint"],
+                    "suggestion": "Accept the host key to update the saved connection identity."}
+                    if row["host"] == host else row for row in self.ssh_results]
+                return {"host": host, "fingerprint": proposal["fingerprint"]}
+            if action == "ssh_accept":
+                proposal = self.ssh_proposals.get(host)
+                if proposal is None or data.get("fingerprint") != proposal["fingerprint"]:
+                    raise ValueError("Check connections and review the current fingerprint first")
+                result = ssh.accept_key(host, proposal)
+                self.ssh_proposals.pop(host, None)
+                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
+                self.log(f"{host}: accepted host key {result['fingerprint']}")
+                return result
+            if action == "ssh_install":
+                result = ssh.install_key(host, data["password"], self.log)
+                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
+                return result
+            raise ValueError("Unknown SSH operation")
         if action == "install":
             return install_packages(self.log)
         if action == "build":
@@ -389,6 +477,13 @@ class Handler(BaseHTTPRequestHandler):
                                  "restarting": getattr(self.server, "restart_requested", False)})
             elif path == "/api/state":
                 self.reply(200, self.server.app.status())
+            elif path == "/api/ssh_settings":
+                from .ssh_connections import connections, editor_settings
+                host = parse_qs(urlsplit(self.path).query).get("host", [""])[0]
+                site_file = ROOT / "MTSManager/sites.toml"
+                if host not in {row["host"] for row in connections(site_file)}:
+                    raise ValueError("Unknown SSH connection")
+                self.reply(200, editor_settings(site_file, host))
             elif path == "/api/inventory":
                 query = parse_qs(urlsplit(self.path).query)
                 campaign = query.get("campaign", [None])[0]
@@ -443,7 +538,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "plot"}:
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "plot",
+                            "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 task_id = self.server.app.start(action.capitalize(), lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs"})
                 self.reply(202, {"started": action, "task_id": task_id})

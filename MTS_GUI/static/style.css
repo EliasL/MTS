@@ -127,3 +127,23 @@ code{font:12px ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}
 @media(max-width:1150px){.grid.three{grid-template-columns:1fr}.start-card{flex-direction:row;align-items:center}.start-card h2{margin:0}.workspace{padding:0 16px 20px}.workspace-layout{gap:16px}.setup-item{align-items:flex-start;flex-direction:column}.section-row{flex-wrap:wrap}}
 @media(max-width:850px){.app{grid-template-columns:150px minmax(0,1fr)}.workspace-layout{grid-template-columns:minmax(0,1fr)}.activity{position:static;height:320px;min-height:0}.sidebar{padding:20px 12px}.topbar .actions{gap:8px}}
 @media(max-width:600px){.app{display:block}.sidebar{position:relative;height:auto;padding:14px 16px}.sidebar small{margin:4px 0 12px}.sidebar nav{display:flex;overflow:auto}.sidebar nav button{white-space:nowrap;padding:8px;font-size:12px}.workspace{padding:0 12px 20px}.topbar{height:60px;margin-bottom:18px}.topbar .path{max-width:30vw}.topbar .actions{font-size:11px}.fields{grid-template-columns:1fr}.card{padding:14px}.guide{padding:20px 16px}.guide .command-row{flex-direction:column;align-items:stretch}.guide header{gap:12px}}
+
+.ssh-connection{padding:9px 0;border-bottom:1px solid var(--line)}
+.ssh-row{display:flex;align-items:center;gap:10px;min-height:30px;font-size:12px;flex-wrap:nowrap}
+.ssh-row strong{min-width:45px;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ssh-address{color:var(--muted);flex:1;min-width:35px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ssh-profiles{font-size:11px;color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ssh-row-actions{display:flex;align-items:center;gap:5px;margin-left:auto;flex-wrap:nowrap}
+.ssh-row-actions .small{padding:5px 7px;font-size:11px;white-space:nowrap}
+.ssh-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#24834b;flex-shrink:0}
+.ssh-state{font-size:10px;color:var(--muted)}
+.ssh-diagnostic{margin-top:6px;padding-left:18px;font-size:12px}
+.ssh-diagnostic pre{margin:0;max-height:160px;overflow:auto;padding:7px;font-size:11px}
+.ssh-diagnostic p{margin:5px 0;overflow-wrap:anywhere}
+#ssh-editor form{margin-top:14px}
+#ssh-editor textarea{min-height:85px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px}
+#ssh-editor details textarea{min-height:180px}
+#ssh-inspection{margin-top:12px;font-size:12px}
+.activity .section-row{flex-wrap:wrap}
+
+@media(max-width:1100px){.ssh-row{flex-wrap:wrap}.ssh-row-actions{flex-wrap:wrap}.ssh-address{min-width:100px}}

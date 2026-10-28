@@ -137,6 +137,21 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(workspace.task["state"], "aborted")
             self.assertEqual(workspace.inventory_cache("second"), original)
 
+    def test_monitoring_keeps_recorded_campaign_identity_when_runtime_schema_changes(self):
+        from MTS_Management.campaign import campaign_entries
+        from MTS_Management.config import Config
+        from MTS_Management.files import digest
+        with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.ROOT", Path(temporary)):
+            path = Path(temporary) / "MTSManager/campaigns/recorded/campaign.json"
+            path.parent.mkdir(parents=True)
+            settings = Config().as_dict()
+            settings.pop("tangentBackend")
+            identity = digest({"format": "mtscripts-config-v1", "settings": settings})
+            path.write_text(json.dumps({"name": "Recorded", "runs": [{"label": "Saved", "settings": settings}]}))
+            self.assertEqual(Workspace().campaign_definitions(), {"Recorded": {identity: f"Saved[{identity[:20]}]"}})
+            with self.assertRaisesRegex(ValueError, "complete"):
+                campaign_entries(path)
+
     def test_clearing_terminal_does_not_release_a_running_operation(self):
         workspace = Workspace()
         with patch("MTS_GUI.server.threading.Thread") as worker, redirect_stdout(StringIO()):

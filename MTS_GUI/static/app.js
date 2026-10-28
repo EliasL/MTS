@@ -32,7 +32,7 @@ function fillMonitorSources(campaigns = []) {
     site => new Option(site.label || siteLabel(site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
-const actionButtons = ['install-packages','build-simulator','run-button','plot-button','refresh-jobs','hard-refresh','update-managers','quit','restart'];
+const actionButtons = ['install-packages','build-simulator','run-button','plot-button','refresh-jobs','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
 for (const id of actionButtons) {
   const button = $(id), hint = document.createElement('span');
   hint.className = 'action-hint';
@@ -132,12 +132,12 @@ async function loadInventory(logSelection = true) {
 function updateActions() {
   if (!lastState) return;
   const busy = lastState.task.state === 'running' || pendingOperation?.state === 'running', ready = Object.values(lastState.packages).every(Boolean);
-  for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button')]) {
+  for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button, #ssh-list button, #ssh-editor button')]) {
     if (!button.parentElement.classList.contains('action-hint')) {
       const hint = document.createElement('span'); hint.className = 'action-hint';
       button.before(hint); hint.append(button);
     }
-    button.disabled = busy;
+    button.disabled = busy || button.dataset.disabledConnection === 'true';
     button.parentElement.title = busy ? 'Already running: ' + (lastState.task.command || lastState.task.title) : '';
   }
   $('build-simulator').disabled ||= !ready;
@@ -153,7 +153,7 @@ function renderTerminal(history = backendHistory) {
   history = [...history.filter(entry => !hiddenBackendEntries.has(entry.id) && !clientHistory.some(client => client.task_id === entry.id)),
     ...clientHistory].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
   const container = $('terminal-history'), ids = new Set(history.map(entry => entry.id));
-  let added = false;
+  let changed = false;
   for (const node of [...container.children]) if (!ids.has(node.dataset.id)) node.remove();
   for (const [index, entry] of history.entries()) {
     let node = [...container.children].find(node => node.dataset.id === entry.id);
@@ -170,17 +170,19 @@ function renderTerminal(history = backendHistory) {
           } else {await api('terminal', {id: entry.id}); await refresh();}
         } catch (error) {message(error.message);}
       };
-      node.open = true; container.append(node); added = true;
+      node.open = true; container.append(node); changed = true;
     }
     if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
     node.dataset.state = entry.state;
     node.querySelector('summary span').textContent = `${entry.title} · ${entry.state}`;
     node.querySelector('summary').title = entry.command || entry.title;
     const output = entry.logs.join('\n') || 'Starting…', pre = node.querySelector('pre');
-    if (pre.textContent !== output) pre.textContent = output;
+    if (pre.textContent !== output) {
+      pre.textContent = output; pre.scrollTop = pre.scrollHeight; changed = true;
+    }
   }
   if (!history.length) container.innerHTML = '<p class="muted">No messages.</p>';
-  if (added) container.scrollTop = container.scrollHeight;
+  if (changed) container.scrollTop = container.scrollHeight;
 }
 function fillSites(sites) {
   document.querySelectorAll('.sites').forEach(select => {
@@ -255,6 +257,7 @@ async function refresh() {
       entry.command = task.command;
       if (task.state !== 'running') entry.legacy = false;
     }
+    renderConnections(state.ssh_connections || []);
     updateActions();
     $('task-badge').textContent = task.state;
     $('task-badge').className = 'badge ' + (task.state === 'complete' ? 'ready' : task.state);
@@ -279,6 +282,9 @@ async function refresh() {
         $('task-result').textContent = 'Figure saved: ' + task.result.name;
       }
       if (task.result?.config_hash) $('task-result').textContent = 'Submitted.';
+      if (task.result?.inspected_host) showSSHInspection(task.result);
+      if (task.result?.saved_profile && sshEditor) await openSSHEditor(sshEditor.host, 'profile', task.result.saved_profile);
+      if (task.result?.configured && sshEditor?.type === 'connection') closeSSHEditor();
     }
     if (task.state === 'running' || !terminalHistory.some(entry => entry.id === task.id)) $('task-result').textContent = '';
     inventoryAge();
@@ -382,3 +388,178 @@ $('restart').onclick = async () => {
   }
 };
 refresh(); poller = setInterval(refresh, 2000);
+
+function renderConnections(rows) {
+  const signature = JSON.stringify(rows);
+  if ($('ssh-list').dataset.rows === signature) return;
+  $('ssh-list').dataset.rows = signature;
+  $('ssh-list').replaceChildren();
+  for (const row of rows) {
+    const article = document.createElement('div'); article.className = 'ssh-connection';
+    const line = document.createElement('div'); line.className = 'ssh-row';
+    const status = row.status || 'Unchecked';
+    const indicator = status === 'Connected' && !row.profile_warning ? '<span class="ssh-dot" role="img" aria-label="Connected" title="Connected"></span>' : `<span class="ssh-state">${escape(row.profile_warning ? 'Profile setup' : status)}</span>`;
+    line.innerHTML = `${indicator}<strong>${escape(row.host)}</strong><span class="ssh-address" title="${escape(row.address)}">${escape(row.address || row.host)}</span><span class="ssh-profiles" title="Profiles">${escape(row.profiles.join(', ') || 'No profile')}</span>`;
+    const actions = document.createElement('div'); actions.className = 'ssh-row-actions';
+    const button = (label, run) => {const item = document.createElement('button'); item.className = 'small'; item.textContent = label; item.onclick = run; actions.append(item); return item;};
+    button('SSH', () => openSSHEditor(row.host, 'connection')).title = 'Edit SSH connection settings';
+    button(row.profiles.length > 1 ? 'Edit profiles' : row.profiles.length ? 'Edit profile' : 'Add profile', () => openSSHEditor(row.host, 'profile'));
+    if (row.profiles.length) {
+      const deploy = button('Deploy', () => operation('ssh_deploy', {host: row.host})); deploy.title = 'Install or update the manager and create the profile working directory'; deploy.dataset.disabledConnection = String(row.disabled);
+    }
+    if (row.repair && !row.disabled) button(row.fingerprint ? 'Accept host key' : 'Retry host key',
+      () => operation(row.fingerprint ? 'ssh_accept' : 'ssh_scan', {host: row.host, fingerprint: row.fingerprint}));
+    button(row.disabled ? 'Enable' : 'Disable', () => operation('ssh_toggle', {host: row.host, disabled: !row.disabled}));
+    line.append(actions); article.append(line);
+    if ((row.detail || row.suggestion) && !row.disabled) {
+      const diagnostic = document.createElement('div'); diagnostic.className = 'ssh-diagnostic';
+      if (row.detail) {const pre = document.createElement('pre'); pre.textContent = row.detail; diagnostic.append(pre);}
+      if (row.suggestion) {const p = document.createElement('p'); p.textContent = row.suggestion; diagnostic.append(p);}
+      if (row.fingerprint) {const p = document.createElement('p'); p.textContent = 'ED25519: ' + row.fingerprint; diagnostic.append(p);}
+      article.append(diagnostic);
+    }
+    $('ssh-list').append(article);
+  }
+  if (!rows.length) $('ssh-list').textContent = 'No remote connections configured.';
+  const select = $('ssh-key-host'), previous = select.value;
+  select.replaceChildren(...rows.filter(row => !row.disabled).map(row => new Option(row.host, row.host)));
+  if ([...select.options].some(option => option.value === previous)) select.value = previous;
+}
+$('ssh-check').onclick = () => operation('ssh_check');
+$('ssh-key-form').onsubmit = event => {
+  event.preventDefault();
+  const password = $('ssh-password').value; $('ssh-password').value = '';
+  operation('ssh_install', {host: $('ssh-key-host').value, password});
+};
+$('ssh-add-form').onsubmit = event => {
+  event.preventDefault();
+  operation('ssh_add', {name: $('ssh-name').value, hostname: $('ssh-hostname').value,
+    user: $('ssh-user').value, port: +$('ssh-port').value, directory: $('ssh-directory').value,
+    source: $('ssh-source').value, output_root: $('ssh-output').value, mode: $('ssh-mode').value});
+};
+$('copy-terminal').onclick = async () => {
+  const text = [...$('terminal-history').querySelectorAll('details')].map(node =>
+    node.querySelector('summary span').textContent + '\n' + node.querySelector('pre').textContent).join('\n\n');
+  try {await navigator.clipboard.writeText(text); $('copy-terminal').textContent = 'Copied';
+    setTimeout(() => {$('copy-terminal').textContent = 'Copy all';}, 1500);
+  } catch (error) {message('Clipboard access failed: ' + error.message);}
+};
+
+let sshEditor;
+function sshField(form, name, label, value, type = 'text') {
+  const field = document.createElement('div'); field.className = 'field';
+  const caption = document.createElement('label'); caption.textContent = label;
+  const input = document.createElement(type === 'textarea' ? 'textarea' : 'input');
+  input.name = name; input.value = value ?? ''; if (type !== 'textarea') input.type = type;
+  caption.append(input); field.append(caption); form.append(field); return input;
+}
+function closeSSHEditor() {sshEditor = null; $('ssh-editor').replaceChildren(); $('ssh-editor').classList.add('hidden');}
+async function openSSHEditor(host, type, selected) {
+  try {
+    const data = await api('ssh_settings?host=' + encodeURIComponent(host));
+    sshEditor = {host, type, data};
+    const panel = $('ssh-editor'); panel.classList.remove('hidden'); panel.replaceChildren();
+    const top = document.createElement('div'); top.className = 'section-row';
+    const heading = document.createElement('h2'); heading.textContent = (type === 'profile' ? 'Simulation profiles: ' : 'SSH settings: ') + host;
+    const close = document.createElement('button'); close.className = 'small'; close.textContent = 'Close'; close.onclick = closeSSHEditor;
+    top.append(heading, close); panel.append(top);
+    if (type === 'profile') buildProfileEditor(panel, data, selected);
+    else buildConnectionEditor(panel, data);
+    panel.scrollIntoView({block: 'nearest', behavior: 'smooth'}); updateActions();
+  } catch (error) {message(error.message);}
+}
+const profileFields = {directory: 'Working directory', source: 'Simulator source directory', executable: 'Executable',
+  output_root: 'Output directory', python: 'Python interpreter', setup: 'Environment setup (shell commands)'};
+function buildProfileEditor(panel, data, selected) {
+  const toolbar = document.createElement('div'); toolbar.className = 'inline-fields';
+  const siteLabel = document.createElement('label'); siteLabel.textContent = 'Site ';
+  const sites = document.createElement('select'); sites.setAttribute('aria-label', 'SSH site');
+  sites.replaceChildren(...(lastState.ssh_connections || []).map(row => new Option(row.host, row.host)));
+  sites.value = data.host; sites.onchange = () => openSSHEditor(sites.value, 'profile'); siteLabel.append(sites); toolbar.append(siteLabel);
+  const selector = document.createElement('select'); selector.setAttribute('aria-label', 'Existing simulation profile');
+  selector.replaceChildren(...data.profiles.map(profile => new Option(profile.name, profile.name)));
+  let editingName = selected ?? data.profiles[0]?.name ?? null;
+  selector.value = editingName || ''; selector.hidden = data.profiles.length < 2;
+  toolbar.append(selector);
+  const create = document.createElement('button'); create.type = 'button'; create.textContent = 'New profile'; toolbar.append(create);
+  panel.append(toolbar);
+  const form = document.createElement('form'); form.id = 'ssh-profile-editor'; panel.append(form);
+  const render = () => {
+    form.replaceChildren();
+    const profile = data.profiles.find(item => item.name === editingName) || data.default_profile;
+    form.dataset.original = editingName || '';
+    const title = document.createElement('h3'); title.textContent = editingName ? profile.name : 'New profile'; form.append(title);
+    const grid = document.createElement('div'); grid.className = 'fields'; form.append(grid);
+    const name = sshField(grid, 'name', 'Profile name', profile.name); name.required = true; name.readOnly = Boolean(editingName);
+    for (const [key, label] of Object.entries(profileFields)) sshField(grid, key, label, profile.settings[key], key === 'setup' ? 'textarea' : 'text');
+    const modeField = document.createElement('div'); modeField.className = 'field';
+    const modeLabel = document.createElement('label'); modeLabel.textContent = 'Execution mode';
+    const mode = document.createElement('select'); mode.name = 'mode';
+    mode.replaceChildren(...['detached', 'slurm', 'foreground'].map(value => new Option(value, value))); mode.value = profile.settings.mode;
+    modeLabel.append(mode); modeField.append(modeLabel); grid.append(modeField);
+    const advanced = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = 'Other profile settings (JSON)'; advanced.append(summary);
+    const extra = Object.fromEntries(Object.entries(profile.settings).filter(([key]) => !(key in profileFields) && key !== 'mode'));
+    sshField(advanced, 'advanced', 'Manager, scheduler, environment and resource settings', JSON.stringify(extra, null, 2), 'textarea'); form.append(advanced);
+    const note = document.createElement('p'); note.className = 'muted'; note.textContent = 'Paths define simulation storage and builds. Manager deployment creates the working directory and installs the shared manager. Simulator sources and builds are configured separately.'; form.append(note);
+    const actions = document.createElement('div'); actions.className = 'inline-fields';
+    const inspect = document.createElement('button'); inspect.type = 'button'; inspect.textContent = 'Inspect server'; inspect.onclick = () => operation('ssh_inspect', {host: data.host, setup: form.elements.namedItem('setup').value});
+    const save = document.createElement('button'); save.textContent = 'Save profile'; save.type = 'submit'; actions.append(inspect, save); form.append(actions);
+    const inspection = document.createElement('div'); inspection.id = 'ssh-inspection'; form.append(inspection);
+    updateActions();
+  };
+  selector.onchange = () => {editingName = selector.value; render();};
+  create.onclick = () => {editingName = null; selector.selectedIndex = -1; render();}; render();
+  form.onsubmit = event => {
+    event.preventDefault();
+    try {
+      const values = Object.fromEntries(new FormData(form)), settings = JSON.parse(values.advanced);
+      if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Other settings must be a JSON object.');
+      for (const key of Object.keys(profileFields)) settings[key] = values[key]; settings.mode = values.mode;
+      operation('ssh_profile', {host: data.host, name: values.name, original_name: form.dataset.original || null, settings});
+    } catch (error) {message(error.message);}
+  };
+}
+function buildConnectionEditor(panel, data) {
+  const form = document.createElement('form'), grid = document.createElement('div'); grid.className = 'fields'; form.append(grid);
+  for (const [key, label] of Object.entries({hostname: 'Login hostname', user: 'Account name', port: 'Port', proxyjump: 'Proxy jump', proxycommand: 'Proxy command', requesttty: 'Request terminal', stricthostkeychecking: 'Host-key policy', userknownhostsfile: 'Known-hosts files'})) {
+    sshField(grid, key, label, data.connection[key], key === 'port' ? 'number' : 'text');
+  }
+  const identities = data.connection.identityfile;
+  sshField(form, 'identityfile', 'Identity files (one path per line)', Array.isArray(identities) ? identities.join('\n') : identities, 'textarea');
+  sshField(form, 'extra', 'Additional SSH directives', data.connection.extra, 'textarea');
+  const details = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = 'All effective SSH settings';
+  const pre = document.createElement('pre'); pre.textContent = Object.entries(data.effective).map(([key, value]) => key + ' ' + (Array.isArray(value) ? value.join(', ') : value)).join('\n'); details.append(summary, pre); form.append(details);
+  const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save SSH settings'; form.append(save); panel.append(form);
+  form.onsubmit = event => {
+    event.preventDefault(); const values = Object.fromEntries(new FormData(form));
+    values.identityfile = values.identityfile.split('\n').map(value => value.trim()).filter(Boolean);
+    operation('ssh_configure', {host: data.host, ...values, port: +values.port});
+  };
+}
+function showSSHInspection(result) {
+  if (!sshEditor || sshEditor.host !== result.inspected_host || sshEditor.type !== 'profile') return;
+  const panel = $('ssh-inspection'); if (!panel) return;
+  panel.replaceChildren();
+  const executable = $('ssh-profile-editor').elements.namedItem('executable');
+  let builds = $('ssh-retained-builds');
+  if (builds) builds.remove();
+  builds = document.createElement('datalist'); builds.id = 'ssh-retained-builds';
+  builds.append(new Option('Working build', 'build/current/MTS2D'));
+  for (const build of result.information.retained_builds || []) {
+    builds.append(new Option(build.revision.slice(0, 12) + ' · ' + build.built_at.slice(0, 10) + ' · ' + build.sha256.slice(0, 12), build.path));
+  }
+  executable.setAttribute('list', builds.id); panel.append(builds);
+  for (const note of result.notes) {const p = document.createElement('p'); p.textContent = note; panel.append(p);}
+  for (const path of result.information.sources) {const p = document.createElement('p'); p.className = 'muted'; p.textContent = 'Source: ' + path; panel.append(p);}
+  const apply = document.createElement('button'); apply.type = 'button'; apply.textContent = 'Use suggested profile settings';
+  apply.onclick = () => {
+    const form = $('ssh-profile-editor'), extra = JSON.parse(form.elements.advanced.value);
+    for (const [key, value] of Object.entries(result.suggestions)) {
+      const input = form.elements.namedItem(key);
+      if (form.dataset.original && ['directory', 'source', 'output_root', 'state_dir', 'executable', 'manager_directory'].includes(key) && (input ? input.value : extra[key])) continue;
+      if (input) input.value = value; else extra[key] = value;
+    }
+    form.elements.advanced.value = JSON.stringify(extra, null, 2);
+  };
+  panel.append(apply); updateActions();
+}
