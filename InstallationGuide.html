@@ -15,5 +15,5 @@
 <li>Use <strong>Terminal → Run Build Task → Build managed simulator</strong>. This records the build identity required for managed runs at <code>MTS2D/build/release/MTS2D</code>.</li></ol>
 <p>The <strong>debug</strong> preset builds scientific tests in <code>MTS2D/build/debug</code>. Build folders and personal VS Code settings are ignored by Git.</p>
 </details>
-<details><summary>Troubleshooting</summary><p>Check the operation log or <code>.mts/server.log</code> and <code>.mts/launcher.log</code>. Quit MTS before rerunning setup. Rerun setup after moving the project.</p><p>Terminal launch: <code>bash setup.sh --start</code>.</p></details>
+<details><summary>Troubleshooting</summary><p>Startup failures display the error and an Open Log button. Logs are stored in <code>.mts/server.log</code> and <code>.mts/launcher.log</code>. If an unresponsive MTS process holds the server lock, the macOS launcher offers Quit and Relaunch. Quitting may interrupt an active GUI operation. Terminal launches report the process ID and termination command. Do not delete <code>.mts/server.lock</code>; quitting the process releases it. Quit MTS before rerunning setup. Rerun setup after moving the project.</p><p>Terminal launch: <code>bash setup.sh --start</code>.</p></details>
 </main></body></html>

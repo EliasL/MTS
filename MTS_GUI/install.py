@@ -90,10 +90,15 @@ def generate_launcher():
         script = contents / "MacOS/MTS"
         script.write_text('''#!/bin/bash
 MTS_ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
-if ! /bin/bash "$MTS_ROOT/setup.sh" --start >> "$MTS_ROOT/.mts/launcher.log" 2>&1; then
-    /usr/bin/osascript - "$MTS_ROOT" <<'APPLESCRIPT'
+mkdir -p "$MTS_ROOT/.mts"
+if MTS_OUTPUT="$(MTS_DESKTOP=1 /bin/bash "$MTS_ROOT/setup.sh" --start 2>&1)"; then
+    printf '%s\\n' "$MTS_OUTPUT" >> "$MTS_ROOT/.mts/launcher.log"
+else
+    printf '%s\\n' "$MTS_OUTPUT" >> "$MTS_ROOT/.mts/launcher.log"
+    /usr/bin/osascript - "$MTS_OUTPUT" "$MTS_ROOT/.mts/launcher.log" <<'APPLESCRIPT'
 on run argv
-    display alert "MTS could not start" message ("Open InstallationGuide.html in " & item 1 of argv & ". Startup details are in .mts/launcher.log.") as warning
+    set choice to display alert "MTS could not start" message ((item 1 of argv) & return & return & "Launcher log: " & item 2 of argv) buttons {"Close", "Open Log"} default button "Close" as warning
+    if button returned of choice is "Open Log" then do shell script "/usr/bin/open -t " & quoted form of (item 2 of argv)
 end run
 APPLESCRIPT
 fi

@@ -42,4 +42,13 @@
 <div class="setup-item"><div><h3>Server managers</h3><p>Update the shared MTSManager installation on each remote server. Jobs retain their executable, configuration and checkpoint checks.</p><button id="update-managers">Update all server managers</button></div></div>
 </details></section>
 </div><aside class="activity card" id="activity" aria-label="Operation log"><div class="section-row"><h2>Terminal</h2><button id="copy-terminal" class="small">Copy all</button><button id="clear-terminal" class="small">Clear terminal</button><span id="task-badge" class="badge">Idle</span><button id="abort" class="small danger hidden" disabled>Abort</button></div><div id="terminal-history" class="terminal-history"><p class="muted">No messages.</p></div><div id="task-result" class="result" role="status"></div></aside></div>
-</main></div></body></html>
+</main></div>
+<template id="simulation-help"><details class="card"><summary>Help: run identity and reproducibility</summary>
+<p>Each simulation has a configuration hash derived from all saved simulator settings. The label is excluded. Adding or changing a setting changes the hash; the folder name and manifest must match the saved configuration.</p>
+<p>At submission, the manager retains the selected executable and its build record. Queued jobs use that retained binary even after the working source or binary is updated. Before execution, the manager verifies the configuration and binary against the submission record.</p>
+<p>A campaign groups runs; it does not automatically fix one binary for future submissions. To use one build throughout a campaign, select a retained executable in the execution site's profile before submitting its runs. Resuming an existing run requires its original executable.</p>
+<p>Checkpoint continuation requires the original run configuration and a checkpoint from the same run. Explicit checkpoints are checked by checksum; a latest-checkpoint request selects and records the checkpoint when execution begins. Active attempts prevent duplicate execution in the same output folder. Use a separate output root for independent repetitions or comparisons between builds.</p>
+<p>Each attempt retains its request, status and log. Lifecycle events are recorded in the job journal. Manager versions are recorded at submission and execution; updating the manager can affect queued workers because the manager itself is not retained with the binary. Older configurations and build records must satisfy the executing manager's schema checks.</p>
+<p>Monitor data combines cached server inventories, campaign definitions and local copies. A campaign configuration match does not establish binary equivalence. Refresh updates the selected inventories; Hard reset inventory also rereads finished runs without deleting simulation files.</p>
+</details></template>
+</body></html>

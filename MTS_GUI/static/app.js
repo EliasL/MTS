@@ -1,4 +1,5 @@
 const $ = id => document.getElementById(id);
+for (const panel of ['start', 'monitor']) $(panel).append($('simulation-help').content.cloneNode(true));
 let accessToken = location.hash.slice(1);
 try {
   accessToken ||= localStorage.getItem('mts-token') || sessionStorage.getItem('mts-token') || '';

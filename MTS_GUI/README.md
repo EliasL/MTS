@@ -30,6 +30,14 @@ remain independent of the GUI process.
 Start simulations configures and launches runs. Monitor data displays records
 for a server or a campaign. Plot exports timing figures.
 
+Both simulation panels include expandable help on configuration hashes, retained
+executables, campaign build selection, checkpoint checks, attempt history and
+inventory caching. Binaries are retained per submission; a campaign does not
+automatically pin a build for future submissions. Select a retained executable
+in the site's profile to use the same build throughout a campaign. Manager
+updates can affect queued workers; the manager is recorded but is not retained
+with each binary.
+
 SSH connections lists remote destinations and their site profiles. Registered
 SSH accounts without a simulation profile support connection checks and key
 installation; simulation operations require a site profile. Each row provides

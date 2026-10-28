@@ -1,5 +1,12 @@
 # Scientific code and testing
 
+Read [TheSimulationProcess.md](TheSimulationProcess.md) for the target design and
+[TheSimulationProcess_old.md](TheSimulationProcess_old.md) for the archived
+implementation before changing campaign submission, queued execution,
+configuration/build identity, checkpoints, lifecycle records or server deployment.
+Do not assume target interfaces are implemented; check the source. Keep the
+target document's implementation status consistent with lifecycle changes.
+
 Keep code simple, reuse existing functions, and raise errors for unexpected data
 instead of silently inventing behavior.
 

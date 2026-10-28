@@ -90,5 +90,11 @@ If setup fails, read the browser's operation log. Startup logs are in
 to regenerate editable links and launchers. Recreate CMake build directories if
 the simulator or manager was moved.
 
+If an unresponsive MTS process holds the server lock, the macOS launcher offers
+**Quit and Relaunch**. This may interrupt an active GUI operation. Terminal
+launches report the process ID and termination command. Do not delete
+`.mts/server.lock`; quitting the process releases the lock automatically.
+Other launcher failures display the error and provide an **Open Log** button.
+
 Generated launchers, session files, environments and figures are excluded from
 Git. Keep simulation manifests and journals with your research data.

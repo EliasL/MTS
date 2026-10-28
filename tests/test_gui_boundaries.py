@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
 
 from MTS_GUI.install import synchronize_components
+from MTS_GUI.__main__ import check_server_lock
 from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
@@ -52,6 +53,11 @@ class Boundaries(unittest.TestCase):
                     with urlopen(base + "/health", timeout=1) as response:
                         return json.load(response)
                 wait_for(health)
+                with patch("MTS_GUI.__main__.STATE", root / ".mts"), \
+                        patch.dict("os.environ", {"MTS_DESKTOP": "0"}):
+                    with self.assertRaisesRegex(RuntimeError, f"kill -TERM {process.pid}"):
+                        check_server_lock()
+                self.assertIsNone(process.poll())
                 source = root / "MTS_GUI/server.py"
                 source.write_text(source.read_text().replace('"application": "MTS",',
                                   '"application": "MTS", "generation": "reloaded",', 1))
@@ -66,6 +72,8 @@ class Boundaries(unittest.TestCase):
                 process.wait(timeout=5)
                 self.assertEqual(process.returncode, 0)
                 self.assertFalse(record.exists())
+                with patch("MTS_GUI.__main__.STATE", root / ".mts"):
+                    check_server_lock()
             finally:
                 if process.poll() is None:
                     process.terminate()
