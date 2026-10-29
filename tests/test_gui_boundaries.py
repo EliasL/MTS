@@ -127,7 +127,15 @@ class Boundaries(unittest.TestCase):
             definition.write_text(json.dumps({"name": "Shared", "runs": [
                 {"label": "Expected", "settings": config.as_dict()} for config in configs]}))
             workspace = Workspace()
-            workspace.inventory_cache("first", rows=rows[:1])
+            with patch("MTS_Management.cluster.call", side_effect=[rows[:1], []]) as remote:
+                result = workspace.operation("inventory", {"campaign": "Shared"})
+            self.assertEqual(result["updated_sites"], ["first", "second"])
+            self.assertTrue(all(set(call.kwargs["config_hashes"]) == {c.config_hash for c in configs}
+                                for call in remote.call_args_list))
+            self.assertIsNone(workspace.inventory_cache("first")["updated_at"])
+            self.assertIsNotNone(workspace.inventory_overview(campaign="Shared")["updated_at"])
+            unrelated = rows[0] | {"config_hash": Config(seed=9).config_hash, "campaign": "Other"}
+            first = workspace.inventory_cache("first", rows=rows[:1] + [unrelated])
             original = workspace.inventory_cache("second", rows=rows[1:])
             overview = workspace.inventory_overview(campaign="Shared")
             self.assertEqual((overview["expected"], overview["found"], overview["missing"]), (3, 2, 1))
@@ -136,6 +144,8 @@ class Boundaries(unittest.TestCase):
                 result = workspace.operation("inventory", {"campaign": "Shared"})
             self.assertEqual(result["updated_sites"], ["first"])
             self.assertIn("second", result["errors"])
+            self.assertIn(unrelated, workspace.inventory_cache("first")["rows"])
+            self.assertEqual(workspace.inventory_cache("first")["updated_at"], first["updated_at"])
             self.assertEqual(workspace.inventory_cache("second"), original)
             with patch("MTS_GUI.server.threading.Thread") as worker:
                 workspace.start("Inventory", lambda: workspace.operation("inventory", {"campaign": "Shared"}),
@@ -144,6 +154,8 @@ class Boundaries(unittest.TestCase):
                 worker.call_args.kwargs["target"]()
             self.assertEqual(workspace.task["state"], "aborted")
             self.assertEqual(workspace.inventory_cache("second"), original)
+            workspace.inventory_cache("first", rows=[], config_hashes=[c.config_hash for c in configs])
+            self.assertEqual(Workspace().inventory_cache("first")["rows"], [unrelated])
 
     def test_monitoring_keeps_recorded_campaign_identity_when_runtime_schema_changes(self):
         from MTS_Management.campaign import campaign_entries
@@ -157,20 +169,24 @@ class Boundaries(unittest.TestCase):
             identity = digest({"format": "mtscripts-config-v1", "settings": settings})
             path.write_text(json.dumps({"name": "Recorded", "runs": [{"label": "Saved", "settings": settings}]}))
             self.assertEqual(Workspace().campaign_definitions(), {"Recorded": {identity: f"Saved[{identity[:20]}]"}})
+            self.assertEqual(Workspace().status()["campaigns"], ["Recorded"])
             with self.assertRaisesRegex(ValueError, "complete"):
                 campaign_entries(path)
 
     def test_clearing_terminal_does_not_release_a_running_operation(self):
         workspace = Workspace()
         with patch("MTS_GUI.server.threading.Thread") as worker, redirect_stdout(StringIO()):
+            workspace.history.append({"id": "previous", "state": "complete"})
             workspace.start("Inventory", lambda: {"site": "first"})
             workspace.clear_terminal()
+            self.assertEqual(workspace.history, [workspace.task])
             with self.assertRaises(ValueError):
                 workspace.start("Run", lambda: None)
             worker.call_args.kwargs["target"]()
-        self.assertEqual(workspace.history, [])
         self.assertEqual(workspace.task["state"], "complete")
         self.assertEqual(workspace.task["result"], {"site": "first"})
+        workspace.clear_terminal()
+        self.assertEqual(workspace.history, [])
 
     def test_local_operations_require_session_token_and_same_origin(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

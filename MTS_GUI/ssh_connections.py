@@ -9,13 +9,11 @@ import re
 import shlex
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 from MTS_Management.cluster import Site, load_sites, shell_path
+from MTS_Management.deployments import SSH, deployment_expectation, check_deployment
 from MTS_Management.files import locked, read_json, write_json
-
-
-SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-       "-o", "ControlPath=none", "-o", "ControlMaster=no"]
 
 
 def connections(site_file):
@@ -127,18 +125,24 @@ def accept_key(host, proposal):
     return {"host": host, "fingerprint": current["fingerprint"], "accepted": True}
 
 
-def check_connections(site_file, log, proposals):
-    proposals.clear()
-    rows = []
+def check_connections(site_file, log, proposals, *, host=None):
     profiles = load_sites(site_file, include_disabled=True)
-    for row in connections(site_file):
+    entries = connections(site_file)
+    if host is not None and host not in {r["host"] for r in entries}:
+        raise ValueError("Unknown SSH connection")
+    selected = [r for r in entries if r["host"] == host] if host is not None else entries
+    for row in selected:
+        proposals.pop(row["host"], None)
+    expected = deployment_expectation()
+    def check(row):
         host = row["host"]
-        if row["disabled"]:
-            rows.append(row | {"status": "Disabled", "detail": "Enable this connection to check access."})
-            continue
+        if row["disabled"] and host_filter is None:
+            return row | {"status": "Disabled", "detail": ""}
         log(f"Checking SSH access: {host}")
         try:
-            directories = sorted({profiles[name].directory for name in row["profiles"]})
+            active = [profiles[name] for name in row["profiles"]
+                      if host_filter is not None or not profiles[name].disabled]
+            directories = sorted({site.directory for site in active})
             command = "; ".join(f"test -d {shell_path(directory)} || printf '%s\\n' " +
                                 shlex.quote("Missing working directory: " + directory) for directory in directories) or "true"
             result = subprocess.run([*SSH, host, command], capture_output=True, text=True, timeout=15)
@@ -172,12 +176,23 @@ def check_connections(site_file, log, proposals):
                     suggestion = "Verify the server address, network access and SSH account settings."
             if status == "Connected" and not missing:
                 detail = ""
-            rows.append(row | address | {"profile_warning": bool(missing), "status": status, "detail": detail, "suggestion": suggestion,
-                               "repair": repair, "fingerprint": proposals.get(host, {}).get("fingerprint")})
+            checked = row | address | {"profile_warning": bool(missing), "status": status, "detail": detail, "suggestion": suggestion,
+                               "repair": repair, "fingerprint": proposals.get(host, {}).get("fingerprint")}
+            if status == "Connected" and active:
+                try:
+                    checked["deployment"] = check_deployment(active, expected)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
+                    checked["deployment"] = {"state": "unknown", "detail": detail}
+                log(f"{host}: deployment {checked['deployment']['state']}")
             log(f"{host}: {status}" + ("\n" + detail if detail else ""))
+            return checked
         except (OSError, subprocess.SubprocessError) as error:
-            rows.append(row | {"status": "Failed", "detail": str(error)})
             log(f"{host}: {error}")
+            return row | {"status": "Failed", "detail": str(error)}
+    host_filter = host
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(selected)))) as pool:
+        rows = list(pool.map(check, selected))
     return {"connections": rows, "errors": {r["host"]: r["detail"] for r in rows if r["status"] not in {"Connected", "Disabled"}}}
 
 
@@ -444,7 +459,7 @@ done
 if test -d "$HOME/simulation/MTS"; then printf 'MTS_INFO\tworkspace_exists\tyes\n'; fi
 if test -n "${MTS_INSPECT_PYTHON:-}"; then
     "$MTS_INSPECT_PYTHON" - <<'MTS_INSPECT_BUILDS'
-import json
+import json, shutil, subprocess
 from pathlib import Path
 root = Path.home() / "simulation/MTS/executables"
 manifests = sorted(root.glob("*/build-manifest.json"))
@@ -455,6 +470,14 @@ for manifest in manifests[:128]:
                    "sha256": record["executable_sha256"], "built_at": record.get("built_at", "")})
 print("MTS_INFO\tretained_builds\t" + json.dumps(builds))
 print("MTS_INFO\tretained_build_count\t" + str(len(manifests)))
+partitions = []
+if shutil.which("sinfo"):
+    try:
+        result = subprocess.run(["sinfo", "--noheader", "--format=%P"], capture_output=True, text=True, check=True, timeout=5)
+        partitions = sorted({name.rstrip("*") for name in result.stdout.split()})
+    except (OSError, subprocess.SubprocessError):
+        pass
+print("MTS_INFO\tpartitions\t" + json.dumps(partitions))
 MTS_INSPECT_BUILDS
 fi
 '''
@@ -469,7 +492,7 @@ fi
             _, key, value = line.split("\t", 2)
             if key == "source":
                 sources.append(value)
-            elif key == "retained_builds":
+            elif key in {"retained_builds", "partitions"}:
                 info[key] = json.loads(value)
             else:
                 info[key] = value
@@ -490,5 +513,7 @@ fi
         notes.append("Existing source locations are listed below. The default active source is ~/simulation/MTS/MTS2D.")
     if int(info.get("retained_build_count", "0")) > 128:
         notes.append("The retained-build list shows the first 128 entries.")
+    if info.get("slurm") == "yes" and not info.get("partitions"):
+        notes.append("Partitions could not be determined; enter the partition name in the profile.")
     return {"inspected_host": host, "information": info | {"sources": sources},
             "suggestions": suggestions, "notes": notes}

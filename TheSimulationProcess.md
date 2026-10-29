@@ -400,8 +400,16 @@ attempts continue to refer to their selected retained paths.
 
 The GUI's **Update MTS on servers** action transfers the manager package,
 campaign directories and MTS2D source to their configured locations on each
-cluster. It verifies transfers and reports errors per server. Installation
-records associate site profiles with their remote manager locations.
+cluster. It compares manager code, simulator source and campaign definitions
+before transfer and skips current profiles. Within an outdated installation,
+unchanged components are skipped independently. Matching source records avoid
+source archive creation, upload and installation. Enabled SSH destinations update
+concurrently using threads; profiles on the same destination update together
+and share source uploads for the same workspace. It verifies transfers and
+reports errors per server. Both individual and bulk updates refresh the GUI's
+connection and version status afterward. The manager CLI supports a forced
+update through `mts update-managers --force`; the GUI uses version checks.
+Installation records associate site profiles with their remote manager locations.
 
 Source installation verifies archive paths, file lists and source identity,
 copies the managed build inputs, removes obsolete listed inputs and verifies
@@ -651,6 +659,14 @@ The GUI reads local cached inventories, campaign definitions and downloaded
 copies. Refresh contacts remote managers to update the selected server records.
 An unavailable server leaves its previous snapshot available with its recorded
 update time. Campaign views show both discovered and missing members.
+
+Campaign refresh checks enabled site profiles using the campaign's saved
+configuration hashes. It works without an existing server snapshot and sends one
+batched selection per profile. The server reads matching indexed runs and reuses
+eligible finished records; unrelated jobs are not refreshed. An absent run index
+is constructed before the selection is read. Local results merge with unrelated
+cached rows. Campaign and full-server refresh times are recorded separately,
+and a failed server retains its previous records.
 
 Inventory uses the run index to find folders and validates original
 configuration/manifest identity. Campaign metadata supplies effective setting

@@ -23,7 +23,7 @@ from .install import ROOT, STATE, COMPONENTS, build_simulator, install_packages,
 
 
 def site_label(name):
-    return "MAGI" + name[4:] if name == "magi" or name.startswith("magi-") else name
+    return str(name).upper()
 
 
 class Workspace:
@@ -109,33 +109,52 @@ class Workspace:
         site_file = ROOT / "MTSManager/sites.toml"
         self.log(f"from MTS_Management.cluster import call, load_sites\n"
                  f"site = load_sites({str(site_file)!r})[{site_name!r}]")
-        self.log(f"call(site, {action!r}" + "".join(f", {k}={v!r}" for k, v in options.items()) + ")",
-                 command=True)
+        arguments = "".join(f", {k}=" + (f"<{len(v)} saved configuration hashes>" if k == "config_hashes" else repr(v))
+                            for k, v in options.items())
+        self.log(f"call(site, {action!r}{arguments})", command=True)
         site = site or load_sites(site_file)[site_name]
         self.log(f"Waiting for {site.ssh or 'local execution'}; directory={site.directory!r}, "
                  f"module={site.management_module!r}, output_root={site.output_root!r}")
         return call(site, action, log=self.log, cancel=self.cancel, **options)
 
-    def inventory_cache(self, site_name, *, rows=None, site=None):
-        """Read locally; replace a snapshot only after a successful inventory."""
+    def inventory_cache(self, site_name, *, rows=None, site=None, config_hashes=None):
+        """Merge scoped results atomically, retaining unrelated rows and refresh times."""
         from MTS_Management.cluster import load_sites
         site = site or load_sites(ROOT / "MTSManager/sites.toml")[site_name]
         identity_settings = asdict(site)
         identity_settings.pop("manager_directory", None)
         identity_settings.pop("disabled", None)
         identity = hashlib.sha256(json.dumps(identity_settings, sort_keys=True).encode()).hexdigest()
+        requested = set(config_hashes) if config_hashes is not None else None
+        scope = hashlib.sha256(json.dumps(sorted(requested)).encode()).hexdigest() if requested is not None else "*"
         STATE.mkdir(exist_ok=True)
         with closing(sqlite3.connect(STATE / "inventory.sqlite3")) as database, database:
             database.execute("CREATE TABLE IF NOT EXISTS inventory "
                              "(identity TEXT PRIMARY KEY, updated_at REAL NOT NULL, rows TEXT NOT NULL)")
+            database.execute("CREATE TABLE IF NOT EXISTS inventory_refresh "
+                             "(identity TEXT, scope TEXT, updated_at REAL, PRIMARY KEY(identity, scope))")
+            record = database.execute("SELECT updated_at, rows FROM inventory WHERE identity = ?", (identity,)).fetchone()
             if rows is not None:
                 if not isinstance(rows, list):
                     raise ValueError("Inventory response must be a list of simulations")
+                if requested is not None:
+                    if any(row["config_hash"] not in requested for row in rows):
+                        raise ValueError("Scoped inventory returned an unrelated configuration")
+                    database.execute("INSERT OR IGNORE INTO inventory_refresh VALUES (?, '*', ?)",
+                                     (identity, record[0] if record else None))
+                    previous = json.loads(record[1]) if record else []
+                    rows = [row for row in previous if row["config_hash"] not in requested] + rows
+                else:
+                    database.execute("DELETE FROM inventory_refresh WHERE identity = ?", (identity,))
+                updated_at = time.time()
                 database.execute("INSERT OR REPLACE INTO inventory VALUES (?, ?, ?)",
-                                 (identity, time.time(), json.dumps(rows)))
+                                 (identity, updated_at, json.dumps(rows)))
+                database.execute("INSERT OR REPLACE INTO inventory_refresh VALUES (?, ?, ?)",
+                                 (identity, scope, updated_at))
             record = database.execute("SELECT updated_at, rows FROM inventory WHERE identity = ?",
                                       (identity,)).fetchone()
-        return {"site": site_name, "updated_at": record[0] if record else None,
+            refreshed = dict(database.execute("SELECT scope, updated_at FROM inventory_refresh WHERE identity = ?", (identity,)))
+        return {"site": site_name, "updated_at": refreshed.get(scope, refreshed.get("*", record[0] if record else None)),
                 "rows": json.loads(record[1]) if record else []}
 
     def campaign_definitions(self):
@@ -199,11 +218,14 @@ class Workspace:
         matches = lambda row: row.get("campaign") == campaign or row["config_hash"] in expected
         campaigns = sorted(set(definitions) | {row["campaign"] for row in copies + [
             row for snapshot in snapshots.values() for row in snapshot["rows"]] if row.get("campaign")})
+        config_hashes = sorted(set(expected) | {row["config_hash"] for row in copies + [
+            row for snapshot in snapshots.values() for row in snapshot["rows"]] if row.get("campaign") == campaign}) if campaign is not None else None
+        if campaign is not None:
+            snapshots = {name: self.inventory_cache(name, site=profile, config_hashes=config_hashes)
+                         for name, profile in profiles.items()}
         selected = ({name: snapshot for name, snapshot in snapshots.items()
                      if profiles[name].ssh == profiles[site].ssh} if site is not None else
-                    {name: snapshot for name, snapshot in snapshots.items()
-                     if any(matches(row) for row in snapshot["rows"]) or
-                     any(matches(row) and row["origin_profile"] == name for row in copies)})
+                    snapshots)
         rows = [row | {"site": name} for name, snapshot in selected.items() for row in snapshot["rows"]
                 if campaign is None or matches(row)]
         for row in copies:
@@ -230,6 +252,7 @@ class Workspace:
         updated = [source["updated_at"] for source in sources if source["updated_at"] is not None]
         return {"site": site, "campaign": campaign, "rows": rows, "sources": sources,
                 "updated_at": min(updated) if updated else None, "campaigns": campaigns,
+                "config_hashes": config_hashes,
                 "expected": len(expected) if campaign in definitions else None,
                 "found": len(set(expected) & found), "missing": len(missing),
                 "uncached_sites": [site_label(name) for name, snapshot in snapshots.items()
@@ -237,7 +260,8 @@ class Workspace:
 
     def clear_terminal(self, entry_id=None):
         with self.lock:
-            self.history = [entry for entry in self.history if entry_id and entry["id"] != entry_id]
+            self.history = [entry for entry in self.history
+                            if (entry["id"] != entry_id if entry_id else entry["state"] == "running")]
 
     def status(self):
         modules = {"MTSManager": "MTS_Management", "MTSPlot": "MTS_Plotting", "Model math": "MTM_Math"}
@@ -271,6 +295,7 @@ class Workspace:
                 "packages": packages, "local_build": local_build,
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
+                "campaigns": sorted(self.campaign_definitions()) if packages["MTSManager"] else [],
                 "sites": sites, "servers": servers, "task": task, "history": history, "interface_version": 3,
                 "ssh_connections": self.connection_status(site_file) if packages["MTSManager"] and site_file.exists() else [],
                 "setup_command": f'bash "{ROOT}/setup.sh" --local-sim --install-build-tools'}
@@ -293,11 +318,24 @@ class Workspace:
                 except (OSError, subprocess.SubprocessError):
                     self.ssh_addresses[host] = host
             entry = checked.get(host, {}) | row | {"address": self.ssh_addresses[host]}
-            if row["disabled"]:
+            if row["disabled"] and host not in checked:
                 entry.update(status="Disabled", repair=False)
-            elif checked.get(host, {}).get("disabled"):
+            elif not row["disabled"] and checked.get(host, {}).get("status") == "Disabled":
                 entry.update(status="Unchecked", repair=False)
             result.append(entry)
+        return result
+
+    def check_connections(self, host=None):
+        from . import ssh_connections as ssh
+        result = ssh.check_connections(ROOT / "MTSManager/sites.toml", self.log, self.ssh_proposals, host=host)
+        checked = {row["host"] for row in result["connections"]}
+        self.ssh_results = [row for row in self.ssh_results if row["host"] not in checked] + result["connections"]
+        return result
+
+    def update_servers(self, host=None):
+        from MTS_Management.deployments import update_managers
+        result = update_managers(ROOT / "MTSManager/sites.toml", host=host, log=self.log)
+        self.check_connections(host)
         return result
 
     def operation(self, action, data):
@@ -308,9 +346,7 @@ class Workspace:
             site_file = ROOT / "MTSManager/sites.toml"
             host = data.get("host")
             if action == "ssh_check":
-                result = ssh.check_connections(site_file, self.log, self.ssh_proposals)
-                self.ssh_results = result["connections"]
-                return result
+                return self.check_connections(host)
             if action == "ssh_add":
                 return ssh.add_connection(site_file, data)
             rows = {row["host"]: row for row in ssh.connections(site_file)}
@@ -335,10 +371,12 @@ class Workspace:
             if action == "ssh_inspect":
                 return ssh.inspect_server(host, self.log, setup=data.get("setup", ""))
             if action == "ssh_deploy":
-                from MTS_Management.deployments import update_managers
-                result = update_managers(site_file, host=host, log=self.log)
-                self.ssh_results = [row for row in self.ssh_results if row["host"] != host]
-                return result
+                checked = next((row for row in self.ssh_results if row["host"] == host), {})
+                if checked.get("status") != "Connected":
+                    raise ValueError("Check this connection before deployment")
+                if checked.get("deployment", {}).get("state") not in {"missing", "mismatch"}:
+                    raise ValueError("Deployment is current or has not been verified")
+                return self.update_servers(host)
             if action == "ssh_scan":
                 proposal = ssh.scan_key(host)
                 self.ssh_proposals[host] = proposal
@@ -365,27 +403,32 @@ class Workspace:
         if action == "build":
             return build_simulator(self.log)
         if action == "update_managers":
-            from MTS_Management.deployments import update_managers
             self.log("MTS_Management.deployments.update_managers(sites.toml)", command=True)
-            return update_managers(ROOT / "MTSManager/sites.toml", log=self.log)
+            return self.update_servers()
         if action in {"inventory", "hard_refresh"}:
             from MTS_Management.cluster import load_sites
             profiles = load_sites(ROOT / "MTSManager/sites.toml")
             campaign = data.get("campaign")
             selection = {"campaign": campaign} if campaign is not None else {"site": data.get("site", "local")}
+            overview = self.inventory_overview(**selection) if data.get("site") != "*" else None
             names = (list(profiles) if data.get("site") == "*" else
-                     [s["site"] for s in self.inventory_overview(**selection)["sources"]])
+                     [s["site"] for s in overview["sources"]])
             if not names:
-                raise ValueError("No cached servers for this campaign. Refresh the relevant server inventories first.")
+                raise ValueError("No enabled site profiles are available for inventory refresh.")
+            config_hashes = overview["config_hashes"] if campaign is not None else None
+            if campaign is not None and not config_hashes:
+                raise ValueError("No configuration identities are recorded for this campaign. Register its simulations.json first.")
             errors, updated = {}, []
             for index, name in enumerate(names, 1):
                 self.check_cancelled()
                 self.log(f"Updating {site_label(name)} ({index}/{len(names)})")
                 try:
                     options = {"hard_refresh": True} if action == "hard_refresh" else {}
+                    if config_hashes is not None:
+                        options["config_hashes"] = config_hashes
                     rows = self.manager_call(name, "inventory", site=profiles[name], timeout=120, **options)
                     self.check_cancelled()
-                    self.inventory_cache(name, rows=rows, site=profiles[name])
+                    self.inventory_cache(name, rows=rows, site=profiles[name], config_hashes=config_hashes)
                     updated.append(name)
                     with self.lock:
                         self.task["inventory_revision"] = len(updated)

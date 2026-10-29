@@ -15,22 +15,22 @@ try {
 } catch {} // Terminal feedback remains available when browser storage is blocked.
 const names = {size: 'System size L', threads: 'Threads', preconditioner: 'Preconditioner', reconnection: 'Reconnection'};
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const siteLabel = name => String(name).replace(/^magi(?=-|$)/, 'MAGI');
+const siteLabel = name => String(name).toUpperCase();
 function inventorySelection() {
   const value = $('jobs-site').value, split = value.indexOf(':');
   return {[value.slice(0, split)]: value.slice(split + 1)};
 }
-function fillMonitorSources(campaigns = []) {
+function fillMonitorSources(campaigns = lastState?.campaigns || inventorySnapshot?.campaigns || []) {
   const select = $('jobs-site'), previous = select.value;
   const servers = document.createElement('optgroup'); servers.label = 'Servers';
-  for (const site of lastState.servers || lastState.sites) servers.append(new Option(site.label || siteLabel(site.name), 'site:' + site.name));
+  for (const site of lastState.servers || lastState.sites) servers.append(new Option(siteLabel(site.label || site.name), 'site:' + site.name));
   const group = document.createElement('optgroup'); group.label = 'Campaigns';
   for (const name of campaigns) group.append(new Option(name, 'campaign:' + name));
   select.replaceChildren(servers, group);
   if ([...select.options].some(option => option.value === previous)) select.value = previous;
   const hard = $('hard-refresh-site'), previousHard = hard.value;
   hard.replaceChildren(new Option('All servers', '*'), ...(lastState.servers || lastState.sites).map(
-    site => new Option(site.label || siteLabel(site.name), site.name)));
+    site => new Option(siteLabel(site.label || site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
 const actionButtons = ['install-packages','build-simulator','run-button','plot-button','refresh-jobs','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
@@ -60,19 +60,21 @@ async function api(path, data) {
   return result;
 }
 function view(name) {
+  if (!$(name)?.classList.contains('view')) name = 'overview';
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === name));
   document.querySelectorAll('.sidebar [data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === name));
-  terminalMessage('View', 'Opened ' + document.querySelector(`.sidebar [data-view="${name}"]`).textContent + '.');
+  try {sessionStorage.setItem('mts-panel', name);} catch {} // Navigation works when storage is blocked.
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => view(button.dataset.view)));
+try {view(sessionStorage.getItem('mts-panel') || 'overview');} catch {}
 async function operation(action, data = {}) {
   let command = `POST /api/${action}`;
   if (['inventory', 'hard_refresh'].includes(action)) {
-    const sites = data.campaign ? inventorySnapshot?.sources.map(source => source.site) || [] :
+    const sites = data.campaign ? lastState.sites.map(site => site.name) :
       data.site === '*' ? lastState.sites.map(site => site.name) :
         lastState.servers?.find(server => server.name === data.site)?.profiles || [data.site];
     command += `\nWorkspace.operation('${action}', ${JSON.stringify(data)})`;
-    command += '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=120${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
+    command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=120${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
   }
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) : action, command, 'running');
   pendingOperation = entry;
@@ -138,8 +140,8 @@ function updateActions() {
       const hint = document.createElement('span'); hint.className = 'action-hint';
       button.before(hint); hint.append(button);
     }
-    button.disabled = busy || button.dataset.disabledConnection === 'true';
-    button.parentElement.title = busy ? 'Already running: ' + (lastState.task.command || lastState.task.title) : '';
+    button.disabled = busy || button.dataset.disabledConnection === 'true' || button.dataset.unavailable === 'true';
+    button.parentElement.title = busy ? 'Already running: ' + (lastState.task.command || lastState.task.title) : button.dataset.disabledReason || '';
   }
   $('build-simulator').disabled ||= !ready;
   $('run-button').disabled ||= !ready || ($('run-site').value === 'local' && !lastState.local_build);
@@ -159,7 +161,7 @@ function renderTerminal(history = backendHistory) {
   for (const [index, entry] of history.entries()) {
     let node = [...container.children].find(node => node.dataset.id === entry.id);
     if (!node) {
-      for (const previous of container.children) previous.open = false;
+      for (const previous of container.children) if (previous.dataset.state !== 'running') previous.open = false;
       node = document.createElement('details'); node.dataset.id = entry.id;
       node.innerHTML = '<summary><span></span><button class="remove-message" aria-label="Delete terminal message" title="Delete terminal message">×</button></summary><pre></pre>';
       node.querySelector('button').onclick = async event => {
@@ -188,7 +190,7 @@ function renderTerminal(history = backendHistory) {
 function fillSites(sites) {
   document.querySelectorAll('.sites').forEach(select => {
     const previous = select.value;
-    select.replaceChildren(...sites.map(site => new Option((site.label || siteLabel(site.name)) + (site.remote ? ' · remote' : ' · this computer'), site.name)));
+    select.replaceChildren(...sites.map(site => new Option((siteLabel(site.label || site.name)) + (site.remote ? ' · remote' : ' · this computer'), site.name)));
     if (sites.some(site => site.name === previous)) select.value = previous;
   });
 }
@@ -220,7 +222,7 @@ async function refresh() {
     const state = await api('state');
     if (restarting) return;
     lastConnectionError = '';
-    const previousSites = lastState?.sites; lastState = state;
+    const previousSites = lastState?.sites, previousCampaigns = lastState?.campaigns; lastState = state;
     if (state.interface_version !== 3 && !mismatchReported) {
       message('The backend is an older version than this page. Use Quit MTS, then reopen MTS.app. Closing the browser tab does not stop the backend.');
       mismatchReported = true;
@@ -233,9 +235,9 @@ async function refresh() {
     const entries = [...Object.entries(state.packages), ['Local simulator', state.local_build]];
     const list = entries.map(([name, ok]) => `<div class="readiness-row"><span>${escape(name)}</span><span class="badge ${ok ? 'ready' : ''}">${ok ? 'Installed' : 'Not installed'}</span></div>`).join('');
     $('readiness-list').innerHTML = list; $('setup-readiness').innerHTML = list;
-    if (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites)) {
+    if (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites) || JSON.stringify(state.campaigns) !== JSON.stringify(previousCampaigns)) {
       fillSites(state.sites);
-      fillMonitorSources(inventorySnapshot?.campaigns);
+      fillMonitorSources(state.campaigns || inventorySnapshot?.campaigns);
       if (ready && state.sites.length && state.interface_version === 3) await loadInventory();
     }
     updateActions();
@@ -303,14 +305,17 @@ $('jobs-site').onchange = () => loadInventory();
 $('abort').onclick = async () => {
   try {await api('abort', {}); $('abort').disabled = true; await refresh();} catch (error) {message(error.message);}
 };
-$('clear-terminal').onclick = async () => {
+async function clearTerminal() {
   try {
-    for (const entry of backendHistory) hiddenBackendEntries.add(entry.id);
-    clientHistory = []; pendingOperation = null; renderTerminal([]);
+    for (const entry of backendHistory) if (entry.state !== 'running') hiddenBackendEntries.add(entry.id);
+    clientHistory = clientHistory.filter(entry => entry.state === 'running');
+    if (pendingOperation?.state !== 'running') pendingOperation = null;
+    renderTerminal(backendHistory.filter(entry => entry.state === 'running'));
     if (lastState?.interface_version === 3) await api('terminal', {});
     await refresh();
   } catch (error) {message(error.message);}
-};
+}
+$('clear-terminal').onclick = clearTerminal;
 $('run-site').onchange = () => {
   terminalMessage('Execution site', 'Selected ' + $('run-site').value + '.'); refresh();
 };
@@ -400,21 +405,31 @@ function renderConnections(rows) {
     const line = document.createElement('div'); line.className = 'ssh-row';
     const status = row.status || 'Unchecked';
     const indicator = status === 'Connected' && !row.profile_warning ? '<span class="ssh-dot" role="img" aria-label="Connected" title="Connected"></span>' : `<span class="ssh-state">${escape(row.profile_warning ? 'Profile setup' : status)}</span>`;
-    line.innerHTML = `${indicator}<strong>${escape(row.host)}</strong><span class="ssh-address" title="${escape(row.address)}">${escape(row.address || row.host)}</span><span class="ssh-profiles" title="Profiles">${escape(row.profiles.join(', ') || 'No profile')}</span>`;
+    line.innerHTML = `${indicator}<strong>${escape(siteLabel(row.host))}</strong>${row.disabled && status !== 'Disabled' ? '<span class="ssh-state">Disabled</span>' : ''}<span class="ssh-address" title="${escape(row.address)}">${escape(row.address || row.host)}</span><span class="ssh-profiles" title="Profiles">${escape(row.profiles.map(siteLabel).join(', ') || 'No profile')}</span>`;
     const actions = document.createElement('div'); actions.className = 'ssh-row-actions';
     const button = (label, run) => {const item = document.createElement('button'); item.className = 'small'; item.textContent = label; item.onclick = run; actions.append(item); return item;};
+    button('Check connection', () => operation('ssh_check', {host: row.host}));
     button('SSH', () => openSSHEditor(row.host, 'connection')).title = 'Edit SSH connection settings';
     button(row.profiles.length > 1 ? 'Edit profiles' : row.profiles.length ? 'Edit profile' : 'Add profile', () => openSSHEditor(row.host, 'profile'));
     if (row.profiles.length) {
-      const deploy = button('Deploy', () => operation('ssh_deploy', {host: row.host})); deploy.title = 'Install or update the manager and create the profile working directory'; deploy.dataset.disabledConnection = String(row.disabled);
+      const deployment = row.deployment?.state || 'unknown';
+      const deploy = button('Deploy', () => operation('ssh_deploy', {host: row.host}));
+      deploy.classList.add('deployment-' + deployment);
+      deploy.dataset.disabledConnection = String(row.disabled);
+      deploy.dataset.unavailable = String(status !== 'Connected' || !['missing','mismatch'].includes(deployment));
+      const reason = deployment === 'current' ? 'The deployed MTS version matches this installation.' :
+        deployment === 'mismatch' ? 'The deployed version differs. Update MTS on this server.' :
+        deployment === 'missing' ? 'MTS is not installed. Deploy it to this server.' :
+        'Check this connection and its deployed version first.';
+      deploy.title = reason; deploy.dataset.disabledReason = reason;
     }
     if (row.repair && !row.disabled) button(row.fingerprint ? 'Accept host key' : 'Retry host key',
       () => operation(row.fingerprint ? 'ssh_accept' : 'ssh_scan', {host: row.host, fingerprint: row.fingerprint}));
     button(row.disabled ? 'Enable' : 'Disable', () => operation('ssh_toggle', {host: row.host, disabled: !row.disabled}));
     line.append(actions); article.append(line);
-    if ((row.detail || row.suggestion) && !row.disabled) {
+    if ((row.detail || row.suggestion || row.deployment?.detail) && status !== 'Disabled') {
       const diagnostic = document.createElement('div'); diagnostic.className = 'ssh-diagnostic';
-      if (row.detail) {const pre = document.createElement('pre'); pre.textContent = row.detail; diagnostic.append(pre);}
+      if (row.detail || row.deployment?.detail) {const pre = document.createElement('pre'); pre.textContent = [row.detail, row.deployment?.detail].filter(Boolean).join('\n'); diagnostic.append(pre);}
       if (row.suggestion) {const p = document.createElement('p'); p.textContent = row.suggestion; diagnostic.append(p);}
       if (row.fingerprint) {const p = document.createElement('p'); p.textContent = 'ED25519: ' + row.fingerprint; diagnostic.append(p);}
       article.append(diagnostic);
@@ -423,7 +438,7 @@ function renderConnections(rows) {
   }
   if (!rows.length) $('ssh-list').textContent = 'No remote connections configured.';
   const select = $('ssh-key-host'), previous = select.value;
-  select.replaceChildren(...rows.filter(row => !row.disabled).map(row => new Option(row.host, row.host)));
+  select.replaceChildren(...rows.filter(row => !row.disabled).map(row => new Option(siteLabel(row.host), row.host)));
   if ([...select.options].some(option => option.value === previous)) select.value = previous;
 }
 $('ssh-check').onclick = () => operation('ssh_check');
@@ -454,6 +469,41 @@ function sshField(form, name, label, value, type = 'text') {
   input.name = name; input.value = value ?? ''; if (type !== 'textarea') input.type = type;
   caption.append(input); field.append(caption); form.append(field); return input;
 }
+function trackProfileEdits(form, actions, existing, save, onRestore = () => {}) {
+  const snapshot = () => JSON.stringify(Object.fromEntries(new FormData(form)));
+  const saved = snapshot(), entries = [saved]; let position = 0;
+  const undo = document.createElement('button'), redo = document.createElement('button');
+  const revert = document.createElement('button');
+  for (const [button, label] of [[undo,'Undo'], [redo,'Redo'], [revert, existing ? 'Revert profile' : 'Reset profile']]) {
+    button.type = 'button'; button.textContent = label; actions.append(button);
+  }
+  actions.append(save);
+  function update() {
+    undo.hidden = redo.hidden = entries.length < 2;
+    undo.dataset.unavailable = String(position === 0);
+    redo.dataset.unavailable = String(position === entries.length - 1);
+    revert.dataset.unavailable = String(snapshot() === saved);
+    updateActions();
+  }
+  function restore(value) {
+    for (const [key, text] of Object.entries(JSON.parse(value))) form.elements.namedItem(key).value = text;
+    onRestore();
+    update();
+  }
+  function record() {
+    onRestore();
+    const value = snapshot();
+    if (entries[position] !== value) {
+      entries.splice(position + 1); entries.push(value); position++;
+    }
+    update();
+  }
+  undo.onclick = () => {if (position > 0) restore(entries[--position]);};
+  redo.onclick = () => {if (position < entries.length - 1) restore(entries[++position]);};
+  revert.onclick = () => {restore(saved); record();};
+  form.addEventListener('input', record); form.addEventListener('change', record);
+  form.profileHistory = {record}; update();
+}
 function closeSSHEditor() {sshEditor = null; $('ssh-editor').replaceChildren(); $('ssh-editor').classList.add('hidden');}
 async function openSSHEditor(host, type, selected) {
   try {
@@ -461,7 +511,7 @@ async function openSSHEditor(host, type, selected) {
     sshEditor = {host, type, data};
     const panel = $('ssh-editor'); panel.classList.remove('hidden'); panel.replaceChildren();
     const top = document.createElement('div'); top.className = 'section-row';
-    const heading = document.createElement('h2'); heading.textContent = (type === 'profile' ? 'Simulation profiles: ' : 'SSH settings: ') + host;
+    const heading = document.createElement('h2'); heading.textContent = (type === 'profile' ? 'Simulation profiles: ' : 'SSH settings: ') + siteLabel(host);
     const close = document.createElement('button'); close.className = 'small'; close.textContent = 'Close'; close.onclick = closeSSHEditor;
     top.append(heading, close); panel.append(top);
     if (type === 'profile') buildProfileEditor(panel, data, selected);
@@ -471,14 +521,15 @@ async function openSSHEditor(host, type, selected) {
 }
 const profileFields = {directory: 'Working directory', source: 'Simulator source directory', executable: 'Executable',
   output_root: 'Output directory', python: 'Python interpreter', setup: 'Environment setup (shell commands)'};
+const slurmFields = {time: 'Wall time (D-HH:MM:SS)', partition: 'Partition'};
 function buildProfileEditor(panel, data, selected) {
   const toolbar = document.createElement('div'); toolbar.className = 'inline-fields';
-  const siteLabel = document.createElement('label'); siteLabel.textContent = 'Site ';
+  const siteCaption = document.createElement('label'); siteCaption.textContent = 'Site ';
   const sites = document.createElement('select'); sites.setAttribute('aria-label', 'SSH site');
-  sites.replaceChildren(...(lastState.ssh_connections || []).map(row => new Option(row.host, row.host)));
-  sites.value = data.host; sites.onchange = () => openSSHEditor(sites.value, 'profile'); siteLabel.append(sites); toolbar.append(siteLabel);
+  sites.replaceChildren(...(lastState.ssh_connections || []).map(row => new Option(siteLabel(row.host), row.host)));
+  sites.value = data.host; sites.onchange = () => openSSHEditor(sites.value, 'profile'); siteCaption.append(sites); toolbar.append(siteCaption);
   const selector = document.createElement('select'); selector.setAttribute('aria-label', 'Existing simulation profile');
-  selector.replaceChildren(...data.profiles.map(profile => new Option(profile.name, profile.name)));
+  selector.replaceChildren(...data.profiles.map(profile => new Option(siteLabel(profile.name), profile.name)));
   let editingName = selected ?? data.profiles[0]?.name ?? null;
   selector.value = editingName || ''; selector.hidden = data.profiles.length < 2;
   toolbar.append(selector);
@@ -489,7 +540,7 @@ function buildProfileEditor(panel, data, selected) {
     form.replaceChildren();
     const profile = data.profiles.find(item => item.name === editingName) || data.default_profile;
     form.dataset.original = editingName || '';
-    const title = document.createElement('h3'); title.textContent = editingName ? profile.name : 'New profile'; form.append(title);
+    const title = document.createElement('h3'); title.textContent = editingName ? siteLabel(profile.name) : 'New profile'; form.append(title);
     const grid = document.createElement('div'); grid.className = 'fields'; form.append(grid);
     const name = sshField(grid, 'name', 'Profile name', profile.name); name.required = true; name.readOnly = Boolean(editingName);
     for (const [key, label] of Object.entries(profileFields)) sshField(grid, key, label, profile.settings[key], key === 'setup' ? 'textarea' : 'text');
@@ -498,13 +549,21 @@ function buildProfileEditor(panel, data, selected) {
     const mode = document.createElement('select'); mode.name = 'mode';
     mode.replaceChildren(...['detached', 'slurm', 'foreground'].map(value => new Option(value, value))); mode.value = profile.settings.mode;
     modeLabel.append(mode); modeField.append(modeLabel); grid.append(modeField);
+    const scheduler = document.createElement('div'); scheduler.className = 'fields'; grid.after(scheduler);
+    for (const [key, label] of Object.entries(slurmFields)) sshField(scheduler, 'slurm_' + key, label, profile.settings.slurm?.[key]);
+    const partitions = document.createElement('datalist'); partitions.id = 'ssh-partitions'; scheduler.append(partitions);
+    form.elements.namedItem('slurm_partition').setAttribute('list', partitions.id);
+    const showScheduler = () => scheduler.hidden = mode.value !== 'slurm';
+    mode.onchange = showScheduler; showScheduler();
     const advanced = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = 'Other profile settings (JSON)'; advanced.append(summary);
     const extra = Object.fromEntries(Object.entries(profile.settings).filter(([key]) => !(key in profileFields) && key !== 'mode'));
+    if (extra.slurm) extra.slurm = Object.fromEntries(Object.entries(extra.slurm).filter(([key]) => !(key in slurmFields)));
     sshField(advanced, 'advanced', 'Manager, scheduler, environment and resource settings', JSON.stringify(extra, null, 2), 'textarea'); form.append(advanced);
     const note = document.createElement('p'); note.className = 'muted'; note.textContent = 'Paths define simulation storage and builds. Manager deployment creates the working directory and installs the shared manager. Simulator sources and builds are configured separately.'; form.append(note);
     const actions = document.createElement('div'); actions.className = 'inline-fields';
     const inspect = document.createElement('button'); inspect.type = 'button'; inspect.textContent = 'Inspect server'; inspect.onclick = () => operation('ssh_inspect', {host: data.host, setup: form.elements.namedItem('setup').value});
     const save = document.createElement('button'); save.textContent = 'Save profile'; save.type = 'submit'; actions.append(inspect, save); form.append(actions);
+    trackProfileEdits(form, actions, Boolean(editingName), save, showScheduler);
     const inspection = document.createElement('div'); inspection.id = 'ssh-inspection'; form.append(inspection);
     updateActions();
   };
@@ -516,6 +575,12 @@ function buildProfileEditor(panel, data, selected) {
       const values = Object.fromEntries(new FormData(form)), settings = JSON.parse(values.advanced);
       if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Other settings must be a JSON object.');
       for (const key of Object.keys(profileFields)) settings[key] = values[key]; settings.mode = values.mode;
+      settings.slurm ||= {};
+      if (Array.isArray(settings.slurm) || typeof settings.slurm !== 'object') throw new Error('Slurm settings must be a JSON object.');
+      for (const key of Object.keys(slurmFields)) {
+        const value = values['slurm_' + key].trim();
+        if (value) settings.slurm[key] = value; else delete settings.slurm[key];
+      }
       operation('ssh_profile', {host: data.host, name: values.name, original_name: form.dataset.original || null, settings});
     } catch (error) {message(error.message);}
   };
@@ -541,6 +606,7 @@ function showSSHInspection(result) {
   if (!sshEditor || sshEditor.host !== result.inspected_host || sshEditor.type !== 'profile') return;
   const panel = $('ssh-inspection'); if (!panel) return;
   panel.replaceChildren();
+  $('ssh-partitions').replaceChildren(...(result.information.partitions || []).map(name => new Option(name, name)));
   const executable = $('ssh-profile-editor').elements.namedItem('executable');
   let builds = $('ssh-retained-builds');
   if (builds) builds.remove();
@@ -555,12 +621,14 @@ function showSSHInspection(result) {
   const apply = document.createElement('button'); apply.type = 'button'; apply.textContent = 'Use suggested profile settings';
   apply.onclick = () => {
     const form = $('ssh-profile-editor'), extra = JSON.parse(form.elements.advanced.value);
+    form.profileHistory.record();
     for (const [key, value] of Object.entries(result.suggestions)) {
       const input = form.elements.namedItem(key);
       if (form.dataset.original && ['directory', 'source', 'output_root', 'state_dir', 'executable', 'manager_directory'].includes(key) && (input ? input.value : extra[key])) continue;
       if (input) input.value = value; else extra[key] = value;
     }
     form.elements.advanced.value = JSON.stringify(extra, null, 2);
+    form.profileHistory.record();
   };
   panel.append(apply); updateActions();
 }

@@ -15,11 +15,13 @@ address, allowing tabs to be closed and reopened while the backend is running.
 Quit MTS clears the saved token; a new launch after quitting requires a new launcher link.
 Blocked browser storage does not prevent access through the launcher link.
 
-Hover over Quit MTS, or focus it with the keyboard, to reveal Restart MTS.
+Restart MTS and Quit MTS are separate buttons in the top bar.
 Restart reloads the Python backend and then the browser page at the same local
 address. Quit and Restart are disabled while a GUI operation is running.
 Simulation workers continue independently; inventory snapshots remain on disk.
 Backend operation history is cleared when the backend restarts.
+The browser restores its selected panel after restart or reload. Changing panels
+does not add terminal messages.
 
 `install.py` handles component retrieval, package setup and launcher generation.
 `server.py` exposes the supported operations; `__main__.py` manages the on-demand
@@ -42,14 +44,28 @@ SSH connections lists remote destinations and their site profiles. Registered
 SSH accounts without a simulation profile support connection checks and key
 installation; simulation operations require a site profile. Each row provides
 SSH settings, Add profile or Edit profiles, manager deployment and connection
-enabling. A green dot denotes successful SSH access without profile warnings.
-Diagnostics appear beneath the row.
+enabling. Site names are displayed in uppercase; stored SSH aliases and profile
+identifiers retain their original spelling. A green dot denotes successful SSH
+access without profile warnings. Diagnostics appear beneath the row.
 
-The profile editor exposes paths, Python, execution mode and environment setup;
-other manager, scheduler and resource settings are editable as JSON. Inspect
+Check connections checks enabled destinations concurrently using threads. Each
+row also has Check connection, which can check a disabled destination. Checks
+compare the deployed manager, simulator source record and campaign definitions
+with this installation. Deploy is grey and disabled until verified, pale green
+and disabled when current, red when an update is needed, and white when absent.
+Deployment updates source and manager files; compilation remains separate and
+retained executable selection is preserved.
+
+The profile editor exposes paths, Python, execution mode and environment setup.
+Slurm mode also exposes wall time and partition. Inspect server supplies partition
+suggestions when available; the partition field also accepts a typed name. Other
+manager, scheduler and resource settings are editable as JSON. Inspect
 server reads the login environment, CPU count, Python versions, Slurm availability
 and current source candidates under `~/simulation/MTS/MTS2D` and older named snapshots. Use suggested profile
-settings fills the editor; Save profile writes the reviewed settings. Inspection
+settings fills the editor; Undo and Redo navigate successive edits, including
+suggestions. Revert profile restores the last saved values; Save profile writes
+the reviewed settings. Suggestions preserve populated storage and executable
+paths in existing profiles. Inspection
 does not create directories or require a remote manager. Existing profiles can
 be selected individually. The site selector changes the SSH destination; New
 profile starts a profile with default settings. The state directory is included
@@ -105,7 +121,13 @@ Setup and tools contains a collapsed Advanced section. Hard reset inventory
 rebuilds the selected server inventories, including finished runs, without
 deleting simulation files. Update MTS on servers transfers the manager,
 campaign directories and verified simulator source. Failures are reported per
-server profile. Compilation is a separate operation.
+server profile. Enabled SSH destinations update concurrently using threads.
+Profiles sharing a destination update together and reuse source uploads for the
+same workspace. A version check skips current profiles before transferring files.
+Unchanged simulator source is skipped independently of manager and campaign
+changes, avoiding source archive creation, transfer and installation.
+Both individual Deploy and bulk updates refresh the connection/version display
+after completion. Compilation is a separate operation.
 
 The shared manager installation is selected by `manager_directory` (default
 `~/.local/share/mts/manager/`). Active locations are recorded in
@@ -115,7 +137,8 @@ The October 2026 benchmark's worker commands retain their required historical
 installation. Updates preserve GUI snapshots, scientific output and retained
 binary archives.
 
-Campaign definitions are read from `MTSManager/campaigns/**/simulations.json`.
+Campaign definitions are read from `MTSManager/campaigns/**/simulations.json`
+and listed in Monitor data even when an inventory cannot be loaded.
 Expected configurations are matched by their full configuration hash against
 all cached servers and managed local downloads in
 `MTSManager/.state/retrieved/*/*`. Absent configurations are marked Missing,
@@ -124,10 +147,12 @@ not establish absence on the server. Executable and manifest identities remain
 separate; a configuration match alone does not establish executable equivalence.
 Local copies are labelled and never expose controls for the original remote job.
 
-Campaign Refresh updates known source profiles sequentially, preserving each
-successful result even if another source fails. A server inventory is needed to
-discover campaign members on additional servers. Selecting a source never starts
-SSH or downloads simulation output.
+Campaign Refresh checks enabled site profiles sequentially for matching
+configuration hashes, including profiles without a cached inventory. Each profile
+receives one batched request; unrelated runs are not refreshed. Results merge
+with the local cache, retaining unrelated rows and each failed server's previous
+snapshot. Campaign refresh times are recorded separately from full-server
+refresh times. Selecting a source never starts SSH or downloads simulation output.
 
 Abort interrupts inventory and log reads, preserving unfinished cached snapshots
 and skipping remaining profiles. It does not stop simulation jobs. The local SSH
@@ -138,8 +163,10 @@ operations cannot be interrupted through Abort.
 The Terminal panel reports operation arguments, manager calls or subprocess
 commands, elapsed time and failure diagnostics. Manager JSON responses are used
 internally; inventory reports a simulation count. Each operation has an expandable entry;
-starting another operation collapses older entries. Entries remain available
-until deleted, cleared or the backend is stopped. The terminal follows new output automatically. Copy all copies every retained
+completed entries collapse when a later message is added. Switching panels
+preserves the running operation's expanded view. Clear terminal removes completed
+entries and preserves running entries and their live output. Entries remain
+available until deleted, cleared or the backend is stopped. The terminal follows new output automatically. Copy all copies every retained
 entry, including collapsed entries. Subprocess output appears as it arrives. The same timestamped messages are written to backend stdout,
 which the desktop launcher redirects to `.mts/server.log`. To follow this output
 in a terminal, run `tail -f .mts/server.log` from the MTS root.

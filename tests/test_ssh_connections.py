@@ -1,7 +1,10 @@
 """Regression checks for SSH trust, credentials and disabled destinations."""
 
 import base64
+import json
 import os
+import shlex
+import threading
 import tomllib
 from contextlib import redirect_stdout
 from io import StringIO
@@ -12,12 +15,81 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from MTS_Management.cluster import call, load_sites
+from MTS_Management.cluster import Site, call, load_sites
+from MTS_Management.files import digest, file_digest
 from MTS_GUI import ssh_connections as ssh
 from MTS_GUI.server import Workspace
 
 
 class SSHConnections(unittest.TestCase):
+    def test_checks_overlap_skip_disabled_and_preserve_other_host_results(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            sites = Path(temporary) / "sites.toml"
+            sites.write_text('[sites.first]\nssh="first"\n[sites.second]\nssh="second"\n'
+                             '[sites.disabled]\nssh="disabled"\ndisabled=true\n')
+            barrier = threading.Barrier(2, timeout=3)
+            contacted = []
+            def connect(command, **kwargs):
+                contacted.append(command[-2])
+                barrier.wait()  # A serial implementation cannot complete either check.
+                return subprocess.CompletedProcess(command, 0, "", "")
+            with patch.object(ssh, "deployment_expectation", return_value={}), \
+                    patch.object(ssh, "check_deployment", return_value={"state": "current"}), \
+                    patch.object(ssh.subprocess, "run", side_effect=connect):
+                result = ssh.check_connections(sites, lambda _: None, {})
+            self.assertEqual(set(contacted), {"first", "second"})
+            self.assertEqual([r["status"] for r in result["connections"]], ["Connected", "Connected", "Disabled"])
+            workspace = Workspace()
+            workspace.ssh_results = result["connections"]
+            workspace.ssh_proposals = {"first": {"fingerprint": "pending"}}
+            with redirect_stdout(StringIO()), patch("MTS_GUI.server.ROOT", Path(temporary)), \
+                    patch.object(ssh, "deployment_expectation", return_value={}), \
+                    patch.object(ssh, "check_deployment", return_value={"state": "missing"}), \
+                    patch.object(ssh.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+                # Workspace uses MTSManager/sites.toml; provide the same test profiles there.
+                manager = Path(temporary) / "MTSManager"
+                manager.mkdir()
+                (manager / "sites.toml").write_text(sites.read_text())
+                workspace.operation("ssh_check", {"host": "disabled"})
+            self.assertEqual(run.call_args.args[0][-2], "disabled")
+            self.assertEqual(len(workspace.ssh_results), 3)
+            self.assertEqual(workspace.ssh_results[-1]["status"], "Connected")
+            self.assertIn("first", workspace.ssh_proposals)
+
+    def test_deployment_probe_reads_versions_without_importing_remote_manager(self):
+        with tempfile.TemporaryDirectory(prefix="mts probe ") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "SOURCE.json").write_text(json.dumps({"source_sha256": "source-one"}))
+            campaign = root / "campaigns/example/metadata.json"
+            campaign.parent.mkdir(parents=True)
+            metadata = {"missing_settings": {"tangentBackend": "eigen"}}
+            campaign.write_text(json.dumps(metadata | {"executables": {"server": "/retained/MTS2D"}}))
+            package = root / "MTS_Management"
+            expected = {"scripts": None, "source": "source-one",
+                        "campaigns": {"example/metadata.json": digest(metadata)}}
+            site = Site(name="test", ssh="cluster", directory=str(root), source="source", python=sys.executable)
+            local_run = subprocess.run
+            def transport(command, **kwargs):
+                return local_run(shlex.split(command[-1]), **kwargs)
+            def state():
+                return ssh.check_deployment([site], expected)["state"]
+            with patch.object(ssh.subprocess, "run", side_effect=transport):
+                self.assertEqual(state(), "missing")
+                package.mkdir()
+                code = package / "__init__.py"
+                code.write_text('raise RuntimeError("must not be imported")\n')
+                expected["scripts"] = digest({code.name: file_digest(code)})
+                self.assertEqual(state(), "current")
+                for path, replacement in [(code, "# different manager\n"),
+                                          (source / "SOURCE.json", '{"source_sha256":"source-two"}'),
+                                          (campaign, '{"missing_settings":{"tangentBackend":"cholmod"}}')]:
+                    original = path.read_text()
+                    path.write_text(replacement)
+                    self.assertEqual(state(), "mismatch", str(path))
+                    path.write_text(original)
+
     def test_disabling_destination_excludes_all_profiles_and_preserves_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             site_file = Path(temporary) / "sites.toml"
@@ -100,6 +172,7 @@ class SSHConnections(unittest.TestCase):
             failure = subprocess.CompletedProcess([], 255, "", "REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.")
             proposals = {}
             with patch.object(ssh.subprocess, "run", return_value=failure), \
+                    patch.object(ssh, "deployment_expectation", return_value={}), \
                     patch.object(ssh, "scan_key", return_value={"fingerprint": "SHA256:review"}), \
                     patch.object(ssh, "accept_key") as accept:
                 result = ssh.check_connections(site_file, lambda _: None, proposals)
@@ -132,6 +205,7 @@ class SSHConnections(unittest.TestCase):
             sites.write_text('[sites.cluster]\nssh="cluster"\n')
             failure = subprocess.CompletedProcess([], 255, "", "Host key verification failed.")
             with patch.object(ssh.subprocess, "run", return_value=failure), \
+                    patch.object(ssh, "deployment_expectation", return_value={}), \
                     patch.object(ssh, "scan_key", side_effect=ValueError("Temporary connection failure")):
                 row = ssh.check_connections(sites, lambda _: None, {})["connections"][0]
             self.assertTrue(row["repair"])
@@ -202,9 +276,11 @@ class SSHConnections(unittest.TestCase):
             home = Path(temporary)
             binary = home / "bin"
             binary.mkdir()
-            for name in ("python3", "sbatch"):
+            commands = {"python3": f'exec {shlex.quote(sys.executable)} "$@"', "sbatch": "exit 0",
+                        "sinfo": "printf 'COMPUTE*\\nGPU\\nCOMPUTE*\\n'"}
+            for name, body in commands.items():
                 command = binary / name
-                command.write_text("#!/bin/sh\nprintf '3.12.1\\n'\n")
+                command.write_text("#!/bin/sh\n" + body + "\n")
                 command.chmod(0o700)
             source = home / "simulation/MTS2D-current"
             source.mkdir(parents=True)
@@ -219,6 +295,7 @@ class SSHConnections(unittest.TestCase):
             self.assertEqual(result["suggestions"]["mode"], "slurm")
             self.assertEqual(result["suggestions"]["source"], "MTS2D")
             self.assertEqual(result["suggestions"]["python"], str(binary / "python3"))
+            self.assertEqual(result["information"]["partitions"], ["COMPUTE", "GPU"])
             self.assertEqual(set(home.rglob("*")), before)
 
     def test_deployment_bootstraps_missing_profile_workspace(self):
@@ -241,7 +318,7 @@ class SSHConnections(unittest.TestCase):
                     patch("MTS_Management.deployments.deploy"), patch("MTS_Management.deployments.call", side_effect=verify):
                 # Keep the shared installation fixture inside the temporary HOME.
                 with patch.dict(os.environ, {"HOME": str(root)}):
-                    result = update_managers(sites, host="fixture", log=lambda _: None)
+                    result = update_managers(sites, host="fixture", log=lambda _: None, force=True)
             self.assertEqual(result["updated_sites"], ["fixture"])
 
     def test_install_password_is_excluded_from_terminal_and_task_result(self):
