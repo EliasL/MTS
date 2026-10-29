@@ -25,6 +25,11 @@ question, conversational corrections, slogans and speculative future work.
 Every statement must be useful to a reader encountering the project independently.
 
 Only add high-value tests that can catch a plausible, consequential future error.
+Use tests carefully and with intention: identify the failure a test should catch,
+use an expected result independent of the implementation where practical, and
+choose the smallest fixture that exposes the failure. Test and assertion counts
+are not measures of quality. Prefer checking observable results over mocked call
+counts, generated text or assertions that merely repeat the implementation.
 Do not add tests merely for coverage, trivial helpers, cosmetic output, routine
 argument forwarding, or assertions that restate the implementation. Small changes
 often need no new test. Prefer focused regressions for bugs actually encountered.

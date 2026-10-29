@@ -141,7 +141,7 @@ class Workspace:
     def campaign_definitions(self):
         from MTS_Management.campaign import campaign_identity
         definitions = {}
-        for path in sorted((ROOT / "MTSManager/campaigns").rglob("campaign.json")):
+        for path in sorted((ROOT / "MTSManager/campaigns").rglob("simulations.json")):
             stamp = path.stat().st_mtime_ns
             if path not in self.campaign_files or self.campaign_files[path][0] != stamp:
                 name, expected = campaign_identity(path)
@@ -156,12 +156,12 @@ class Workspace:
         """Inspect managed download collections, without traversing simulation output trees."""
         from MTS_Management.config import Config
         from MTS_Management.files import file_digest, read_json
-        from MTS_Management.inventory import progress
+        from MTS_Management.inventory import progress, config_metadata_stamp
         rows = []
         for manifest in (ROOT / "MTSManager/.state/retrieved").glob("*/*/manifest.json"):
             folder = manifest.parent
             paths = [manifest, folder / "config.conf", folder / "macroData.csv", folder / "termination.json"]
-            stamp = tuple(p.stat().st_mtime_ns if p.exists() else None for p in paths)
+            stamp = tuple(p.stat().st_mtime_ns if p.exists() else None for p in paths) + (tuple(tuple(v) for v in config_metadata_stamp()),)
             if manifest not in self.local_files or self.local_files[manifest][0] != stamp:
                 record = read_json(manifest)
                 config = Config.read(folder / "config.conf", expected_name=folder.name)
@@ -177,7 +177,7 @@ class Workspace:
                        "termination": termination, "progress": progress(folder, config),
                        "site": None, "origin_site": origin, "local_copy": True,
                        "origin_state_dir": request_data.get("state_dir", ""),
-                       "local_updated_at": max(v for v in stamp if v is not None) / 1e9}
+                       "local_updated_at": max(v for v in stamp[:-1] if v is not None) / 1e9}
                 self.local_files[manifest] = (stamp, row)
             rows.append(dict(self.local_files[manifest][1]))
         return rows

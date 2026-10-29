@@ -30,13 +30,13 @@ remain independent of the GUI process.
 Start simulations configures and launches runs. Monitor data displays records
 for a server or a campaign. Plot exports timing figures.
 
-Both simulation panels include expandable help on configuration hashes, retained
-executables, campaign build selection, checkpoint checks, attempt history and
-inventory caching. Binaries are retained per submission; a campaign does not
-automatically pin a build for future submissions. Select a retained executable
-in the site's profile to use the same build throughout a campaign. Manager
-updates can affect queued workers; the manager is recorded but is not retained
-with each binary.
+Both simulation panels include help on configuration hashes, prepared folders,
+retained binaries, saved commands, simulator-owned resume and job chains. The
+local GUI communicates with the manager installed on each cluster. Folder-based
+jobs run their saved binary command independently of the manager's Python code.
+The October 2026 benchmark retains its historical worker invocation. Campaign
+metadata records missing settings and retained binary paths without changing
+original run hashes.
 
 SSH connections lists remote destinations and their site profiles. Registered
 SSH accounts without a simulation profile support connection checks and key
@@ -103,21 +103,19 @@ database. Refresh rereads unfinished runs and reuses completed records;
 MTSManager invalidates a completed record when preparing another attempt.
 Setup and tools contains a collapsed Advanced section. Hard reset inventory
 rebuilds the selected server inventories, including finished runs, without
-deleting simulation files. Update all server managers deploys the installed
-local manager version once per SSH destination and verifies each profile before
-activating it. Failures are reported per server profile in the terminal.
+deleting simulation files. Update MTS on servers transfers the manager,
+campaign directories and verified simulator source. Failures are reported per
+server profile. Compilation is a separate operation.
 
-Manager updates replace the shared installation selected by `manager_directory`
-(default `~/.local/share/mts/manager/`);
-they do not create a package copy per update. Submission and execution manager
-identities are recorded for provenance without requiring an exact version match.
-Executable, configuration and checkpoint checks remain enforced. Saved job
-requests must remain compatible with manager updates. Other manager directories
-referenced by existing submission scripts are left untouched. Active locations
-are recorded in `MTSManager/.state/manager-deployments.json`; CLI calls using the
-same site file also use these locations. Updates preserve GUI snapshots.
+The shared manager installation is selected by `manager_directory` (default
+`~/.local/share/mts/manager/`). Active locations are recorded in
+`MTSManager/.state/manager-deployments.json` and also used by CLI calls. Direct
+jobs execute their saved binary commands independently of that installation.
+The October 2026 benchmark's worker commands retain their required historical
+installation. Updates preserve GUI snapshots, scientific output and retained
+binary archives.
 
-Campaign definitions are read from `MTSManager/campaigns/**/campaign.json`.
+Campaign definitions are read from `MTSManager/campaigns/**/simulations.json`.
 Expected configurations are matched by their full configuration hash against
 all cached servers and managed local downloads in
 `MTSManager/.state/retrieved/*/*`. Absent configurations are marked Missing,

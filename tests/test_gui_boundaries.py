@@ -122,7 +122,7 @@ class Boundaries(unittest.TestCase):
                 patch("MTS_GUI.server.ROOT", Path(temporary)), \
                 patch("MTS_GUI.server.STATE", Path(temporary) / ".mts"), \
                 patch("MTS_Management.cluster.load_sites", return_value=sites):
-            definition = Path(temporary) / "MTSManager/campaigns/shared/campaign.json"
+            definition = Path(temporary) / "MTSManager/campaigns/shared/simulations.json"
             definition.parent.mkdir(parents=True)
             definition.write_text(json.dumps({"name": "Shared", "runs": [
                 {"label": "Expected", "settings": config.as_dict()} for config in configs]}))
@@ -150,7 +150,7 @@ class Boundaries(unittest.TestCase):
         from MTS_Management.config import Config
         from MTS_Management.files import digest
         with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.ROOT", Path(temporary)):
-            path = Path(temporary) / "MTSManager/campaigns/recorded/campaign.json"
+            path = Path(temporary) / "MTSManager/campaigns/recorded/simulations.json"
             path.parent.mkdir(parents=True)
             settings = Config().as_dict()
             settings.pop("tangentBackend")
