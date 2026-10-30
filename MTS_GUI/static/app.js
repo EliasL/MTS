@@ -9,11 +9,15 @@ let lastState, lastResult, firstState = true, poller, inventorySnapshot, invento
 let backendHistory = [], clientHistory = [], lastConnectionError = '';
 let pendingOperation, mismatchReported = false, hiddenBackendEntries = new Set();
 let lastInventoryUpdate = '';
+const inventoryOpen = new Map();
 try {
   const saved = JSON.parse(sessionStorage.getItem('mts-terminal-history') || 'null');
   if (saved?.token === accessToken && Array.isArray(saved.entries)) clientHistory = saved.entries;
 } catch {} // Terminal feedback remains available when browser storage is blocked.
-const names = {size: 'System size L', threads: 'Threads', preconditioner: 'Preconditioner', reconnection: 'Reconnection'};
+let plotSchema, plotValid = false, plotRequest = 0, plotCheckRequest = 0, plotTimer;
+let previewBusy = false, previewAutomatic = true, previewRevision = 0, previewManualPending = false;
+let plotPresets = [], loadedPresetId = null;
+let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const siteLabel = name => String(name).toUpperCase();
 function inventorySelection() {
@@ -74,7 +78,8 @@ async function operation(action, data = {}) {
       data.site === '*' ? lastState.sites.map(site => site.name) :
         lastState.servers?.find(server => server.name === data.site)?.profiles || [data.site];
     command += `\nWorkspace.operation('${action}', ${JSON.stringify(data)})`;
-    command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=120${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
+    command += '\nUp to 3 attempts per site; 60 s per attempt.';
+    command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=60${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
   }
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) : action, command, 'running');
   pendingOperation = entry;
@@ -145,7 +150,11 @@ function updateActions() {
   }
   $('build-simulator').disabled ||= !ready;
   $('run-button').disabled ||= !ready || ($('run-site').value === 'local' && !lastState.local_build);
-  $('plot-button').disabled ||= !ready;
+  $('plot-button').disabled ||= !ready || !plotValid;
+  $('plot-preview-update').disabled = !ready || !plotSchema || previewBusy;
+  $('plot-preset-update').disabled = !loadedPresetId || !plotSchema;
+  for (const id of ['slurm-generate', 'slurm-review']) $(id).disabled = busy || !slurmSchema;
+  $('slurm-execute').disabled = busy || !slurmReviewedToken;
   $('refresh-jobs').disabled ||= !ready;
   $('hard-refresh').disabled ||= !ready;
   $('update-managers').disabled ||= !ready || !lastState.sites.some(site => site.remote);
@@ -197,11 +206,18 @@ function fillSites(sites) {
 function renderInventory(rows) {
   const body = $('jobs'); body.replaceChildren();
   if (!rows.length) {body.innerHTML = '<tr><td colspan="5" class="empty">No managed simulations were found.</td></tr>'; return;}
-  for (const row of rows) {
+  const lineage = [], items = [], selection = inventorySelection();
+  const displayName = row => row.folder.split('/').at(-1).replace(/\[[0-9a-f]{20,64}\]$/, '');
+  const compareNames = (a, b) => displayName(a).localeCompare(displayName(b), undefined, {numeric: true, sensitivity: 'base'});
+  rows = [...rows].sort(compareNames);
+  const append = tr => {items.push({tr, parents: [...lineage]}); body.append(tr);};
+  const visibility = () => items.forEach(({tr, parents}) => {tr.hidden = parents.some(key => !inventoryOpen.get(key));});
+  const renderRow = row => {
     const tr = document.createElement('tr'), status = row.status.state;
+    tr.className = 'inventory-simulation';
     const percentage = row.progress.fraction === null ? '—' : (100 * row.progress.fraction).toFixed(1) + '%';
     const source = row.local_copy ? 'Local copy' + (row.origin_profile ? ' · ' + siteLabel(row.origin_profile) : '') : row.site ? siteLabel(row.site) + (row.local_paths?.length ? ' · local copy' : '') : '—';
-    tr.innerHTML = `<td>${escape(row.folder.split('/').at(-1))}</td><td>${escape(source)}</td><td><span class="badge ${status === 'finished' ? 'ready' : ''}">${escape(status)}</span>${row.termination ? '<br>' + escape(row.termination.stopReason) : ''}</td><td>${percentage}</td><td><div class="table-actions"></div></td>`;
+    tr.innerHTML = `<td>${escape(displayName(row))}</td><td>${escape(source)}</td><td><span class="badge ${status === 'finished' ? 'ready' : ''}">${escape(status)}</span>${row.termination ? ' <span class="inventory-termination" title="' + escape(row.termination.stopReason) + '">' + escape(row.termination.stopReason) + '</span>' : ''}</td><td>${percentage}</td><td><div class="table-actions"></div></td>`;
     tr.firstElementChild.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}`;
     if (row.attempt) {
       const logs = document.createElement('button'); logs.className = 'small'; logs.textContent = 'Logs';
@@ -213,8 +229,57 @@ function renderInventory(rows) {
         tr.querySelector('.table-actions').append(stop);
       }
     }
-    body.append(tr);
+    append(tr);
+  };
+  const section = (label, members, kind, id, render, open = false) => {
+    const key = JSON.stringify([selection, ...lineage, id]);
+    if (!inventoryOpen.has(key)) inventoryOpen.set(key, kind === 'site' || open);
+    const tr = document.createElement('tr'); tr.className = 'inventory-' + kind;
+    const th = document.createElement('th'); th.colSpan = 5; th.scope = 'rowgroup';
+    const button = document.createElement('button'); button.className = 'inventory-toggle';
+    const update = () => {
+      button.setAttribute('aria-expanded', String(inventoryOpen.get(key)));
+      button.textContent = `${inventoryOpen.get(key) ? '▾' : '▸'} ${label} (${members.length})`;
+    };
+    button.onclick = () => {inventoryOpen.set(key, !inventoryOpen.get(key)); update(); visibility();};
+    update(); th.append(button); tr.append(th); append(tr);
+    lineage.push(key); render(members); lineage.pop();
+  };
+  const category = row => ['running', 'stopping'].includes(row.status.state) ? 'Running' :
+    ['prepared', 'queued'].includes(row.status.state) ? 'Queued' :
+    ['finished', 'failed', 'stopped'].includes(row.status.state) ? 'Completed' : 'Other records';
+  const groups = new Map();
+  for (const row of rows) {
+    const site = selection.campaign ? row.site || (row.local_copy ? 'Local copies' : 'Missing simulations') : null;
+    if (!groups.has(site)) groups.set(site, []);
+    groups.get(site).push(row);
   }
+  const renderSeeds = (members, open) => {
+    const settings = new Map();
+    for (const row of members) {
+      if (!row.settings_group) {renderRow(row); continue;}
+      if (!settings.has(row.settings_group)) settings.set(row.settings_group, []);
+      settings.get(row.settings_group).push(row);
+    }
+    for (const [id, seeds] of settings) {
+      seeds.sort(compareNames);
+      if (seeds.length === 1) {renderRow(seeds[0]); continue;}
+      const first = seeds[0], label = displayName(first).replace(new RegExp(`s${first.seed}$`), '');
+      section(label || displayName(first), seeds, 'settings', id, rows => rows.forEach(renderRow), open);
+    }
+  };
+  const renderStates = members => {
+    for (const label of ['Running', 'Queued', 'Completed', 'Other records']) {
+      const selected = members.filter(row => category(row) === label);
+      if (label === 'Other records' && !selected.length) continue;
+      section(label, selected, 'category', label, rows => renderSeeds(rows, label === 'Running'), label === 'Running');
+    }
+  };
+  for (const [site, members] of groups) {
+    if (site === null) renderStates(members);
+    else section(siteLabel(site), members, 'site', site, renderStates);
+  }
+  visibility();
 }
 async function refresh() {
   if (restarting) return;
@@ -239,6 +304,8 @@ async function refresh() {
       fillSites(state.sites);
       fillMonitorSources(state.campaigns || inventorySnapshot?.campaigns);
       if (ready && state.sites.length && state.interface_version === 3) await loadInventory();
+      if (ready) await fillPlotCampaigns(state.campaigns || []);
+      if (ready && (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites))) await loadSlurmOptions();
     }
     updateActions();
     if (firstState) {
@@ -246,8 +313,6 @@ async function refresh() {
         localStorage.setItem('mts-token', accessToken);
         sessionStorage.removeItem('mts-token');
       } catch {} // Remember only a token accepted by this running server.
-      $('plot-data').value = state.data_folders[0] || state.workspace + '/MTSManager/output';
-      $('data-folders').replaceChildren(...state.data_folders.map(path => new Option(path, path)));
       if (!ready) view('setup');
       firstState = false;
     }
@@ -279,12 +344,14 @@ async function refresh() {
         task.state === 'partial' ? 'Some server operations failed; see terminal.' : 'Operation completed.';
       if (task.state === 'aborted') await loadInventory(false);
       if (task.result?.pdf) {
-        const link = document.createElement('a'); link.className = 'button primary'; link.target = '_blank'; link.rel = 'noopener';
+        const link = $('plot-open-pdf');
         link.href = '/figures/' + task.result.pdf.split('/').map(encodeURIComponent).join('/') + '?token=' + encodeURIComponent(accessToken);
-        link.textContent = 'Open PDF'; $('plot-result').replaceChildren(link);
+        link.textContent = 'Open PDF'; link.title = 'Open the last exported PDF'; link.classList.remove('hidden');
         $('task-result').textContent = 'Figure saved: ' + task.result.name;
+        if (task.result.warnings?.length) $('plot-warning').textContent = task.result.warnings.join(' ');
       }
       if (task.result?.config_hash) $('task-result').textContent = 'Submitted.';
+      if (task.result?.slurm_plan || task.result?.slurm_result) renderSlurmResult(task.result);
       if (task.result?.inspected_host) showSSHInspection(task.result);
       if (task.result?.saved_profile && sshEditor) await openSSHEditor(sshEditor.host, 'profile', task.result.saved_profile);
       if (task.result?.configured && sshEditor?.type === 'connection') closeSSHEditor();
@@ -319,7 +386,8 @@ $('clear-terminal').onclick = clearTerminal;
 $('run-site').onchange = () => {
   terminalMessage('Execution site', 'Selected ' + $('run-site').value + '.'); refresh();
 };
-$('plot-data').onchange = () => terminalMessage('Plot data source', 'Selected ' + $('plot-data').value + '.');
+$('plot-data').onchange = () => loadPlotOptions(false);
+$('plot-campaign').onchange = () => loadPlotOptions(true);
 $('run-form').onsubmit = event => {
   event.preventDefault();
   try {
@@ -330,20 +398,267 @@ $('run-form').onsubmit = event => {
     operation('run', {settings, label: $('run-label').value, site: $('run-site').value});
   } catch (error) {message('Check the advanced parameter JSON: ' + error.message);}
 };
-function fixedFields() {
-  const used = [$('plot-x').value, $('plot-color').value, $('plot-gradient').value];
-  $('fixed-fields').replaceChildren();
-  for (const [key, label] of Object.entries(names)) {
-    if (used.includes(key)) continue;
-    const field = document.createElement('div'); field.className = 'field';
-    field.innerHTML = `<label for="fixed-${key}">Hold ${label.toLowerCase()} fixed</label>`;
-    let input;
-    if (['size', 'threads'].includes(key)) {input = document.createElement('input'); input.type = 'number'; input.min = 1; input.value = key === 'size' ? 400 : 16;}
-    else {input = document.createElement('select'); const values = key === 'preconditioner' ? ['exactTangent','none'] : ['none','edgeFlip']; input.replaceChildren(...values.map(v => new Option(v, v)));}
-    input.id = 'fixed-' + key; input.dataset.property = key; field.append(input); $('fixed-fields').append(field);
+async function fillPlotCampaigns(campaigns) {
+  const select = $('plot-campaign'), previous = select.value;
+  select.replaceChildren(...campaigns.map(name => new Option(name, name)));
+  if (campaigns.includes(previous)) select.value = previous;
+  if (select.value && (!plotSchema || select.value !== previous)) await loadPlotOptions(true);
+  if (firstState) await loadPlotPresets();
+}
+async function loadPlotOptions(resetSource, saved = null) {
+  const request = ++plotRequest; ++plotCheckRequest; ++previewRevision; clearTimeout(plotTimer);
+  plotSchema = null;
+  plotValid = false; updateActions();
+  if (resetSource || saved) previewAutomatic = true;
+  if (!$('plot-campaign').value) return;
+  $('plot-warning').textContent = 'Reading campaign definitions and local data columns…';
+  try {
+    const query = new URLSearchParams({campaign: $('plot-campaign').value});
+    if (!resetSource && $('plot-data').value.trim()) query.set('data', $('plot-data').value.trim());
+    const schema = await api('plot_options?' + query);
+    if (request !== plotRequest) return;
+    plotSchema = schema; $('plot-data').value = schema.data;
+    $('data-folders').replaceChildren(...schema.sources.map(source => new Option(`${source.runs} campaign runs`, source.path)));
+    $('plot-properties').textContent = `${schema.available} local records of ${schema.expected} planned runs. Varied parameters: ` +
+      (Object.keys(schema.parameters).map(key => `${schema.labels[key]} (${schema.parameters[key].length})`).join(', ') || 'none') + '.';
+    const seeds = $('plot-seed'), previous = seeds.value;
+    seeds.replaceChildren(new Option('Mean of available seeds ± sample SD', 'all'),
+      ...schema.seeds.map(seed => new Option('Seed ' + seed, JSON.stringify(seed))));
+    if ([...seeds.options].some(option => option.value === previous)) seeds.value = previous;
+    $('plot-reduction').replaceChildren(...Object.entries(schema.reductions).map(([key, label]) => new Option(label, key)));
+    if (saved) {
+      const axes = new Set([...Object.keys(schema.parameters), ...Object.keys(schema.quantities)]);
+      if (!axes.has(saved.x) || !axes.has(saved.y) ||
+          [saved.color, saved.gradient].some(key => key && !(key in schema.parameters)) ||
+          Object.entries(saved.fixed).some(([key, value]) => !schema.parameters[key]?.includes(value)) ||
+          (saved.seed !== 'all' && !schema.seeds.includes(saved.seed))) throw new Error('This preset contains selections absent from the current campaign.');
+      $('plot-seed').value = saved.seed === 'all' ? 'all' : JSON.stringify(saved.seed);
+      $('plot-normalization').value = saved.normalization || 'none';
+      $('plot-reduction').value = saved.reduction || 'last';
+      $('plot-show-all').checked = Boolean(saved.show_all);
+      $('legend-cols').value = saved.ncols || 1; $('legend-loc').value = saved.legend_loc || 'best';
+      $('legend-style').value = saved.legend_style || 'compact';
+      for (const axis of ['x', 'y']) {
+        $('plot-' + axis + 'scale').value = saved[axis + 'scale'] || 'linear';
+        $(axis + 'lim').value = saved[axis + 'lim']?.join(', ') || '';
+        const input = $('plot-' + axis + 'label');
+        input.dataset.edited = String(typeof saved[axis + 'label'] === 'string');
+        if (input.dataset.edited === 'true') input.value = saved[axis + 'label'];
+      }
+    }
+    updatePlotControls(saved);
+  } catch (error) {
+    if (request !== plotRequest) return;
+    plotSchema = null; $('plot-warning').textContent = error.message; updateActions();
   }
 }
-document.querySelectorAll('.slot').forEach(select => select.onchange = fixedFields); fixedFields();
+function axisIssue(x, y) {
+  const params = plotSchema.parameters, quantities = plotSchema.quantities;
+  if (!(x in params) && quantities[x]?.kind !== 'macro') return 'X must be a varied parameter or a saved response column.';
+  if (!(y in quantities)) return 'Y must be a measured quantity.';
+  if (x === y) return 'X and Y must be different quantities.';
+  if (!(x in params) && quantities[y].kind !== 'macro') return 'A timing summary requires a campaign parameter on X.';
+  if ([x, y].some(key => key in quantities && !quantities[key].available)) return 'The selected quantity is unavailable in this local collection.';
+  return '';
+}
+function plotChoices(id, choices, selected, issue, order = []) {
+  const select = $(id);
+  const ranked = choices.map(([key, label]) => ({key, label, reason: issue(key), rank: order.includes(key) ? order.indexOf(key) : order.length}));
+  ranked.sort((a, b) => Number(Boolean(a.reason)) - Number(Boolean(b.reason)) || a.rank - b.rank || a.label.localeCompare(b.label, undefined, {numeric: true}));
+  select.replaceChildren(...ranked.map(({key, label, reason}) => {
+    const option = new Option(label + (reason ? ' (incompatible)' : ''), key);
+    option.className = reason ? 'plot-incompatible' : '';
+    option.title = reason; return option;
+  }));
+  if (ranked.some(option => option.key === selected)) select.value = selected;
+}
+function updatePlotControls(saved = null) {
+  if (!plotSchema) return;
+  if (typeof saved?.x !== 'string') saved = null;
+  const params = plotSchema.parameters, quantities = plotSchema.quantities;
+  const axes = [...Object.keys(params).map(key => [key, plotSchema.labels[key]]),
+    ...Object.entries(quantities).map(([key, quantity]) => [key, quantity.label])];
+  const keys = new Set(axes.map(([key]) => key));
+  const x = saved?.x || (keys.has($('plot-x').value) ? $('plot-x').value : 'load');
+  const y = saved?.y || (keys.has($('plot-y').value) ? $('plot-y').value : 'avg_sigma12');
+  for (const [axis, selected] of [['x', x], ['y', y]]) {
+    const common = plotSchema.common_axes[axis];
+    const choices = axes.filter(([key]) => $('plot-show-all').checked || common.includes(key) || key === selected);
+    plotChoices('plot-' + axis, choices, selected, key => axis === 'x' ? axisIssue(key, y) : axisIssue(x, key), common);
+  }
+  for (const id of ['plot-color', 'plot-gradient']) {
+    const otherKey = id === 'plot-color' ? 'gradient' : 'color';
+    const other = saved ? saved[otherKey] || '' : $('plot-' + otherKey).value;
+    const selected = saved ? saved[id === 'plot-color' ? 'color' : 'gradient'] || '' : $(id).value;
+    plotChoices(id, [['', 'None'], ...Object.keys(params).map(key => [key, plotSchema.labels[key]])], selected,
+      key => key && (key === x || key === other) ? 'Choose distinct parameters for X, color and gradient.' : '', ['', ...plotSchema.common_axes.x.filter(key => key in params)]);
+  }
+  $('plot-reduction-field').classList.toggle('hidden', !(x in params) || quantities[y]?.kind !== 'macro');
+  fixedFields(saved?.fixed); legendAliases(saved?.legend_aliases); schedulePlotCheck();
+}
+function fixedFields(saved = null) {
+  const used = [$('plot-x').value, $('plot-color').value, $('plot-gradient').value, 'seed'];
+  const previous = Object.fromEntries([...$('fixed-fields').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.value]));
+  for (const [key, value] of Object.entries(saved || {})) previous[key] = JSON.stringify(value);
+  $('fixed-fields').replaceChildren();
+  for (const [key, values] of Object.entries(plotSchema.parameters)) {
+    if (used.includes(key)) continue;
+    const field = document.createElement('div'); field.className = 'field';
+    const label = document.createElement('label'); label.htmlFor = 'fixed-' + key;
+    label.textContent = 'Hold ' + plotSchema.labels[key] + ' fixed';
+    const select = document.createElement('select'); select.id = label.htmlFor; select.dataset.property = key;
+    select.replaceChildren(...values.map(value => new Option(String(value), JSON.stringify(value))));
+    if (values.some(value => JSON.stringify(value) === previous[key])) select.value = previous[key];
+    select.onchange = schedulePlotCheck; field.append(label, select); $('fixed-fields').append(field);
+  }
+}
+function plotSelection() {
+  return {campaign: $('plot-campaign').value, data: $('plot-data').value,
+    x: $('plot-x').value, y: $('plot-y').value, color: $('plot-color').value || null, gradient: $('plot-gradient').value || null,
+    seed: $('plot-seed').value === 'all' ? 'all' : JSON.parse($('plot-seed').value), normalization: $('plot-normalization').value,
+    reduction: $('plot-reduction').value,
+    fixed: Object.fromEntries([...$('fixed-fields').querySelectorAll('[data-property]')].map(el => [el.dataset.property, JSON.parse(el.value)])),
+    ncols: +$('legend-cols').value, legend_loc: $('legend-loc').value, xlim: limits('xlim'), ylim: limits('ylim'),
+    xscale: $('plot-xscale').value, yscale: $('plot-yscale').value, show_all: $('plot-show-all').checked,
+    xlabel: $('plot-xlabel').dataset.edited === 'true' ? $('plot-xlabel').value : null,
+    ylabel: $('plot-ylabel').dataset.edited === 'true' ? $('plot-ylabel').value : null,
+    legend_style: $('legend-style').value,
+    legend_aliases: Object.fromEntries([...$('legend-aliases').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.value.trim()]))};
+}
+function legendAliases(saved = null) {
+  if (!plotSchema) return;
+  const previous = Object.fromEntries([...$('legend-aliases').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.value]));
+  const aliases = {...plotSchema.abbreviations, ...previous, ...(saved || {})};
+  $('legend-aliases').replaceChildren();
+  for (const key of Object.keys(plotSchema.parameters)) {
+    const field = document.createElement('div'); field.className = 'field';
+    const label = document.createElement('label'); label.htmlFor = 'legend-alias-' + key; label.textContent = plotSchema.labels[key];
+    const input = document.createElement('input'); input.id = label.htmlFor; input.dataset.property = key; input.value = aliases[key];
+    input.onchange = schedulePlotCheck; field.append(label, input); $('legend-aliases').append(field);
+  }
+  $('legend-aliases').classList.toggle('hidden', $('legend-style').value !== 'custom');
+}
+function syncAxisLabels() {
+  if (!plotSchema) return;
+  const x = $('plot-x').value, y = $('plot-y').value;
+  let ylabel = plotSchema.quantities[y]?.label || plotSchema.labels[y] || y;
+  if (x in plotSchema.parameters && plotSchema.quantities[y]?.kind === 'macro') ylabel = plotSchema.reductions[$('plot-reduction').value] + ': ' + ylabel;
+  const norm = $('plot-normalization').value;
+  if (norm !== 'none') ylabel += ' / ' + (norm === 'L' ? 'L' : '(rows × cols)');
+  const defaults = {x: plotSchema.labels[x] || plotSchema.quantities[x]?.label || x, y: ylabel};
+  for (const axis of ['x', 'y']) {
+    const input = $('plot-' + axis + 'label');
+    if (input.dataset.edited !== 'true') input.value = defaults[axis];
+  }
+}
+function schedulePlotCheck() {
+  clearTimeout(plotTimer); ++plotCheckRequest; ++previewRevision;
+  plotValid = false; updateActions();
+  $('plot-preview-image').parentElement.classList.add('is-stale');
+  if (!plotSchema) return;
+  syncAxisLabels();
+  const issue = axisIssue($('plot-x').value, $('plot-y').value);
+  if (issue) {$('plot-warning').textContent = issue; return;}
+  if (!$('plot-data').value) {$('plot-warning').textContent = 'No local data is available. Download campaign results or choose a local collection.'; return;}
+  if (!previewAutomatic) {
+    $('plot-preview-status').textContent = 'Automatic preview paused after a render exceeded 5 s. Press Update preview.';
+    // Validation remains available without rendering a new image.
+    const request = plotCheckRequest;
+    plotTimer = setTimeout(async () => {
+      try {
+        const result = await api('plot_check?' + new URLSearchParams({selection: JSON.stringify(plotSelection())}));
+        if (request !== plotCheckRequest) return;
+        showPlotValidation(result); plotValid = true;
+      } catch (error) {if (request === plotCheckRequest) $('plot-warning').textContent = error.message;}
+      updateActions();
+    }, 400);
+    return;
+  }
+  $('plot-preview-status').textContent = 'Preview out of date.';
+  plotTimer = setTimeout(() => requestPlotPreview(false), 400);
+}
+function showPlotValidation(result) {
+  $('plot-warning').textContent = `${result.mode === 'curve' ? 'Response curves' : 'Scalar comparison'}; ${result.runs} available runs of ${result.expected} selected. ` +
+    (result.warnings.join(' ') || 'Equal weight per seed; uncertainty: sample standard deviation.');
+}
+async function requestPlotPreview(manual) {
+  clearTimeout(plotTimer);
+  if (!plotSchema || axisIssue($('plot-x').value, $('plot-y').value)) return;
+  if (previewBusy) {previewManualPending ||= manual; return;}
+  const revision = previewRevision;
+  let selection;
+  try {selection = plotSelection();} catch (error) {$('plot-warning').textContent = error.message; return;}
+  previewBusy = true; updateActions(); $('plot-preview-status').textContent = 'Rendering preview…';
+  const slow = setTimeout(() => {
+    previewAutomatic = false;
+    $('plot-preview-status').textContent = 'Rendering exceeds 5 s. Further previews require Update preview.';
+  }, 5000);
+  try {
+    const result = await api('plot_preview', {...selection, automatic: !manual});
+    if (result.manual || result.seconds > 5) previewAutomatic = false;
+    if (result.manual || result.busy) {
+      previewAutomatic = false;
+      $('plot-preview-status').textContent = result.busy ? 'Previous preview is still rendering. Press Update preview when it finishes.' :
+        'Automatic preview paused after 5 s. Press Update preview to display the result.';
+      return;
+    }
+    if (revision !== previewRevision) return;
+    plotValid = true; showPlotValidation(result);
+    const image = $('plot-preview-image');
+    image.src = '/previews/' + result.image + '?token=' + encodeURIComponent(accessToken) + '&revision=' + Date.now();
+    image.classList.remove('hidden'); image.parentElement.classList.remove('is-stale');
+    $('plot-preview-placeholder').classList.add('hidden');
+    $('plot-preview-status').textContent = `Preview updated in ${result.seconds.toFixed(2)} s.` +
+      (previewAutomatic ? '' : ' Automatic preview paused; use Update preview.');
+  } catch (error) {
+    if (revision === previewRevision) {plotValid = false; $('plot-warning').textContent = error.message; $('plot-preview-status').textContent = 'Preview unavailable.';}
+  } finally {
+    clearTimeout(slow); previewBusy = false; updateActions();
+    const pending = previewManualPending; previewManualPending = false;
+    if (pending || (revision !== previewRevision && previewAutomatic)) requestPlotPreview(pending);
+  }
+}
+async function loadPlotPresets() {
+  try {plotPresets = (await api('plot_presets')).presets; renderPlotPresets();}
+  catch (error) {$('plot-preset-status').textContent = error.message;}
+}
+function renderPlotPresets() {
+  const list = $('plot-presets-list'); list.replaceChildren();
+  for (const preset of plotPresets) {
+    const row = document.createElement('div'); row.className = 'plot-preset-row';
+    const text = document.createElement('span'); text.textContent = preset.name + ' · ' + preset.selection.campaign;
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'small'; button.textContent = 'Load';
+    button.onclick = async () => {
+      if (![...$('plot-campaign').options].some(option => option.value === preset.selection.campaign)) {
+        $('plot-preset-status').textContent = 'The saved campaign is no longer registered.'; return;
+      }
+      loadedPresetId = preset.id; $('plot-preset-name').value = preset.name;
+      $('plot-campaign').value = preset.selection.campaign; $('plot-data').value = preset.selection.data;
+      $('plot-preset-status').textContent = 'Loaded: ' + preset.name;
+      await loadPlotOptions(false, preset.selection);
+    };
+    row.append(text, button); list.append(row);
+  }
+  if (!plotPresets.length) list.textContent = 'No saved plot presets.';
+  updateActions();
+}
+async function savePlotPreset(update) {
+  try {
+    if (!plotSchema) throw new Error('Select a campaign before saving a preset.');
+    const result = await api('plot_presets', {name: $('plot-preset-name').value, selection: plotSelection(), ...(update ? {id: loadedPresetId} : {})});
+    plotPresets = result.presets; loadedPresetId = result.saved_id; renderPlotPresets();
+    $('plot-preset-status').textContent = update ? 'Preset updated.' : 'New preset saved.';
+  } catch (error) {$('plot-preset-status').textContent = error.message;}
+}
+document.querySelectorAll('.plot-slot').forEach(select => select.onchange = updatePlotControls);
+$('plot-show-all').onchange = updatePlotControls;
+for (const id of ['plot-seed', 'plot-normalization', 'plot-reduction', 'legend-cols', 'legend-loc', 'plot-xscale', 'plot-yscale', 'xlim', 'ylim']) $(id).onchange = schedulePlotCheck;
+for (const axis of ['x', 'y']) $('plot-' + axis + 'label').oninput = event => {event.target.dataset.edited = 'true'; schedulePlotCheck();};
+$('plot-labels-default').onclick = () => {for (const axis of ['x', 'y']) $('plot-' + axis + 'label').dataset.edited = 'false'; schedulePlotCheck();};
+$('legend-style').onchange = () => {legendAliases(); schedulePlotCheck();};
+$('plot-preview-update').onclick = () => requestPlotPreview(true);
+$('plot-preset-new').onclick = () => savePlotPreset(false);
+$('plot-preset-update').onclick = () => savePlotPreset(true);
 function limits(id) {
   if (!$(id).value.trim()) return null;
   const values = $(id).value.split(',').map(Number);
@@ -353,12 +668,119 @@ function limits(id) {
 $('plot-form').onsubmit = event => {
   event.preventDefault();
   try {
-    const fixed = Object.fromEntries([...$('fixed-fields').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.type === 'number' ? +el.value : el.value]));
-    operation('plot', {data: $('plot-data').value, y: $('plot-y').value, x: $('plot-x').value,
-      color: $('plot-color').value, gradient: $('plot-gradient').value || null, fixed,
-      ncols: +$('legend-cols').value, legend_loc: $('legend-loc').value, xlim: limits('xlim'), ylim: limits('ylim')});
+    if (!plotValid) throw new Error('Choose a compatible selection with available data before exporting.');
+    operation('plot', plotSelection());
   } catch (error) {message(error.message);}
 };
+async function loadSlurmOptions() {
+  try {
+    const previousSite = $('slurm-site').value, previousAction = $('slurm-action').value;
+    slurmSchema = await api('slurm_options');
+    $('slurm-site').replaceChildren(new Option('All Slurm sites', '*'), ...slurmSchema.sites.map(name => new Option(siteLabel(name), name)));
+    $('slurm-action').replaceChildren(...Object.entries(slurmSchema.actions).map(([key, label]) => new Option(label, key)));
+    if (previousSite === '*' || slurmSchema.sites.includes(previousSite)) $('slurm-site').value = previousSite;
+    if (previousAction in slurmSchema.actions) $('slurm-action').value = previousAction;
+    if (!$('slurm-criteria').children.length) addSlurmCriterion({field: 'L', operator: 'eq', value: 800});
+    invalidateSlurm();
+    updateActions();
+  } catch (error) {$('slurm-status').textContent = error.message;}
+}
+function invalidateSlurm() {
+  slurmReviewedToken = null;
+  $('slurm-program').textContent = 'Generate a program from the current criteria.';
+  $('slurm-status').textContent = 'Selection changed. Review matching jobs before execution.';
+  $('slurm-results').classList.add('hidden'); updateActions();
+}
+function addSlurmCriterion(saved = null) {
+  if (!slurmSchema) return;
+  const row = document.createElement('div'); row.className = 'slurm-criterion';
+  const field = document.createElement('select'); field.dataset.role = 'field'; field.setAttribute('aria-label', 'Simulation property');
+  const keys = Object.keys(slurmSchema.fields).sort((a, b) => (a === 'L' ? -1 : b === 'L' ? 1 : slurmSchema.fields[a].label.localeCompare(slurmSchema.fields[b].label)));
+  field.replaceChildren(...keys.map(key => new Option(slurmSchema.fields[key].label, key)));
+  field.value = saved?.field || 'L';
+  const comparison = document.createElement('select'); comparison.dataset.role = 'operator'; comparison.setAttribute('aria-label', 'Comparison');
+  const values = document.createElement('div'); values.className = 'slurm-value';
+  const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'small'; remove.textContent = 'Remove';
+  remove.onclick = () => {row.remove(); invalidateSlurm();};
+  const valueControl = value => {
+    const info = slurmSchema.fields[field.value]; values.replaceChildren();
+    const numeric = ['int', 'float'].includes(info.type);
+    const operators = numeric ? [['eq', 'is'], ['ne', 'is not'], ['lt', '<'], ['le', '≤'], ['gt', '>'], ['ge', '≥']] :
+      [['eq', 'is'], ['ne', 'is not'], ...(info.type === 'str' ? [['contains', 'contains']] : [])];
+    comparison.replaceChildren(...operators.map(([key, label]) => new Option(label, key)));
+    comparison.value = saved?.operator && operators.some(([key]) => key === saved.operator) ? saved.operator : 'eq';
+    let input;
+    if (info.choices.length) {
+      input = document.createElement('select');
+      input.replaceChildren(...info.choices.map(v => new Option(({none: 'None', delaunay: 'Delaunay'})[v] || String(v), String(v))), new Option('Custom', '__custom__'));
+      const custom = document.createElement('input'); custom.dataset.role = 'custom'; custom.placeholder = 'Custom value'; custom.setAttribute('aria-label', 'Custom property value');
+      const known = value !== undefined && info.choices.some(v => String(v) === String(value));
+      if (known) input.value = String(value);
+      else if (value !== undefined) {input.value = '__custom__'; custom.value = String(value);}
+      custom.classList.toggle('hidden', input.value !== '__custom__');
+      input.onchange = () => {custom.classList.toggle('hidden', input.value !== '__custom__'); invalidateSlurm();};
+      custom.oninput = invalidateSlurm; values.append(input, custom);
+    } else {
+      input = document.createElement('input'); input.type = numeric ? 'number' : 'text';
+      if (numeric) input.step = info.type === 'int' ? '1' : 'any';
+      input.value = value === undefined ? '' : String(value); input.oninput = invalidateSlurm; values.append(input);
+    }
+    input.dataset.role = 'value'; input.setAttribute('aria-label', 'Property value');
+  };
+  field.onchange = () => {saved = null; valueControl(); invalidateSlurm();};
+  comparison.onchange = invalidateSlurm;
+  valueControl(saved?.value); row.append(field, comparison, values, remove); $('slurm-criteria').append(row); invalidateSlurm();
+}
+function slurmSelection() {
+  const criteria = [...$('slurm-criteria').children].map(row => {
+    const field = row.querySelector('[data-role="field"]').value, type = slurmSchema.fields[field].type;
+    let value = row.querySelector('[data-role="value"]').value;
+    if (value === '__custom__') value = row.querySelector('[data-role="custom"]').value;
+    if (['int', 'float'].includes(type)) {
+      if (!value.trim() || !Number.isFinite(+value) || (type === 'int' && !Number.isInteger(+value))) throw new Error('Enter a valid ' + type + ' for ' + slurmSchema.fields[field].label + '.');
+      value = +value;
+    } else if (type === 'bool') {
+      if (!['true', 'false'].includes(value.toLowerCase())) throw new Error('Boolean criteria require true or false.');
+      value = value.toLowerCase() === 'true';
+    }
+    return {field, operator: row.querySelector('[data-role="operator"]').value, value};
+  });
+  if (!criteria.length) throw new Error('Add at least one criterion.');
+  return {site: $('slurm-site').value, action: $('slurm-action').value, match: $('slurm-match').value, criteria};
+}
+async function generateSlurmProgram() {
+  const spec = slurmSelection(), result = await api('slurm_program', spec);
+  if (JSON.stringify(spec) !== JSON.stringify(slurmSelection())) throw new Error('Selection changed; generate the current program again.');
+  $('slurm-program').textContent = 'Review only:\n' + result.review + '\n\nExecute from a terminal:\n' + result.apply;
+  return spec;
+}
+function renderSlurmResult(result) {
+  const lines = []; let count = 0;
+  for (const [name, response] of Object.entries(result.sites)) {
+    if (response.error) {lines.push(siteLabel(name) + ': ' + response.error); continue;}
+    const data = response.data; count += data.jobs.length;
+    lines.push(`${siteLabel(name)}: ${data.jobs.length} queued matches; ${data.already.length} already held or ineligible for release; ${data.running.length} active jobs excluded.`);
+    if (result.slurm_result) lines.push(`Verified changes: ${data.applied.length}; unverified: ${(data.unverified || []).length}; no longer pending: ${(data.skipped || []).length}.`);
+    if (data.command) lines.push(data.command);
+    lines.push(...data.jobs.map(job => `${job.job_id}  ${job.name}  ${job.reason}`));
+  }
+  $('slurm-results').textContent = lines.join('\n'); $('slurm-results').classList.remove('hidden');
+  let current = null;
+  try {current = JSON.stringify(slurmSelection());} catch {}
+  slurmReviewedToken = result.slurm_plan && count && current === slurmPlannedSpec ? result.slurm_plan : null;
+  $('slurm-status').textContent = result.slurm_result ? 'Scheduler action completed. Inspect the per-site verification results.' :
+    slurmReviewedToken ? `${count} queued jobs reviewed. Run reviewed action applies only to these job IDs; queue state is checked again.` :
+    count ? 'Criteria changed; review the current selection again.' : 'No queued jobs match on the available sites.';
+  updateActions();
+}
+$('slurm-add-criterion').onclick = () => addSlurmCriterion();
+for (const id of ['slurm-site', 'slurm-match', 'slurm-action']) $(id).onchange = invalidateSlurm;
+$('slurm-generate').onclick = () => generateSlurmProgram().catch(error => {$('slurm-status').textContent = error.message;});
+$('slurm-review').onclick = async () => {
+  try {const spec = await generateSlurmProgram(); slurmPlannedSpec = JSON.stringify(spec); await operation('slurm_plan', spec);}
+  catch (error) {$('slurm-status').textContent = error.message;}
+};
+$('slurm-execute').onclick = () => {if (slurmReviewedToken) {const token = slurmReviewedToken; slurmReviewedToken = null; operation('slurm_execute', {token});}};
 $('quit').onclick = async () => {
   try {await api('quit', {}); clearInterval(poller);
     try {localStorage.removeItem('mts-token'); sessionStorage.removeItem('mts-token'); sessionStorage.removeItem('mts-terminal-history');} catch {}

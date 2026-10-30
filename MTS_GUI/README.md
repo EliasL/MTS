@@ -1,7 +1,7 @@
 # MTS browser interface
 
 The browser interface provides setup, local and remote simulation controls, and
-timing-figure export. It uses the MTSManager and MTSPlot Python packages for
+scientific figure export. It uses the MTSManager and MTSPlot Python packages for
 scientific operations. The HTTP layer uses Python's standard library and runs
 only on the loopback interface.
 
@@ -30,7 +30,58 @@ background tasks, and plotting runs in a separate process. Simulation workers
 remain independent of the GUI process.
 
 Start simulations configures and launches runs. Monitor data displays records
-for a server or a campaign. Plot exports timing figures.
+for a server or a campaign. Plot exports campaign response curves and scalar comparisons.
+
+## Campaign plots
+
+Select a campaign and a local data collection in Plot. The panel lists varied
+settings from the campaign definition and numeric columns from available macro
+tables. Square system dimensions are represented by system size L. Energy,
+stress and timing summaries remain listed when unavailable; incompatible axis
+choices appear in grey below compatible choices. Selecting an incompatible
+combination displays an explanation and disables PDF export.
+Common choices are ordered separately for each axis: load is prominent on X;
+stress, energy and timing summaries are prominent on Y. Show all options reveals
+the remaining numeric columns. Existing selections remain visible.
+
+Use a varied parameter on X for scalar comparisons, or a response column on X
+for response curves. A response column used as a scalar has an explicit final,
+initial, mean, minimum or maximum reduction. Timing summaries retain their
+step-based definitions and require completed sample targets without diagnostic
+logging. Other varied parameters must be assigned to color or gradient, or held
+fixed using the generated filters.
+
+Choose one seed or the mean of available seeds. Means give equal weight to each
+seed; uncertainty is sample standard deviation. Response averages align by load.
+Mismatched load points trigger a warning and linear interpolation on the union
+of points within the common load range, with no extrapolation. Differing grids
+with repeated or nonmonotonic loads require selecting an individual seed.
+Missing local runs and partial data are reported before export.
+
+Y normalization is explicit: None, divide by L for square systems, or divide by
+rows × cols. It is applied to each run before calculating seed statistics.
+Energy and stress densities receive no additional normalization by default.
+Data retrieval is separate; plotting reads local files and never contacts the
+execution host. Legend placement, column count and axis limits remain editable.
+Legend and axes also provides independent linear/logarithmic scales. Logarithmic
+axes require positive numeric values and positive explicit limits. Compact
+legend labels use parameter abbreviations such as L, t, R and C. Full labels and
+editable custom abbreviations are available from the Legend labels selector.
+Axis label fields display their current defaults. Unedited labels follow changes
+to quantities, reductions and normalization; edited labels are retained. Use
+default labels restores automatic updates. Both modes are saved with presets.
+
+The preview and PDF use the same plotting code. Preview updates are debounced
+and reuse cached numerical data; changes to source files invalidate the cache.
+The controls beside the preview provide Update preview, Export PDF and Open PDF.
+Open PDF refers to the last export. Preview requests do not appear in the
+terminal. Automatic preview pauses after a render exceeds five seconds; use
+Update preview thereafter, or select another campaign to resume automatic updates.
+
+Named plot presets are stored in `.mts/plot-presets.json` and listed below the
+preview. Load restores the campaign, data collection, filters, seed selection,
+normalization, legend and axis settings. Save as new requires a distinct name;
+Update preset modifies only the loaded preset. Presets persist across restarts.
 
 Both simulation panels include help on configuration hashes, prepared folders,
 retained binaries, saved commands, simulator-owned resume and job chains. The
@@ -153,6 +204,38 @@ receives one batched request; unrelated runs are not refreshed. Results merge
 with the local cache, retaining unrelated rows and each failed server's previous
 snapshot. Campaign refresh times are recorded separately from full-server
 refresh times. Selecting a source never starts SSH or downloads simulation output.
+Each site request has a 60-second timeout and up to three attempts for timeouts
+or connection failures. Invalid data fails immediately.
+
+Server records appear under Running, Queued and Completed, in that order.
+Campaign views show a group for each site with these subgroups. Completed
+includes failed and stopped attempts with their recorded outcomes. Missing
+simulations, local copies and unknown states are labelled separately.
+All groups are collapsible. Settings that differ only in seed share a subgroup
+when saved settings are available locally. Single-seed groups expose the run
+directly. Site groups and the full Running hierarchy start expanded; Queued and
+Completed start collapsed. Simulation names
+omit the hash; the full folder and configuration hash remain in the tooltip.
+Simulation names are sorted alphabetically, with numeric portions ordered numerically.
+
+## SLURM control
+
+Setup and tools → Advanced → SLURM control constructs rules for queued jobs on
+one or all enabled Slurm profiles. Add criteria and choose whether all or any
+must match. Numeric settings use typed fields; known categorical values have
+dropdowns with a Custom choice. System size L matches square configurations.
+
+Generate program shows a command without contacting execution sites. Review
+matching jobs queries the live queue and reports matches, active jobs excluded
+from the action, and errors per site. Run reviewed action applies only to the
+reviewed job IDs after rechecking their state and settings. Review plans expire
+after 15 minutes. Hold, release user-held jobs, and cancel queued jobs are
+supported. Running jobs are excluded. Results are verified and journalled;
+uncertain outcomes require a new review, not an automatic retry.
+
+The generated terminal command reviews by default; adding `--apply` explicitly
+executes the selected action. The control program is sent through the configured
+SSH transport without replacing installed manager packages or worker commands.
 
 Abort interrupts inventory and log reads, preserving unfinished cached snapshots
 and skipping remaining profiles. It does not stop simulation jobs. The local SSH

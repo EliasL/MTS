@@ -22,6 +22,22 @@ from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_plot_presets_require_explicit_update_and_persist_independent_copies(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("MTS_GUI.server.STATE", Path(temporary)), \
+                patch.object(Workspace, "campaign_path", return_value=Path("campaign.json")):
+            workspace = Workspace()
+            selection = {"campaign": "Example", "x": "load", "y": "avg_energy", "xscale": "linear"}
+            first = workspace.plot_presets({"name": "Energy", "selection": selection})
+            first_id = first["saved_id"]
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                workspace.plot_presets({"name": "Energy", "selection": selection | {"xscale": "log"}})
+            second = workspace.plot_presets({"name": "Energy logarithmic", "selection": selection | {"xscale": "log"}})
+            workspace.plot_presets({"id": first_id, "name": "Stress", "selection": selection | {"y": "avg_sigma12"}})
+            saved = {p["id"]: p for p in Workspace().plot_presets()["presets"]}
+            self.assertEqual(saved[first_id]["selection"]["y"], "avg_sigma12")
+            self.assertEqual(saved[second["saved_id"]]["selection"], selection | {"xscale": "log"})
+
     def test_restart_loads_new_backend_code_and_preserves_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -102,6 +118,11 @@ class Boundaries(unittest.TestCase):
                 with self.assertRaises(TimeoutError):
                     workspace.operation("inventory", {"site": "first"})
             self.assertEqual(workspace.inventory_cache("first"), snapshot)
+            refreshed = [{"config_hash": "example", "status": {"state": "finished"}}]
+            with patch("MTS_Management.cluster.call", side_effect=[
+                    subprocess.TimeoutExpired("ssh", 60), ConnectionError("disconnected"), refreshed]):
+                workspace.operation("inventory", {"site": "first"})
+            self.assertEqual(workspace.inventory_cache("first")["rows"], refreshed)
             sites["first"].output_root = "another-output"
             self.assertIsNone(workspace.inventory_cache("first")["updated_at"])
             sites["first"].output_root = "output"
@@ -172,6 +193,28 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(Workspace().status()["campaigns"], ["Recorded"])
             with self.assertRaisesRegex(ValueError, "complete"):
                 campaign_entries(path)
+
+    def test_monitor_groups_seeds_by_settings_instead_of_labels(self):
+        from MTS_Management.cluster import Site
+        from MTS_Management.config import Config
+        configs = [Config(seed=8), Config(seed=2), Config(seed=2, totalLoad=3)]
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("MTS_GUI.server.ROOT", Path(temporary)), \
+                patch("MTS_GUI.server.STATE", Path(temporary) / ".mts"), \
+                patch("MTS_Management.cluster.load_sites", return_value={"cluster": Site(name="cluster", ssh="cluster")}):
+            path = Path(temporary) / "MTSManager/campaigns/example/simulations.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"name": "Example", "runs": [
+                {"label": "SameLabel", "settings": c.as_dict()} for c in configs]}))
+            workspace = Workspace()
+            workspace.inventory_cache("cluster", rows=[{
+                "config_hash": configs[0].config_hash, "folder": "DifferentLabel", "campaign": "Example"}])
+            rows = {row["config_hash"]: row for row in workspace.inventory_overview(campaign="Example")["rows"]}
+            first, second, different = [rows[c.config_hash] for c in configs]
+            self.assertEqual(first["settings_group"], second["settings_group"])
+            self.assertNotEqual(first["settings_group"], different["settings_group"])
+            self.assertEqual([rows[c.config_hash]["seed"] for c in configs], [8, 2, 2])
+            self.assertEqual(first["folder"], "DifferentLabel")
 
     def test_clearing_terminal_does_not_release_a_running_operation(self):
         workspace = Workspace()

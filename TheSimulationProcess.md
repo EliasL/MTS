@@ -632,6 +632,22 @@ abrupt kill. Cancellation does not guarantee a final checkpoint or termination
 summary. Subsequent resume uses a previously completed checkpoint. Missing
 output is not manufactured as evidence of successful completion.
 
+### 12.1 Queued Slurm job control
+
+Setup and tools → Advanced → SLURM control builds setting-based rules with all
+or any matching. The client program reads the current user's queue and matches
+indexed configuration identities and saved attempt scheduler IDs. System size L
+requires equal row and column counts. Running jobs are excluded from hold,
+release and cancellation; cancellation also uses Slurm's pending-state filter.
+
+Generate program constructs commands locally. Review matching jobs contacts the
+selected enabled Slurm profiles without applying changes. Run reviewed action
+is limited to those job IDs, rechecks their live state and reevaluates the rule.
+Plans expire after 15 minutes and cannot be replayed. Scheduler outcomes and
+partial failures are checked and recorded in the manager journal. The client
+sends the control program with each request, preserving installed packages and
+commands needed by existing workers. Mutating requests are not retried automatically.
+
 ## 13. Campaign submission and receipts
 
 The campaign controller reads `simulations.json`, `resources.json` and
@@ -659,6 +675,17 @@ The GUI reads local cached inventories, campaign definitions and downloaded
 copies. Refresh contacts remote managers to update the selected server records.
 An unavailable server leaves its previous snapshot available with its recorded
 update time. Campaign views show both discovered and missing members.
+Server records are grouped as Running, Queued and Completed, in that order.
+Campaign views group records by site with the same status subgroups. Completed
+includes failed and stopped attempts, whose outcome remains explicit. Missing
+simulations, local copies and unknown states remain labelled separately.
+Groups are collapsible. Locally available saved settings identify subgroups
+that differ only in seed. Single-seed groups display the simulation directly.
+Site groups and the full Running hierarchy are initially expanded; queued and
+completed groups are initially collapsed. Display names omit configuration hashes; tooltips
+retain the full folder and hash.
+Refresh allows 60 seconds per site request and makes at most three attempts for
+timeouts or connection failures. Invalid data fails without retrying.
 
 Campaign refresh checks enabled site profiles using the campaign's saved
 configuration hashes. It works without an existing server snapshot and sends one

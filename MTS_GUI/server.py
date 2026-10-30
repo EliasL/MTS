@@ -2,7 +2,8 @@
 
 import importlib.util
 from contextlib import closing
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, ProcessPoolExecutor, TimeoutError as FutureTimeout
+import multiprocessing
 from dataclasses import asdict
 import hashlib
 import json
@@ -26,6 +27,12 @@ def site_label(name):
     return str(name).upper()
 
 
+def seed_group(settings):
+    from MTS_Management.files import digest
+    return {"settings_group": digest({k: v for k, v in settings.items() if k != "seed"}),
+            "seed": settings["seed"]}
+
+
 class Workspace:
     def __init__(self):
         self.token = secrets.token_urlsafe(32)
@@ -40,6 +47,12 @@ class Workspace:
         self.ssh_proposals = {}
         self.ssh_addresses = {}
         self.ssh_config_stamp = None
+        self.preview_pool = None
+        self.preview_lock = threading.Lock()
+        self.preview_future = None
+        self.preview_key = None
+        self.preview_image = None
+        self.slurm_plan = None
 
     def log(self, line, *, command=False):
         with self.lock:
@@ -164,8 +177,10 @@ class Workspace:
             stamp = path.stat().st_mtime_ns
             if path not in self.campaign_files or self.campaign_files[path][0] != stamp:
                 name, expected = campaign_identity(path)
-                self.campaign_files[path] = (stamp, name, expected)
-            _, name, expected = self.campaign_files[path]
+                runs = json.loads(path.read_text())["runs"]
+                groups = {h: seed_group(run["settings"]) for h, run in zip(expected, runs)}
+                self.campaign_files[path] = (stamp, name, expected, groups)
+            _, name, expected, _ = self.campaign_files[path]
             if name in definitions and definitions[name] != expected:
                 raise ValueError(f"Conflicting campaign definitions: {name}")
             definitions[name] = expected
@@ -191,6 +206,7 @@ class Workspace:
                 request_data = read_json(request) if request else {}
                 origin = request_data.get("site")
                 row = {"config_hash": config.config_hash, "folder": str(folder), "attempt": None,
+                       **seed_group(config.as_dict()),
                        "campaign": record.get("campaign"), "manifest_sha256": file_digest(manifest),
                        "status": {"state": "finished" if termination else "local copy"},
                        "termination": termination, "progress": progress(folder, config),
@@ -247,6 +263,19 @@ class Workspace:
         rows.extend({"config_hash": h, "folder": expected[h], "site": None, "attempt": None,
                      "campaign": campaign, "status": {"state": "missing"}, "termination": None,
                      "progress": {"fraction": None}, "missing": True} for h in sorted(missing))
+        groups = {h: group for _, _, _, saved in self.campaign_files.values() for h, group in saved.items()}
+        for row in rows:
+            if row["config_hash"] not in groups and not row.get("settings_group"):
+                path = STATE / "configurations" / (row["config_hash"] + ".conf")
+                if not path.exists() and row.get("site") and not profiles[row["site"]].ssh:
+                    path = Path(row["folder"]) / "config.conf"
+                if path.exists():
+                    from MTS_Management.config import Config
+                    config = Config.read(path)
+                    if config.config_hash != row["config_hash"]:
+                        raise ValueError(f"Saved configuration hash mismatch: {path}")
+                    groups[row["config_hash"]] = seed_group(config.as_dict())
+            row.update(groups.get(row["config_hash"], {}))
         sources = [{"site": name, "label": site_label(name), "updated_at": snapshot["updated_at"]}
                    for name, snapshot in selected.items()]
         updated = [source["updated_at"] for source in sources if source["updated_at"] is not None]
@@ -262,6 +291,90 @@ class Workspace:
         with self.lock:
             self.history = [entry for entry in self.history
                             if (entry["id"] != entry_id if entry_id else entry["state"] == "running")]
+
+    def campaign_path(self, name):
+        if name not in self.campaign_definitions():
+            raise ValueError("Select a registered campaign.")
+        return next(path for path, (_, campaign, _, _) in self.campaign_files.items() if campaign == name)
+
+    def plot_options(self, campaign, data=None):
+        from MTS_Management.cluster import load_sites, paths
+        from MTS_Plotting.campaign_plot import describe
+        profiles = load_sites(ROOT / "MTSManager/sites.toml")
+        sources = [paths(profile)["output_root"] for profile in profiles.values() if not profile.ssh]
+        sources += list((ROOT / "MTSPlot/data").glob("*"))
+        sources += list((ROOT / "MTSManager/.state/retrieved").glob("*"))
+        return describe(self.campaign_path(campaign), sources, data)
+
+    def slurm_options(self):
+        from MTS_Management.cluster import load_sites
+        from MTS_Management.slurm_control import fields, ACTIONS
+        profiles = load_sites(ROOT / "MTSManager/sites.toml")
+        return {"fields": fields(), "actions": ACTIONS,
+                "sites": [s.name for s in profiles.values() if s.mode == "slurm"]}
+
+    def slurm_program(self, data):
+        import shlex
+        from MTS_Management.slurm_control import validate_rule
+        rule = validate_rule({k: data[k] for k in ("action", "match", "criteria")})
+        if data["site"] != "*" and data["site"] not in self.slurm_options()["sites"]:
+            raise ValueError("Choose an enabled Slurm site.")
+        command = [sys.executable, "-m", "MTS_Management.slurm_control", "--sites", str(ROOT / "MTSManager/sites.toml"),
+                   "--site", data["site"], "--action", rule["action"], "--match", rule["match"],
+                   "--criteria", json.dumps(rule["criteria"])]
+        return {"review": shlex.join(command), "apply": shlex.join(command + ["--apply"])}
+
+    def plot_presets(self, data=None):
+        from MTS_Management.files import locked, read_json, write_json, now
+        path = STATE / "plot-presets.json"
+        with locked(STATE / ".plot-presets.lock"):
+            saved = read_json(path) if path.exists() else {"version": 1, "presets": []}
+            if saved.keys() != {"version", "presets"} or saved["version"] != 1 or not isinstance(saved["presets"], list):
+                raise ValueError("Invalid saved plot presets.")
+            if data is not None:
+                name, selection = data["name"].strip(), data["selection"]
+                if not name or len(name) > 120 or not isinstance(selection, dict):
+                    raise ValueError("A preset requires a name of 1–120 characters and plot selections.")
+                self.campaign_path(selection["campaign"])
+                previous = next((p for p in saved["presets"] if p["id"] == data.get("id")), None)
+                if data.get("id") and previous is None:
+                    raise ValueError("The preset to update no longer exists.")
+                if any(p["name"] == name and p is not previous for p in saved["presets"]):
+                    raise ValueError("A preset with this name already exists. Choose another name or update that preset.")
+                record = {"id": previous["id"] if previous else secrets.token_hex(8), "name": name,
+                          "selection": selection, "updated_at": now()}
+                if previous is None:
+                    saved["presets"].append(record)
+                else:
+                    saved["presets"][saved["presets"].index(previous)] = record
+                write_json(path, saved)
+            return {"presets": sorted(saved["presets"], key=lambda p: p["name"].casefold()),
+                    "saved_id": record["id"] if data is not None else None}
+
+    def plot_preview(self, data):
+        from MTS_Plotting.campaign_plot import preview
+        selection = {k: v for k, v in data.items() if k != "automatic"}
+        key = json.dumps(selection, sort_keys=True)
+        with self.preview_lock:
+            if self.preview_pool is None:
+                self.preview_pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+            if self.preview_future is not None and not self.preview_future.done() and key != self.preview_key:
+                return {"busy": True}
+            if key != self.preview_key or self.preview_future is None or self.preview_future.done():
+                directory = STATE / "previews"
+                directory.mkdir(exist_ok=True)
+                path = directory / (secrets.token_hex(8) + ".png")
+                self.preview_future = self.preview_pool.submit(preview, str(self.campaign_path(data["campaign"])),
+                    data["data"], str(path), selection)
+                self.preview_key = key
+                self.preview_image = path.name
+            future = self.preview_future
+            image = self.preview_image
+        try:
+            result = future.result(timeout=5 if data.get("automatic", True) else None)
+        except FutureTimeout:
+            return {"manual": True}
+        return result | {"image": image}
 
     def status(self):
         modules = {"MTSManager": "MTS_Management", "MTSPlot": "MTS_Plotting", "Model math": "MTM_Math"}
@@ -402,6 +515,28 @@ class Workspace:
             return install_packages(self.log)
         if action == "build":
             return build_simulator(self.log)
+        if action == "slurm_plan":
+            from MTS_Management.slurm_control import run_sites
+            program = self.slurm_program(data)
+            self.log(program["review"], command=True)
+            rule = {k: data[k] for k in ("action", "match", "criteria")}
+            results = run_sites(ROOT / "MTSManager/sites.toml", data["site"], rule, log=self.log)
+            token = secrets.token_hex(12)
+            self.slurm_plan = {"token": token, "created": time.monotonic(), "rule": rule, "site": data["site"],
+                "reviewed": {name: [job["job_id"] for job in response["data"]["jobs"]]
+                             for name, response in results.items() if "data" in response and response["data"]["jobs"]}}
+            return {"slurm_plan": token, "sites": results, "errors": {n: r["error"] for n, r in results.items() if "error" in r}}
+        if action == "slurm_execute":
+            from MTS_Management.slurm_control import run_sites
+            plan = self.slurm_plan
+            if plan is None or data["token"] != plan["token"] or time.monotonic() - plan["created"] > 900:
+                raise ValueError("Review the current selection before running it; plans expire after 15 minutes.")
+            self.slurm_plan = None
+            results = run_sites(ROOT / "MTSManager/sites.toml", plan["site"], plan["rule"],
+                                apply=True, reviewed=plan["reviewed"], log=self.log)
+            return {"slurm_result": True, "sites": results,
+                    "errors": {n: r.get("error", "Some requested changes could not be verified") for n, r in results.items()
+                               if "error" in r or r.get("data", {}).get("unverified")}}
         if action == "update_managers":
             self.log("MTS_Management.deployments.update_managers(sites.toml)", command=True)
             return self.update_servers()
@@ -426,7 +561,17 @@ class Workspace:
                     options = {"hard_refresh": True} if action == "hard_refresh" else {}
                     if config_hashes is not None:
                         options["config_hashes"] = config_hashes
-                    rows = self.manager_call(name, "inventory", site=profiles[name], timeout=120, **options)
+                    for attempt in range(1, 4):
+                        self.check_cancelled()
+                        self.log(f"Inventory attempt {attempt}/3; timeout 60 s")
+                        try:
+                            rows = self.manager_call(name, "inventory", site=profiles[name], timeout=60, **options)
+                            break
+                        except (subprocess.TimeoutExpired, TimeoutError, ConnectionError) as error:
+                            self.check_cancelled()
+                            if attempt == 3:
+                                raise
+                            self.log(f"{site_label(name)}: {error}; retrying.")
                     self.check_cancelled()
                     self.inventory_cache(name, rows=rows, site=profiles[name], config_hashes=config_hashes)
                     updated.append(name)
@@ -461,23 +606,17 @@ class Workspace:
             self.manager(*command)
             return {"config_hash": config.config_hash}
         if action == "plot":
-            from MTS_Plotting.benchmark import figure_name
-            slots = {key: data[key] for key in ("y", "x", "color", "gradient", "fixed")}
             # Matplotlib runs in its own process, isolated from HTTP request threads.
             folder = STATE / "figures" / secrets.token_hex(6)
+            path = folder / "campaign-plot.pdf"
             self.log("Reading simulation tables and creating the figure…")
-            command = [sys.executable, "-m", "MTS_Plotting", str(Path(data["data"]).expanduser().resolve()),
-                       str(folder), "--metric", slots["y"], "--x", slots["x"], "--color", slots["color"],
-                       "--fixed", json.dumps(slots["fixed"]), "--legend-ncols", str(data.get("ncols", 1)),
-                       "--legend-loc", data.get("legend_loc", "best")]
-            if slots["gradient"]:
-                command += ["--gradient", slots["gradient"]]
-            for limit in ("xlim", "ylim"):
-                if data.get(limit) is not None:
-                    command += ["--" + limit, *map(str, data[limit])]
-            run(command, self.log)
-            path = folder / figure_name(**slots)
-            return {"pdf": str(path.relative_to(STATE / "figures")), "name": path.name}
+            options = {k: v for k, v in data.items() if k not in {"campaign", "data"}}
+            result = run([sys.executable, "-m", "MTS_Plotting.campaign_plot", str(self.campaign_path(data["campaign"])),
+                          str(Path(data["data"]).expanduser().resolve()), str(path), json.dumps(options)],
+                         self.log, json_result=True)
+            for warning in result["warnings"]:
+                self.log(warning)
+            return result | {"pdf": str(path.relative_to(STATE / "figures")), "name": path.name}
         raise ValueError(f"Unknown operation: {action}")
 
 
@@ -503,7 +642,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, {"error": "This interface is available only at its local launch address."})
             return False
         path = urlsplit(self.path)
-        if path.path.startswith("/api/") or path.path.startswith("/figures/"):
+        if unquote(path.path).startswith(("/api/", "/figures/", "/previews/")):
             token = self.headers.get("X-MTS-Token") or parse_qs(path.query).get("token", [""])[0]
             if not secrets.compare_digest(token, self.server.app.token):
                 self.reply(403, {"error": "Open MTS using the desktop launcher to start a valid session."})
@@ -532,7 +671,27 @@ class Handler(BaseHTTPRequestHandler):
                 campaign = query.get("campaign", [None])[0]
                 site = query.get("site", [None if campaign is not None else "local"])[0]
                 self.reply(200, self.server.app.inventory_overview(site=site, campaign=campaign))
+            elif path == "/api/plot_options":
+                query = parse_qs(urlsplit(self.path).query)
+                self.reply(200, self.server.app.plot_options(query.get("campaign", [""])[0], query.get("data", [None])[0]))
+            elif path == "/api/slurm_options":
+                self.reply(200, self.server.app.slurm_options())
+            elif path == "/api/plot_check":
+                from MTS_Plotting.campaign_plot import prepared_plot, validate_axes
+                data = json.loads(parse_qs(urlsplit(self.path).query)["selection"][0])
+                _, result = prepared_plot(self.server.app.campaign_path(data["campaign"]), data["data"], data)
+                result = result | {"warnings": result["warnings"] + validate_axes(result, data)}
+                self.reply(200, {k: result[k] for k in ("warnings", "runs", "expected", "mode")})
+            elif path == "/api/plot_presets":
+                self.reply(200, self.server.app.plot_presets())
             else:
+                if path.startswith("/previews/"):
+                    base = (STATE / "previews").resolve()
+                    file = (base / path.removeprefix("/previews/")).resolve()
+                    if not file.is_relative_to(base) or file.suffix != ".png":
+                        raise ValueError("Invalid preview path.")
+                    self.reply(200, file.read_bytes(), "image/png")
+                    return
                 if path.startswith("/figures/"):
                     base = STATE / "figures"
                     file = (base / path.removeprefix("/figures/")).resolve()
@@ -565,7 +724,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Expected a JSON request of at most 64 KiB")
             data = json.loads(self.rfile.read(length))
             action = urlsplit(self.path).path.removeprefix("/api/")
-            if action == "terminal":
+            if action == "slurm_program":
+                self.reply(200, self.server.app.slurm_program(data))
+            elif action == "plot_preview":
+                self.reply(200, self.server.app.plot_preview(data))
+            elif action == "plot_presets":
+                self.reply(200, self.server.app.plot_presets(data))
+            elif action == "terminal":
                 self.server.app.clear_terminal(data.get("id"))
                 self.reply(200, {"cleared": True})
             elif action == "abort":
@@ -581,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "plot",
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "plot", "slurm_plan", "slurm_execute",
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 task_id = self.server.app.start(action.capitalize(), lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs"})
@@ -623,6 +788,8 @@ def serve(install=False, local_sim=False, restart=False):
     try:
         server.serve_forever()
     finally:
+        if app.preview_pool is not None:
+            app.preview_pool.shutdown(wait=False, cancel_futures=True)
         server.server_close()
         if not server.restart_requested:
             record.unlink(missing_ok=True)
