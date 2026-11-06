@@ -93,17 +93,34 @@ async function operation(action, data = {}) {
   finally {updateActions();}
 }
 function inventoryAge() {
-  const updated = inventorySnapshot?.updated_at;
-  if (updated == null) {
+  const sources = (inventorySnapshot?.sources || []).filter(source => !inventorySnapshot.campaign ||
+    inventorySnapshot.rows.some(row => row.site === source.site));
+  const servers = new Map();
+  for (const source of sources) {
+    const server = lastState.servers.find(server => server.profiles.includes(source.site));
+    if (!server) throw new Error(`Unknown inventory server: ${source.site}`);
+    const times = servers.get(server.label) || [];
+    times.push(source.updated_at);
+    servers.set(server.label, times);
+  }
+  const element = $('inventory-updated');
+  element.removeAttribute('title');
+  if (!servers.size) {
     $('inventory-updated').textContent = inventorySnapshot?.rows.some(row => row.local_copy) ?
       'Local copies available. Refresh to update remote status.' : 'Refresh to update data overview.';
-    $('inventory-updated').removeAttribute('title');
     return;
   }
-  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - updated));
-  const age = seconds < 60 ? `${seconds} s` : seconds < 3600 ? `${Math.floor(seconds / 60)} min` : seconds < 86400 ? `${Math.floor(seconds / 3600)} h` : `${Math.floor(seconds / 86400)} d`;
-  $('inventory-updated').textContent = `Last updated ${age} ago` + (inventorySnapshot.sources?.length > 1 ? ' (oldest server snapshot)' : '');
-  $('inventory-updated').title = new Date(updated * 1000).toLocaleString();
+  element.replaceChildren();
+  for (const [label, times] of servers) {
+    const updated = times.includes(null) ? null : Math.min(...times);
+    const seconds = updated == null ? null : Math.max(0, Date.now() / 1000 - updated);
+    const age = seconds == null ? 'No server snapshot available' : seconds < 60 ?
+      'Less than one minute' : `${Math.round(seconds / 60)} min ago`;
+    const line = document.createElement('div');
+    line.textContent = (servers.size > 1 ? `${label} — last update: ` : 'Last update: ') + age;
+    if (updated != null) line.title = new Date(updated * 1000).toLocaleString();
+    element.append(line);
+  }
 }
 async function loadInventory(logSelection = true) {
   const selection = inventorySelection(), selected = $('jobs-site').value, request = ++inventoryRequest;
@@ -357,7 +374,6 @@ async function refresh() {
       if (task.result?.configured && sshEditor?.type === 'connection') closeSSHEditor();
     }
     if (task.state === 'running' || !terminalHistory.some(entry => entry.id === task.id)) $('task-result').textContent = '';
-    inventoryAge();
   } catch (error) {
     if (lastConnectionError !== error.message) message('Connection failed. ' + error.message);
     lastConnectionError = error.message;
@@ -816,6 +832,7 @@ $('restart').onclick = async () => {
   }
 };
 refresh(); poller = setInterval(refresh, 2000);
+setInterval(inventoryAge, 60000);
 
 function renderConnections(rows) {
   const signature = JSON.stringify(rows);

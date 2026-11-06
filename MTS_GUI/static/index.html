@@ -18,7 +18,7 @@
 <div class="form-footer"><button class="primary" id="run-button" type="submit">Run</button></div></form></article>
 </section>
 <section class="view" id="monitor"><div class="intro"><h1>Monitor data</h1></div>
-<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button></div></div><p id="inventory-updated" class="muted" role="status">Refresh to update data overview.</p><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Simulation</th><th>Source</th><th>State</th><th>Load budget</th><th>Actions</th></tr></thead><tbody id="jobs"><tr><td colspan="5" class="empty">Refresh to update data overview.</td></tr></tbody></table></div></article></section>
+<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Simulation</th><th>Source</th><th>State</th><th>Load budget</th><th>Actions</th></tr></thead><tbody id="jobs"><tr><td colspan="5" class="empty">Refresh to update data overview.</td></tr></tbody></table></div></article></section>
 <section class="view" id="plot"><div class="intro"><h1>Plot</h1></div><form class="card" id="plot-form"><div class="fields">
 <div class="field"><label for="plot-campaign">Campaign</label><select id="plot-campaign" required></select></div>
 <div class="field wide"><label for="plot-data">Local simulation data</label><input id="plot-data" list="data-folders" placeholder="/path/to/downloaded/runs" required><datalist id="data-folders"></datalist><small>Choose a local collection. Data retrieval is separate from plotting.</small></div>
@@ -60,7 +60,7 @@
 <div class="setup-item"><div><h3>Compiler tools</h3><p>Optional installation. See the <a href="/InstallationGuide.html" target="_blank" rel="noopener">installation guide</a>.</p><pre id="tools-command">bash setup.sh --local-sim --install-build-tools</pre></div></div></article>
 <details class="card" id="advanced-tools"><summary>Advanced</summary>
 <div class="setup-item"><div><h3>Inventory</h3><p>Rebuild the selected server inventories and reread finished simulations. Simulation files are retained.</p><div class="inline-fields"><select id="hard-refresh-site" aria-label="Hard reset server"><option value="local">local</option></select><button id="hard-refresh" class="danger">Hard reset inventory</button></div></div></div>
-<div class="setup-item"><div><h3>SLURM control</h3>
+<div class="setup-item"><div><details id="slurm-control"><summary>SLURM control</summary>
 <p>Build a command for queued MTS jobs. Review matches before execution. Running jobs are excluded.</p>
 <div class="fields"><div class="field"><label for="slurm-site">On</label><select id="slurm-site"><option value="*">All Slurm sites</option></select></div>
 <div class="field"><label for="slurm-match">Match criteria</label><select id="slurm-match"><option value="all">All criteria</option><option value="any">Any criterion</option></select></div>
@@ -68,7 +68,7 @@
 <div id="slurm-criteria"></div><button id="slurm-add-criterion" type="button" class="small">Add criterion</button>
 <div class="inline-fields slurm-actions"><button id="slurm-generate" type="button">Generate program</button><button id="slurm-review" type="button">Review matching jobs</button><button id="slurm-execute" type="button" disabled>Run reviewed action</button></div>
 <p id="slurm-status" class="muted" role="status">No scheduler action has been requested.</p><pre id="slurm-program">Generate a program from the selected criteria.</pre><pre id="slurm-results" class="hidden"></pre>
-</div></div>
+</details></div></div>
 <div class="setup-item"><div><h3>Server software</h3><p>Transfer MTSManager, campaign files and MTS2D source to the configured servers. Retained binaries remain available to queued jobs.</p><button id="update-managers">Update MTS on servers</button></div></div>
 </details></section>
 </div><aside class="activity card" id="activity" aria-label="Operation log"><div class="section-row"><h2>Terminal</h2><button id="copy-terminal" class="small">Copy all</button><button id="clear-terminal" class="small">Clear terminal</button><span id="task-badge" class="badge">Idle</span><button id="abort" class="small danger hidden" disabled>Abort</button></div><div id="terminal-history" class="terminal-history"><p class="muted">No messages.</p></div><div id="task-result" class="result" role="status"></div></aside></div>

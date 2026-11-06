@@ -46,3 +46,28 @@ when they provide sufficient confidence.
 
 The simulator warrants more careful scientific/numerical testing. Preserve its
 existing tests; do not apply management/plotting test reductions to MTS2D.
+
+# Element identity and transport
+
+For edge-flip reconnection, an element's identity follows its transported
+history. Both long and short transport assign a child to each parent at the
+same `eIndex`; the rule chooses the child's geometry. The native VTU writer
+emits cells in element-index order. Changing reference-node triplets therefore
+does not break transport identity. Triplet matching tracks mesh topology,
+not the simulation's transported history; nearest-centroid matching is also
+not a replacement for the implemented correspondence.
+
+Verify this contract at the run's recorded source revision. Prefer an explicit
+`element_id` when present, checking uniqueness and coverage. Historical native
+VTUs can use cell index only after verifying export order and remeshing behavior.
+Do not assume that external tools preserve cell order. Scope IDs to one run
+and its continuations; they do not identify unchanged material triangles.
+If exporting IDs, reuse the existing `eIndex` as `element_id` for this contract,
+rather than adding an independent counter or checkpoint state. Include it in
+all VTU field levels and both current/reference mesh exports.
+
+Delaunay remeshing currently refills element slots from generated faces; this
+is not the edge-flip parent-to-child transport map. Do not describe its slot
+indices as geometric transport lineages without a separately verified mapping.
+Matrix field names and history updates differ between legacy and current
+simulators: inspect the applicable branch instead of copying formulas across.
