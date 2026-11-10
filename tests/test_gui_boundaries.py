@@ -22,6 +22,41 @@ from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_native_preset_expands_campaign_with_complete_slip_sequences(self):
+        from itertools import product
+        from MTS_GUI.simulation_setup import preset
+        from MTS_Management.campaign import campaign_entries
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = root / ".mts"
+            presets = state / "simulation-presets"
+            imported = preset(presets, {"action": "import", "text": """name = Example
+rows = 100
+cols = 100
+deformation = sequentialSlip
+boundary = anchored
+directions = -1.1,2.1
+"""})
+            saved = preset(presets, {"action": "save", "name": "Base", "settings": imported["settings"]})
+            self.assertEqual(preset(presets, {"action": "import", "text": saved["text"]}), imported)
+            with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", state):
+                workspace = Workspace()
+                workspace.save_campaign({"name": "Sweep", "preset": "Base", "writeMeshVTUs": False, "axes": [
+                    {"parameter": "seed", "mode": "linear", "start": "3", "stop": "5", "count": "3"},
+                    {"parameter": "epsR", "mode": "log", "start": "1e-7", "stop": "1e-5", "count": "3"},
+                    {"parameter": "directions", "mode": "custom", "values": "-1.1,2.1\n-1.1,2.1,2.5"},
+                ]})
+                name, runs = campaign_entries(workspace.campaign_path("Sweep"))
+            self.assertEqual(name, "Sweep")
+            self.assertEqual(len(runs), 18)
+            self.assertTrue(preset(presets, {"action": "load", "name": "Base"})["settings"]["writeMeshVTUs"])
+            self.assertFalse(any(config["writeMeshVTUs"] for config, _ in runs))
+            self.assertEqual(
+                {(c["seed"], float(f"{c['epsR']:.12g}"), (c["directions"], c["totalLoad"])) for c, _ in runs},
+                set(product([3, 4, 5], [1e-7, 1e-6, 1e-5], [("-1.1,2.1", 2), ("-1.1,2.1,2.5", 3)])),
+            )
+
     def test_plot_presets_require_explicit_update_and_persist_independent_copies(self):
         with tempfile.TemporaryDirectory() as temporary, \
                 patch("MTS_GUI.server.STATE", Path(temporary)), \

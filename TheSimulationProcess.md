@@ -192,6 +192,10 @@ Validation covers:
 - Constraints required by the selected physical boundary conditions and any
   requested measurements, such as plastic/elastic classification.
 
+Affine compression and tension use one axial direction, periodic or fixed
+boundaries, and nonnegative engineering strain. Their incremental stretch is
+the ratio of the prescribed stretches at the new and old loads.
+
 Unusual combinations that are mathematically defined are allowed. Step noise
 is available in every loading mode, including without relaxation. For simple
 shear, disabling affine prediction
@@ -312,6 +316,15 @@ The local GUI provides configuration, submission, server updates, monitoring
 and retrieval. The user chooses a site profile containing the SSH destination,
 working directories, environment setup and scheduler settings.
 
+The Start simulations panel can launch individual configurations and save
+reusable presets as native `.conf` files. Import validates settings and
+resolves defaults for a new configuration. It does not reuse a run's identity.
+The campaign editor expands parameter sweeps from one saved preset, validates
+every combination and registers the definition under `MTSManager/campaigns/gui/`.
+If the base preset writes mesh snapshots, the campaign can disable them for
+all its runs. This choice becomes part of each saved run configuration.
+Saving a preset or a campaign does not submit a run.
+
 For remote execution:
 
 1. The local GUI constructs settings from visible fields and explicit overrides.
@@ -330,6 +343,8 @@ it does not mean that the scientific run has finished.
 For local execution, the local manager performs the same preparation and starts
 the binary without SSH or Slurm. Foreground execution waits for the process;
 detached execution runs independently so the GUI can close while it continues.
+The GUI launches individual local runs detached and local campaigns in the
+foreground with one worker.
 
 ## 5. Submission records and the saved command
 
@@ -410,6 +425,10 @@ reports errors per server. Both individual and bulk updates refresh the GUI's
 connection and version status afterward. The manager CLI supports a forced
 update through `mts update-managers --force`; the GUI uses version checks.
 Installation records associate site profiles with their remote manager locations.
+Server updates verify the local simulator source before contacting execution
+hosts. If build inputs have uncommitted changes, the GUI reports the required
+Git steps in a dialog and a highlighted terminal entry. The same guidance
+appears when a local build is blocked by uncommitted inputs.
 
 Source installation verifies archive paths, file lists and source identity,
 copies the managed build inputs, removes obsolete listed inputs and verifies

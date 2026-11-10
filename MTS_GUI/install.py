@@ -22,6 +22,10 @@ COMPONENTS = ("MTS2D", "MTSManager", "MTSPlot")
 
 
 def run(command, log=print, *, env=None, json_result=False):
+    if json_result:
+        from MTS_Management.errors import EXPECTED_ERROR_EXIT, EXPECTED_ERROR_FORMAT, ExpectedError
+
+        env = (os.environ if env is None else env) | {EXPECTED_ERROR_FORMAT: "json"}
     log("$ " + shlex.join(map(str, command)))
     def forward(stream):
         for line in stream:
@@ -37,8 +41,16 @@ def run(command, log=print, *, env=None, json_result=False):
             worker.join()
         else:
             forward(process.stdout)
-        if process.wait():
-            raise subprocess.CalledProcessError(process.returncode, command, output=output)
+        code = process.wait()
+        if code:
+            if json_result and code == EXPECTED_ERROR_EXIT and output:
+                try:
+                    failure = json.loads(output)
+                except json.JSONDecodeError:
+                    failure = None
+                if isinstance(failure, dict) and isinstance(failure.get("expected_error"), str):
+                    raise ExpectedError(failure["expected_error"])
+            raise subprocess.CalledProcessError(code, command, output=output)
         if json_result:
             return json.loads(output)
 
@@ -164,11 +176,15 @@ def install_build_tools():
 
 
 def build_simulator(log):
-    if not shutil.which("cmake"):
-        raise RuntimeError("CMake is missing. See InstallationGuide.html for optional compiler setup.")
     env = os.environ.copy()
-    if platform.system() == "Darwin" and shutil.which("brew"):
-        result = subprocess.run(["brew", "--prefix", "libomp"], capture_output=True, text=True)
+    mac = platform.system() == "Darwin"
+    if mac:
+        # Finder launches without the PATH configured by an interactive shell.
+        env["PATH"] = os.pathsep.join((env.get("PATH", os.defpath), "/opt/homebrew/bin", "/usr/local/bin"))
+    if not shutil.which("cmake", path=env.get("PATH", os.defpath)):
+        raise RuntimeError("CMake is missing. See InstallationGuide.html for optional compiler setup.")
+    if mac and (brew := shutil.which("brew", path=env["PATH"])):
+        result = subprocess.run([brew, "--prefix", "libomp"], env=env, capture_output=True, text=True)
         if result.returncode == 0:
             prefix = result.stdout.strip()
             env["CMAKE_PREFIX_PATH"] = prefix + os.pathsep + env.get("CMAKE_PREFIX_PATH", "")

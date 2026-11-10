@@ -315,6 +315,7 @@ class SSHConnections(unittest.TestCase):
                 self.assertTrue(workspace.is_dir())
                 return {"scripts": scripts_identity()}
             with patch("MTS_Management.deployments.subprocess.run", side_effect=remote), \
+                    patch("MTS_Management.deployments.source_identity", return_value={"source_sha256": "fixture"}), \
                     patch("MTS_Management.deployments.deploy"), patch("MTS_Management.deployments.call", side_effect=verify):
                 # Keep the shared installation fixture inside the temporary HOME.
                 with patch.dict(os.environ, {"HOME": str(root)}):

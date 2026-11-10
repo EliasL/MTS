@@ -10,6 +10,9 @@ target document's implementation status consistent with lifecycle changes.
 Keep code simple, reuse existing functions, and raise errors for unexpected data
 instead of silently inventing behavior.
 
+Present expected, user-correctable failures with actionable guidance in the
+interface. Keep diagnostic tracebacks for unexpected failures.
+
 When asked to push, publish completed changes to GitHub's default branch
 (`main`), unless another branch is explicitly requested. Publishing only a
 feature branch does not complete this request. Preserve existing remote work.

@@ -32,6 +32,30 @@ remain independent of the GUI process.
 Start simulations configures and launches runs. Monitor data displays records
 for a server or a campaign. Plot exports campaign response curves and scalar comparisons.
 
+## Start simulations
+
+Choose an experiment. Simple shear applies a shear transformation. Affine
+compression and tension use engineering strain along one axis and hold the
+transverse span fixed. Boundary displacement with fixed or sliding clamps
+is available as a preview. Sequential slip drives selected boundary regions of
+an open sample. Choose a midpoint sequence or enter a custom sequence such as
+`1.5,2.5,2.5` for three full slips. Additional settings contains the loading
+mode and controls for switching and repeating directions.
+
+The built-in simple shear and sequential slip presets are starting points for
+size scaling and boundary slip. Save an individual configuration as a named
+preset to reuse its settings. Presets can be downloaded and imported as native
+MTS2D `.conf` files.
+
+To create a campaign, select a saved preset and add sweep parameters. Linear
+and logarithmic sweeps include both endpoints and round integer parameters to
+the nearest integer. Custom numeric values are separated by spaces or commas.
+Use one value per line for text and boolean parameters. Square size L varies
+both dimensions together. Show all options reveals less common parameters.
+A campaign contains one
+run per combination, up to 1,000 runs. Save the campaign, then select its
+execution site and run it. Local campaigns run one simulation at a time.
+
 ## Campaign plots
 
 Select a campaign and a local data collection in Plot. The panel lists varied

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .install import ROOT, STATE, COMPONENTS, build_simulator, install_packages, run, write_entry
+from . import simulation_setup
 
 
 def site_label(name):
@@ -90,6 +91,13 @@ class Workspace:
                 with self.lock:
                     self.task.update(state="aborted")
             except Exception as error:
+                # The manager may be absent during initial GUI setup.
+                errors = sys.modules.get("MTS_Management.errors")
+                if errors and isinstance(error, errors.ExpectedError):
+                    self.log(str(error))
+                    with self.lock:
+                        self.task.update(state="failed", error=str(error), warning=True)
+                    return
                 for stream in ("stdout", "stderr"):
                     output = getattr(error, stream, None)
                     if output:
@@ -297,6 +305,27 @@ class Workspace:
             raise ValueError("Select a registered campaign.")
         return next(path for path, (_, campaign, _, _) in self.campaign_files.items() if campaign == name)
 
+    def start_options(self):
+        from MTS_Management.config import DEFAULTS
+        return {"defaults": DEFAULTS,
+                "presets": simulation_setup.preset_names(STATE / "simulation-presets"),
+                "campaigns": sorted(path.parent.name for path in
+                                    (ROOT / "MTSManager/campaigns/gui").glob("*/simulations.json"))}
+
+    def save_campaign(self, data):
+        from MTS_Management.files import locked, write_json
+
+        definition = simulation_setup.campaign_definition(STATE / "simulation-presets", data)
+        name = definition["name"]
+        directory = ROOT / "MTSManager/campaigns/gui" / name
+        with locked(STATE / ".simulation-campaigns.lock"):
+            if name in self.campaign_definitions():
+                raise ValueError("A campaign with this name already exists. Choose a new name.")
+            write_json(directory / "resources.json", {})
+            write_json(directory / "metadata.json", {"missing_settings": {}, "executables": []})
+            write_json(directory / "simulations.json", definition)
+        return {"name": name, "runs": len(definition["runs"])}
+
     def plot_options(self, campaign, data=None):
         from MTS_Management.cluster import load_sites, paths
         from MTS_Plotting.campaign_plot import describe
@@ -409,7 +438,7 @@ class Workspace:
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "campaigns": sorted(self.campaign_definitions()) if packages["MTSManager"] else [],
-                "sites": sites, "servers": servers, "task": task, "history": history, "interface_version": 3,
+                "sites": sites, "servers": servers, "task": task, "history": history, "interface_version": 4,
                 "ssh_connections": self.connection_status(site_file) if packages["MTSManager"] and site_file.exists() else [],
                 "setup_command": f'bash "{ROOT}/setup.sh" --local-sim --install-build-tools'}
 
@@ -592,8 +621,7 @@ class Workspace:
         if action in {"logs", "stop"}:
             return self.manager_call(data.get("site", "local"), action, attempt=data["attempt"])
         if action == "run":
-            from MTS_Management.config import Config
-            config = Config(**data["settings"])
+            config = simulation_setup.simulation_config(data)
             folder = STATE / "configurations"
             folder.mkdir(exist_ok=True)
             path = folder / (config.config_hash + ".conf")
@@ -605,6 +633,15 @@ class Workspace:
                 command += ["--mode", "detached"]
             self.manager(*command)
             return {"config_hash": config.config_hash}
+        if action == "run_campaign":
+            name = simulation_setup.checked_name(data["name"])
+            path = self.campaign_path(name)
+            site = data["site"]
+            command = ["campaign", path, "--site", site]
+            if site == "local":
+                command += ["--mode", "foreground", "--workers", "1"]
+            self.manager(*command)
+            return {"campaign": name}
         if action == "plot":
             # Matplotlib runs in its own process, isolated from HTTP request threads.
             folder = STATE / "figures" / secrets.token_hex(6)
@@ -676,6 +713,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.plot_options(query.get("campaign", [""])[0], query.get("data", [None])[0]))
             elif path == "/api/slurm_options":
                 self.reply(200, self.server.app.slurm_options())
+            elif path == "/api/start_options":
+                self.reply(200, self.server.app.start_options())
             elif path == "/api/plot_check":
                 from MTS_Plotting.campaign_plot import prepared_plot, validate_axes
                 data = json.loads(parse_qs(urlsplit(self.path).query)["selection"][0])
@@ -730,6 +769,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.plot_preview(data))
             elif action == "plot_presets":
                 self.reply(200, self.server.app.plot_presets(data))
+            elif action == "simulation_preset":
+                self.reply(200, simulation_setup.preset(STATE / "simulation-presets", data))
+            elif action == "save_campaign":
+                self.reply(200, self.server.app.save_campaign(data))
             elif action == "terminal":
                 self.server.app.clear_terminal(data.get("id"))
                 self.reply(200, {"cleared": True})
@@ -746,7 +789,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "plot", "slurm_plan", "slurm_execute",
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "run_campaign", "plot", "slurm_plan", "slurm_execute",
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 task_id = self.server.app.start(action.capitalize(), lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs"})
