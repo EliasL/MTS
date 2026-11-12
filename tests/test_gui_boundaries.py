@@ -22,6 +22,40 @@ from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_download_receipt_identifies_remote_folder_without_attempt_files(self):
+        import shlex
+        from MTS_Management.cluster import Site
+        from MTS_Management.config import Config
+        from MTS_Management.files import file_digest, write_json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = Config()
+            folder = root / "MTSManager/.state/retrieved/macros" / config.folder_name()
+            folder.mkdir(parents=True)
+            config.write(folder / "config.conf")
+            manifest = folder / "manifest.json"
+            write_json(manifest, {"config_hash": config.config_hash, "created_at": "2026-11-10T10:00:00+01:00"})
+            remote_root = "/work/PhD's results"
+            write_json(folder.parent / "snapshot.json", {
+                "site": "cluster", "source_root": remote_root, "runs": [
+                    {"config_hash": config.config_hash, "manifest_sha256": file_digest(manifest)},
+                ],
+            })
+            sites = {"local": Site(name="local"), "cluster": Site(name="cluster", ssh="my-cluster")}
+            with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", root / ".mts"), \
+                    patch("MTS_Management.cluster.load_sites", return_value=sites):
+                workspace = Workspace()
+                row, = workspace.inventory_overview(site="local")["rows"]
+                self.assertTrue(row["local_copy"])
+                self.assertEqual(Path(row["folder"]).resolve(), folder.resolve())
+                self.assertEqual(row["run_date"], "2026-11-10T10:00:00+01:00")
+                ssh, terminal, separator, host, command = shlex.split(row["ssh_command"])
+                self.assertEqual((ssh, terminal, separator, host), ("ssh", "-t", "--", "my-cluster"))
+                self.assertEqual(shlex.split(command)[:3], ["cd", "--", f"{remote_root}/{folder.name}"])
+                with self.assertRaisesRegex(ValueError, "unavailable"):
+                    workspace.open_run_folder({"folder": str(root), "config_hash": config.config_hash})
+
     def test_native_preset_expands_campaign_with_complete_slip_sequences(self):
         from itertools import product
         from MTS_GUI.simulation_setup import preset
@@ -39,7 +73,7 @@ boundary = anchored
 directions = -1.1,2.1
 """})
             saved = preset(presets, {"action": "save", "name": "Base", "settings": imported["settings"]})
-            self.assertEqual(preset(presets, {"action": "import", "text": saved["text"]}), imported)
+            self.assertEqual(preset(presets, {"action": "import", "text": saved["text"]}), imported | {"label": "Base"})
             with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", state):
                 workspace = Workspace()
                 workspace.save_campaign({"name": "Sweep", "preset": "Base", "writeMeshVTUs": False, "axes": [
@@ -72,6 +106,89 @@ directions = -1.1,2.1
             saved = {p["id"]: p for p in Workspace().plot_presets()["presets"]}
             self.assertEqual(saved[first_id]["selection"]["y"], "avg_sigma12")
             self.assertEqual(saved[second["saved_id"]]["selection"], selection | {"xscale": "log"})
+
+    def test_dropped_csv_resolves_by_content_and_plots_the_original_file(self):
+        from MTS_Management.files import file_digest
+        from MTS_Plotting.campaign_plot import prepared_plot
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            one, two = [root / folder / "measurements.csv" for folder in ("first", "second")]
+            for path, value in ((one, 8), (two, 3)):
+                path.parent.mkdir()
+                path.write_text(f"time,value,tag\n2,{value},a\n0,5,b\n")
+            drop = {"name": two.name, "size": two.stat().st_size, "sha256": file_digest(two)}
+            workspace = Workspace()
+            with patch.object(workspace, "plot_data_roots", return_value=[root]):
+                selected = workspace.open_data_file(drop)
+                spec = {"campaign": selected["plot_selection"], "data": selected["path"], "x": "time", "y": "value"}
+                schema, result = prepared_plot(*workspace.plot_inputs(spec))
+                self.assertEqual(schema["data"], str(two))
+                self.assertEqual(set(schema["quantities"]), {"time", "value"})
+                item, = result["series"]
+                self.assertEqual((item["x"], item["mean"]), ([2, 0], [3, 5]))
+
+                one.write_bytes(two.read_bytes())
+                self.assertEqual(workspace.open_data_file(drop), {"paths": [str(one), str(two)]})
+                self.assertEqual(workspace.open_data_file({"path": str(two)}), selected)
+
+    def test_dropped_mesh_files_select_their_full_run(self):
+        from MTS_Management.config import Config
+        from MTS_Management.data import mesh_snapshots
+
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Config()
+            folder = Path(temporary).resolve() / config.folder_name()
+            mesh = folder / "data" / "example_load=1_nrM=0_.2.vtu"
+            mesh.parent.mkdir(parents=True)
+            mesh.touch()
+            mesh.with_name("example_load=0_nrM=0_.1.vtu").touch()
+            collection = folder / "data.pvd"
+            collection.touch()
+            config.write(folder / "config.conf")
+            (folder / "manifest.json").write_text(json.dumps({
+                "settings": config.as_dict(), "config_hash": config.config_hash, "executable_sha256": "fixture"}))
+            workspace = Workspace()
+            for path in (mesh, collection):
+                selected = workspace.open_data_file({"path": str(path)})
+                spec = {"campaign": selected["plot_selection"], "data": selected["path"]}
+                run = workspace.animation_source(spec)
+                self.assertEqual(run, folder)
+                self.assertEqual([frame["step"] for frame in mesh_snapshots(run)], [1, 2])
+                self.assertEqual(workspace.plot_options(**spec)["data"], str(path))
+
+    def test_restart_recovers_monitor_source_and_reports_invalid_state(self):
+        with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.STATE", Path(temporary)):
+            root = Path(temporary)
+            workspace = Workspace()
+            source = {"path": root / "data", "site": None, "anchor": {"folder": str(root / "data")},
+                      "group": [], "manifests": {"data": "fixture"}}
+            workspace.run_plot_sources["@example"] = source
+            workspace.restart_plot_sources()
+            restarted = Workspace()
+            restarted.restart_plot_sources(restore=True)
+            self.assertEqual(restarted.run_plot_source("@example"), source)
+            self.assertEqual(restarted.history, [])
+
+            (root / "restart-plot-sources.json").write_text('{"version":99,"sources":{}}')
+            invalid = Workspace()
+            invalid.restart_plot_sources(restore=True)
+            self.assertEqual(invalid.run_plot_sources, {})
+            self.assertEqual(invalid.task["state"], "idle")
+            self.assertIn("could not be restored", invalid.history[0]["logs"][0])
+
+    def test_animation_presets_are_reusable_without_a_campaign(self):
+        with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.STATE", Path(temporary)):
+            workspace = Workspace()
+            settings = {"fields": {"animate-kind": "energy", "animate-dpi": "300"},
+                        "curve": [[0, 0], [.6, .7], [1, 1]]}
+            saved = workspace.presets({"name": "Energy", "selection": settings}, kind="animation")
+            self.assertEqual(Workspace().presets(kind="animation")["presets"][0]["selection"], settings)
+            self.assertEqual(Workspace().plot_presets()["presets"], [])
+            updated = settings | {"curve": [[0, .4]]}
+            workspace.presets({"name": "Energy", "selection": updated, "id": saved["saved_id"]}, kind="animation")
+            result, = Workspace().presets(kind="animation")["presets"]
+            self.assertEqual(result["selection"], updated)
 
     def test_restart_loads_new_backend_code_and_preserves_session(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -133,7 +250,7 @@ directions = -1.1,2.1
     def test_inventory_cache_is_local_persistent_and_isolated_by_site_configuration(self):
         from MTS_Management.cluster import Site
         sites = {name: Site(name=name, ssh=name) for name in ("first", "second")}
-        rows = [{"config_hash": "example", "status": {"state": "running"}}]
+        rows = [{"config_hash": "example", "folder": "/work/output/example", "status": {"state": "running"}}]
         with tempfile.TemporaryDirectory() as temporary, redirect_stdout(StringIO()), \
                 patch("MTS_GUI.server.STATE", Path(temporary)), \
                 patch("MTS_GUI.server.ROOT", Path(temporary)), \
@@ -153,7 +270,7 @@ directions = -1.1,2.1
                 with self.assertRaises(TimeoutError):
                     workspace.operation("inventory", {"site": "first"})
             self.assertEqual(workspace.inventory_cache("first"), snapshot)
-            refreshed = [{"config_hash": "example", "status": {"state": "finished"}}]
+            refreshed = [rows[0] | {"status": {"state": "finished"}}]
             with patch("MTS_Management.cluster.call", side_effect=[
                     subprocess.TimeoutExpired("ssh", 60), ConnectionError("disconnected"), refreshed]):
                 workspace.operation("inventory", {"site": "first"})
@@ -250,6 +367,107 @@ directions = -1.1,2.1
             self.assertNotEqual(first["settings_group"], different["settings_group"])
             self.assertEqual([rows[c.config_hash]["seed"] for c in configs], [8, 2, 2])
             self.assertEqual(first["folder"], "DifferentLabel")
+
+    def test_monitor_plot_and_archive_use_exact_run_identities(self):
+        from MTS_Management.cluster import Site
+        from MTS_Management.config import Config
+        from MTS_Management.errors import ExpectedError
+        from MTS_Management.files import write_json
+        from MTS_Plotting.campaign_plot import prepared_plot
+
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(StringIO()):
+            root = Path(temporary).resolve()
+            site = Site(name="local", directory=str(root))
+            configs = [Config(seed=seed) for seed in (1, 2)]
+            output = root / "output"
+            definition = root / "MTSManager/campaigns/gui/example/simulations.json"
+            write_json(definition, {"name": "Example", "runs": [
+                {"label": f"Seed{c['seed']}", "settings": c.as_dict()} for c in configs]})
+            folders = []
+            for config in configs:
+                folder = output / config.folder_name(f"Seed{config['seed']}")
+                attempt = folder / "attempts/attempt"
+                attempt.mkdir(parents=True)
+                config.write(folder / "config.conf", f"Seed{config['seed']}")
+                write_json(folder / "manifest.json", {"settings": config.as_dict(), "campaign": "Example",
+                           "config_hash": config.config_hash, "executable_sha256": "fixture"})
+                write_json(attempt / "request.json", {"campaign": "Example", "created_at": "2026-01-01"})
+                write_json(attempt / "status.json", {"state": "finished"})
+                (folder / "macroData.csv").write_text(f"load,avg_sigma12\n0,0\n1,{config['seed']}\n2,")
+                folders.append(folder)
+            sites = {"local": site}
+            with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", root / ".mts"), \
+                    patch("MTS_Management.cluster.load_sites", return_value=sites):
+                workspace = Workspace()
+                scope = {"campaign": "Example"}
+                workspace.operation("inventory", scope)
+                rows = {row["config_hash"]: row for row in workspace.inventory_overview(**scope)["rows"]}
+                selections = [{"scope": scope, "runs": [rows[c.config_hash]]} for c in configs]
+                for extra, executable in [(Config(seed=3, nrThreads=2), "fixture"), (Config(seed=4), "different")]:
+                    extra_folder = output / extra.folder_name()
+                    write_json(extra_folder / "manifest.json", {"settings": extra.as_dict(),
+                               "config_hash": extra.config_hash, "executable_sha256": executable})
+                result = workspace.open_run_plot(selections[1])
+                self.assertTrue(result["has_other_seeds"])
+                self.assertFalse(result["include_seeds"])
+                spec = {"campaign": result["plot_selection"], "x": "load", "y": "avg_sigma12", "seed": "all"}
+                schema, plot = prepared_plot(*workspace.plot_inputs(spec))
+                self.assertEqual(schema["data"], str(folders[1]))
+                self.assertEqual(workspace.animation_options(spec)["boundary"], "fixed")
+                self.assertEqual(plot["series"][0]["mean"], [0, 2])
+                self.assertEqual(plot["runs"], 1)
+                expanded = workspace.open_run_plot({"selection": result["plot_selection"], "include_seeds": True})
+                self.assertEqual(workspace.animation_options({"campaign": expanded["plot_selection"]}), {})
+                self.assertEqual(workspace.animation_source({"campaign": "Example", "data": str(output), "seed": 2}),
+                                 folders[1])
+                _, plot = prepared_plot(*workspace.plot_inputs(spec | {"campaign": expanded["plot_selection"]}))
+                self.assertEqual(plot["series"][0]["mean"], [0, 1.5])
+                self.assertEqual(plot["series"][0]["seed_ids"], [1, 2])
+                group = workspace.open_run_plot({"scope": scope, "runs": list(rows.values())})
+                self.assertTrue(group["include_seeds"])
+
+                status = folders[1] / "attempts/attempt/status.json"
+                write_json(status, {"state": "running"})
+                with self.assertRaisesRegex(ExpectedError, "all attempts have stopped"):
+                    workspace.archive_monitor({"scope": scope, "runs": list(rows.values())})
+                self.assertTrue(all(folder.is_dir() for folder in folders))
+                write_json(status, {"state": "finished"})
+
+                workspace.archive_monitor(selections[0])
+                archive = root / "output-archive"
+                self.assertTrue((archive / folders[0].name / "macroData.csv").is_file())
+                self.assertFalse(folders[0].exists())
+                overview = workspace.inventory_overview(**scope)
+                self.assertEqual((overview["found"], overview["missing"], overview["archived"]), (1, 0, 1))
+                self.assertTrue(definition.is_file())
+                sites["offline"] = Site(name="offline", ssh="offline")
+                with patch("MTS_Management.cluster.across", side_effect=AssertionError("Unexpected SSH check")):
+                    result = workspace.archive_monitor(selections[1])
+                self.assertFalse(result["errors"])
+                self.assertIn("Verification is pending for offline", result["campaign_notes"][0])
+                self.assertTrue(definition.is_file())
+                self.assertFalse(folders[1].exists())
+                del sites["offline"]
+                workspace.operation("archive_campaign", scope)
+                self.assertTrue((root / "MTSManager/campaigns-archive/example/simulations.json").is_file())
+                self.assertEqual(workspace.inventory_overview(site="local")["rows"], [])
+
+                workspace = Workspace()
+                entries = workspace.archive_history()
+                campaign = next(row for row in entries if row["kind"] == "campaign")
+                run = next(row for row in entries if row["output_folder"] == str(folders[1]))
+                workspace.restore_archive(campaign["event_id"])
+                self.assertTrue(definition.is_file())
+                folders[1].mkdir()
+                with self.assertRaisesRegex(ExpectedError, "Destination already exists"):
+                    workspace.restore_archive(run["event_id"])
+                self.assertTrue((archive / folders[1].name / "macroData.csv").is_file())
+                folders[1].rmdir()
+                workspace.restore_archive(run["event_id"])
+                self.assertEqual((folders[1] / "macroData.csv").read_text(), "load,avg_sigma12\n0,0\n1,2\n2,")
+                restored, = workspace.inventory_overview(site="local")["rows"]
+                self.assertEqual(restored["config_hash"], configs[1].config_hash)
+                self.assertEqual(sum(row["status"] == "Restored" for row in workspace.archive_history()), 2)
 
     def test_clearing_terminal_does_not_release_a_running_operation(self):
         workspace = Workspace()

@@ -32,6 +32,12 @@ remain independent of the GUI process.
 Start simulations configures and launches runs. Monitor data displays records
 for a server or a campaign. Plot exports campaign response curves and scalar comparisons.
 
+Drop one file anywhere in the workspace. A `.conf` file fills the individual
+simulation form for review. A `.csv` file opens in Plot, where its numeric
+columns can be used as axes. A `.pvd` or `.vtu` file from an MTS run opens
+the run's full saved sequence in Animate. If MTS cannot identify the original
+file in its data folders, enter its path in the Open data file dialog.
+
 ## Start simulations
 
 Choose an experiment. Simple shear applies a shear transformation. Affine
@@ -240,7 +246,89 @@ when saved settings are available locally. Single-seed groups expose the run
 directly. Site groups and the full Running hierarchy start expanded; Queued and
 Completed start collapsed. Simulation names
 omit the hash; the full folder and configuration hash remain in the tooltip.
-Simulation names are sorted alphabetically, with numeric portions ordered numerically.
+Column headers sort the rows within the existing groups. Date defaults to newest
+first. Source, Date and Load are hidden in that order as the table narrows.
+The simulation tooltip includes their values. Open opens a local folder or
+copies the SSH command for a remote folder. Log displays the attempt log.
+
+Plot displays the selected run's data path. Include other seeds appears when
+the same output directory has runs that share the saved settings and executable
+but differ in seed. It starts checked when opened from a seed group.
+Remote selections download macro CSV, configuration, manifest and available
+termination metadata. Including other seeds downloads their data from the same
+server. Remote seed discovery requires a current manager on the execution host.
+Campaign-wide plots use the campaign selector and a local data collection.
+
+Archive moves an inactive run or seed group into a sibling directory named
+`<output-root>-archive`. The execution host checks that both paths are on the
+same filesystem and moves the directory by renaming it. A server run and its
+downloaded copies can be archived separately. Setup and tools → Advanced →
+Archive log lists the recorded moves. Restore returns each item to its original
+location and updates the inventory. Archive and Restore require a current
+manager on remote execution hosts.
+
+When every planned run is archived and current checks find no unarchived copy,
+the desktop moves the campaign definition to `MTSManager/campaigns-archive/`.
+If a site cannot be verified, use Archive campaign settings from the campaign
+view after access is restored. The Archive log also restores campaign settings.
+
+## Animate
+
+Animate shares the Plot selection. Select one run to generate an MP4 from
+its saved mesh snapshots. Available views are element energy, square-model
+integer shear, matrix components, and the Poincaré disk of a deformation
+metric. The integer-shear view uses plastic history for reconnecting runs
+and the plastic deformation gradient for other runs.
+
+Use Nodes and Mesh lines to overlay the mesh or show its geometry with the
+field set to None. Node colours and size are available when Nodes is enabled.
+The default node diameter is about three sevenths of the reference spacing.
+Show legend controls the node key and colour bars. Legend size adjusts their
+text. Displaced denotes a constrained node that has moved from
+its reference position. Videos use 200 dpi by default, with 100 and 300 dpi
+available. The preview and MP4 are cropped to the plot, its labels, and its
+legend. The optional frame header
+reports load, total and mean element energy, mean shear stress, plastic
+events, simulation step and saved frame number.
+
+Dislocations marks candidate cores enclosed by nonzero Burgers circuits.
+The lattice defaults to the simulation's square or triangular energy model.
+Native mesh detection uses the elastic distortion on adjacent triangles.
+Runs without reconnection also offer Delaunay, which fits lattice steps
+from current node positions. Bond tolerance controls the maximum mismatch
+between a measured Delaunay bond and its assigned lattice step, in units of
+lattice spacing. The default is 0.25. The animation renders the saved
+simulation mesh. The overlay excludes circuits that touch a free boundary.
+The symbol stem points toward the extra half-plane. Symbol size and stroke
+width are independently adjustable.
+
+Automatic tiling fills the undeformed viewport for fully periodic runs.
+Tile fixed viewport can also be selected for periodic anchored runs.
+Single sample shows the exported mesh with fixed limits over the movie.
+Mesh bounding box adds 2% padding on each side of the mesh viewport.
+The viewport also leaves room for any visible node markers. Mesh colouring
+controls the heatmap, limits and opacity. For Energy, Conditional opacity
+maps energy to opacity with a piecewise-linear curve. The colour bar uses
+the same curve. The energy limit fields display the automatic limits after
+the data scan. Nodes on the curve keep their relative positions when the
+energy limits change. Default playback uses 15 seconds
+per unit accumulated load, a minimum of seven seconds, and 30 frames per
+second. Uniform saved states is available for playback by snapshot order.
+
+MP4 export requires FFmpeg with H.264 encoding. MTS uses FFmpeg from the
+system path or the executable listed in `.mts/ffmpeg-path`. For a remote
+run selected in Monitor data, the current server manager provides the mesh
+snapshot catalogue and MTS retrieves the snapshots used in the movie.
+Rendered frames go directly to the encoder. Preview first frame and Preview
+middle frame render a still after scanning the same mesh states as the video
+for bounds and colour limits. The middle frame follows the video playback
+schedule.
+Automatic worker selection uses available memory and the first frame's peak
+memory, while reserving one CPU when possible. An estimate from a matching
+preview allows parallel rendering to start immediately.
+
+Animation presets save rendering and playback settings, including the opacity
+curve. Load a preset to apply those settings to the selected simulation.
 
 ## SLURM control
 
@@ -282,6 +370,10 @@ Data-source selections and browser errors appear as terminal entries. Browser
 entries survive page reloads in the same tab when session storage is available;
 delete them individually, clear the terminal, or quit MTS to remove them.
 An inventory without a saved snapshot displays “Refresh to update data overview.”
+
+The browser tab keeps a temporary workspace draft across page refreshes and
+Restart MTS. It restores the active panel, selections, settings and available
+previews. Recovery errors appear in the Terminal.
 
 The session token, environment, generated figures and logs live in the ignored
 `.mts/` directory or generated entry files. Do not expose the server to a network

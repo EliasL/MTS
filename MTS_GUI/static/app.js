@@ -10,13 +10,19 @@ let backendHistory = [], clientHistory = [], lastConnectionError = '';
 let pendingOperation, mismatchReported = false, hiddenBackendEntries = new Set();
 let lastInventoryUpdate = '';
 const inventoryOpen = new Map();
+let inventorySort = 'date', inventoryAscending = false, inventoryNoticeTimer;
+const inventoryDateFormat = new Intl.DateTimeFormat('de-DE', {day: '2-digit', month: '2-digit', year: 'numeric'});
 try {
   const saved = JSON.parse(sessionStorage.getItem('mts-terminal-history') || 'null');
   if (saved?.token === accessToken && Array.isArray(saved.entries)) clientHistory = saved.entries;
 } catch {} // Terminal feedback remains available when browser storage is blocked.
 let plotSchema, plotValid = false, plotRequest = 0, plotCheckRequest = 0, plotTimer;
 let previewBusy = false, previewAutomatic = true, previewRevision = 0, previewManualPending = false;
-let plotPresets = [], loadedPresetId = null;
+let plotPresets = [], loadedPresetId = null, monitorPlot = null, filePlot = null;
+let animationPresets = [], loadedAnimationPresetId = null, recoveringWorkspace = true, draftTimer, initialRefresh = false;
+let animationRequest = 0, animationSourceKey = '', animationLatticeKey = '';
+let animationHeatmapKind, animationEnergyRange, lastAnimationScan;
+const opacityEditor = createOpacityEditor($('animate-opacity-chart'), $('animate-remove-opacity-node'));
 let startOptions, campaignBaseSettings;
 let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -38,7 +44,7 @@ function fillMonitorSources(campaigns = lastState?.campaigns || inventorySnapsho
     site => new Option(siteLabel(site.label || site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
-const actionButtons = ['install-packages','build-simulator','run-button','campaign-run','plot-button','refresh-jobs','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
+const actionButtons = ['install-packages','build-simulator','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-middle','animate-button','refresh-jobs','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
 for (const id of actionButtons) {
   const button = $(id), hint = document.createElement('span');
   hint.className = 'action-hint';
@@ -82,7 +88,10 @@ async function operation(action, data = {}) {
     command += '\nUp to 3 attempts per site; 60 s per attempt.';
     command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=60${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
   }
-  const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) : action, command, 'running');
+  const labels = {plot_monitor: 'Prepare plot data', archive_monitor: 'Archive',
+    archive_campaign: 'Archive campaign settings', restore_archive: 'Restore'};
+  const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
+    labels[action] || action, command, 'running');
   pendingOperation = entry;
   updateActions();
   try {
@@ -131,7 +140,7 @@ async function loadInventory(logSelection = true) {
   const entry = logSelection ? terminalMessage('Data source: ' + (selection.campaign || siteLabel(selection.site)),
     'Reading cached inventories, campaign definitions and local copies.', 'running') : null;
   inventorySnapshot = null; inventoryAge();
-  $('jobs').innerHTML = '<tr><td colspan="5" class="empty">Loading local inventory…</td></tr>';
+  $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Loading local inventory…</td></tr>';
   try {
     const snapshot = await api('inventory?' + new URLSearchParams(selection));
     if (request !== inventoryRequest || selected !== $('jobs-site').value) {
@@ -139,11 +148,13 @@ async function loadInventory(logSelection = true) {
       return;
     }
     inventorySnapshot = snapshot;
+    $('archive-campaign').classList.toggle('hidden', !snapshot.expected || snapshot.archived !== snapshot.expected);
     fillMonitorSources(snapshot.campaigns);
     renderInventory(snapshot.rows);
-    if (!snapshot.rows.length && snapshot.updated_at == null) $('jobs').innerHTML = '<tr><td colspan="5" class="empty">Refresh to update data overview.</td></tr>';
+    if (!snapshot.rows.length && snapshot.updated_at == null) $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr>';
     const counts = snapshot.expected == null ? `${snapshot.rows.length} records available.` :
-      `Expected: ${snapshot.expected}. Found: ${snapshot.found}. Missing from available records: ${snapshot.missing}.`;
+      `Expected: ${snapshot.expected}. Found: ${snapshot.found}. Missing from available records: ${snapshot.missing}.` +
+      (snapshot.archived ? ` Archived: ${snapshot.archived}.` : '');
     const unknown = (snapshot.sources || []).filter(source => source.updated_at == null).map(source => source.label);
     $('inventory-coverage').textContent = counts + (selection.campaign ?
       ' Membership uses expected configurations and cached records across servers.' : '') +
@@ -155,13 +166,13 @@ async function loadInventory(logSelection = true) {
   } catch (error) {
     if (entry) finishMessage(entry, error.message, 'failed'); else message(error.message);
     if (request !== inventoryRequest) return;
-    $('jobs').innerHTML = '<tr><td colspan="5" class="empty">Local inventory could not be loaded.</td></tr>';
+    $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Local inventory could not be loaded.</td></tr>';
   }
 }
 function updateActions() {
   if (!lastState) return;
   const busy = lastState.task.state === 'running' || pendingOperation?.state === 'running', ready = Object.values(lastState.packages).every(Boolean);
-  for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button, #ssh-list button, #ssh-editor button')]) {
+  for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button:not(.folder-location), #ssh-list button, #ssh-editor button')]) {
     if (!button.parentElement.classList.contains('action-hint')) {
       const hint = document.createElement('span'); hint.className = 'action-hint';
       button.before(hint); hint.append(button);
@@ -180,8 +191,14 @@ function updateActions() {
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
+  for (const id of ['animate-button', 'animate-preview-button', 'animate-preview-middle']) {
+    $(id).disabled ||= !ready || $('animation-settings').hidden;
+  }
   $('plot-preview-update').disabled = !ready || !plotSchema || previewBusy;
-  $('plot-preset-update').disabled = !loadedPresetId || !plotSchema;
+  $('plot-other-seeds').disabled = busy || !plotSchema;
+  $('plot-preset-new').disabled = !plotSchema || isMonitorPlot() || isFilePlot();
+  $('plot-preset-update').disabled = !loadedPresetId || $('plot-preset-new').disabled;
+  $('animation-preset-update').disabled = !loadedAnimationPresetId;
   for (const id of ['slurm-generate', 'slurm-review']) $(id).disabled = busy || !slurmSchema;
   $('slurm-execute').disabled = busy || !slurmReviewedToken;
   $('refresh-jobs').disabled ||= !ready;
@@ -233,24 +250,138 @@ function fillSites(sites) {
     if (sites.some(site => site.name === previous)) select.value = previous;
   });
 }
+async function openFolderLocation(row) {
+  const actions = [];
+  if (row.ssh_command) {
+    actions.push((async () => {
+      await navigator.clipboard.writeText(row.ssh_command);
+      $('inventory-notice').textContent = 'SSH command copied to clipboard.';
+      clearTimeout(inventoryNoticeTimer);
+      inventoryNoticeTimer = setTimeout(() => {$('inventory-notice').textContent = '';}, 3000);
+    })());
+  }
+  const copy = row.local_paths?.[0];
+  if (row.local_copy || copy || !row.ssh_command) {
+    actions.push(api('open_run_folder', {folder: copy || row.folder,
+      site: copy || row.local_copy ? null : row.site, config_hash: row.config_hash}));
+  }
+  for (const result of await Promise.allSettled(actions)) {
+    if (result.status === 'rejected') message(result.reason.message);
+  }
+}
+function selectedRuns(rows) {
+  return {scope: inventorySelection(), runs: rows.map(({site, folder, config_hash, manifest_sha256}) =>
+    ({site, folder, config_hash, manifest_sha256}))};
+}
+function runParent(folder) {
+  return folder.slice(0, folder.lastIndexOf('/'));
+}
+function archiveRuns(rows) {
+  const selection = selectedRuns(rows);
+  try {
+    if (localStorage.getItem('mts-archive-skip-warning') === 'true') {
+      operation('archive_monitor', selection);
+      return;
+    }
+  } catch {} // The warning remains available when browser storage is blocked.
+  const dialog = $('archive-warning'), checkbox = $('archive-skip-warning');
+  const destinations = new Set(rows.map(row => {
+    const root = runParent(row.folder);
+    return `${row.site ? siteLabel(row.site) : 'Local copy'} · ${root}-archive`;
+  }));
+  $('archive-destinations').textContent = `${rows.length} ${rows.length === 1 ? 'run' : 'runs'}\n${[...destinations].join('\n')}` +
+    (rows.some(row => row.local_paths?.length) ? '\nDownloaded copies remain in their current locations.' : '');
+  checkbox.checked = false;
+  dialog.returnValue = '';
+  dialog.onclose = () => {
+    if (dialog.returnValue !== 'archive') return;
+    if (checkbox.checked) {
+      try {localStorage.setItem('mts-archive-skip-warning', 'true');} catch {}
+    }
+    operation('archive_monitor', selection);
+  };
+  dialog.showModal();
+}
+async function loadArchiveLog() {
+  const status = $('archive-log-status'), body = $('archive-log-rows');
+  status.textContent = 'Reading archive records…';
+  try {
+    const entries = await api('archive_history');
+    body.replaceChildren();
+    for (const entry of entries) {
+      const row = body.insertRow();
+      const label = entry.campaign || entry.output_folder.split('/').at(-1).replace(/\[[0-9a-f]{20}\]$/, '');
+      const source = entry.site ? siteLabel(entry.site) : entry.kind === 'campaign' ? 'Campaign settings' : 'Local copy';
+      for (const value of [label, source, new Date(entry.timestamp).toLocaleString(), entry.status]) row.insertCell().textContent = value;
+      row.cells[0].title = `${entry.output_folder}\n${entry.archive_folder}`;
+      const actions = row.insertCell();
+      actions.className = 'table-actions';
+      if (entry.status === 'Archived') {
+        const button = document.createElement('button');
+        button.className = 'small'; button.textContent = 'Restore';
+        button.setAttribute('aria-label', 'Restore ' + label);
+        button.onclick = () => operation('restore_archive', {id: entry.event_id});
+        actions.append(button);
+      }
+    }
+    status.textContent = entries.length ? '' : 'No archive actions recorded.';
+    updateActions();
+  } catch (error) {status.textContent = error.message;}
+}
+$('archive-log').ontoggle = () => {if ($('archive-log').open) loadArchiveLog();};
+function appendRunActions(container, rows) {
+  const plot = document.createElement('button');
+  plot.className = 'small'; plot.textContent = 'Plot';
+  plot.onclick = () => operation('plot_monitor', selectedRuns(rows));
+  const archive = document.createElement('button');
+  archive.className = 'small'; archive.textContent = 'Archive';
+  if (rows.some(row => !['finished', 'failed', 'stopped', 'local copy'].includes(row.status.state))) {
+    archive.dataset.unavailable = 'true';
+    archive.dataset.disabledReason = 'Archive is available after all selected runs have stopped.';
+  }
+  archive.onclick = () => archiveRuns(rows);
+  container.append(plot, archive);
+}
+for (const button of document.querySelectorAll('.inventory-sort')) {
+  button.onclick = () => {
+    const key = button.dataset.sort;
+    inventoryAscending = inventorySort === key ? !inventoryAscending : key !== 'date';
+    inventorySort = key;
+    document.querySelector('#jobs-card th[aria-sort]')?.removeAttribute('aria-sort');
+    button.closest('th').setAttribute('aria-sort', inventoryAscending ? 'ascending' : 'descending');
+    if (inventorySnapshot) {renderInventory(inventorySnapshot.rows); updateActions();}
+  };
+}
 function renderInventory(rows) {
   const body = $('jobs'); body.replaceChildren();
-  if (!rows.length) {body.innerHTML = '<tr><td colspan="5" class="empty">No managed simulations were found.</td></tr>'; return;}
+  if (!rows.length) {body.innerHTML = '<tr><td colspan="6" class="empty">No managed simulations were found.</td></tr>'; return;}
   const lineage = [], items = [], selection = inventorySelection();
   const displayName = row => row.folder.split('/').at(-1).replace(/\[[0-9a-f]{20,64}\]$/, '');
-  const compareNames = (a, b) => displayName(a).localeCompare(displayName(b), undefined, {numeric: true, sensitivity: 'base'});
-  rows = [...rows].sort(compareNames);
+  const sourceLabel = row => row.local_copy ? 'Local copy' + (row.origin_profile ? ' · ' + siteLabel(row.origin_profile) : '') :
+    row.site ? siteLabel(row.site) + (row.local_paths?.length ? ' · local copy' : '') : null;
+  const timestamp = row => Date.parse(row.run_date || row.status.started_at || '');
+  const compareText = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'}).compare;
+  const value = {simulation: displayName, state: row => row.status.state, load: row => row.progress.fraction,
+    date: row => Number.isNaN(timestamp(row)) ? null : timestamp(row), source: sourceLabel}[inventorySort];
+  rows = [...rows].sort((a, b) => {
+    const left = value(a), right = value(b);
+    const order = left !== null && right !== null ?
+      (typeof left === 'number' ? left - right : compareText(left, right)) : 0;
+    return Number(left === null) - Number(right === null) || (inventoryAscending ? order : -order) ||
+      compareText(displayName(a), displayName(b));
+  });
   const append = tr => {items.push({tr, parents: [...lineage]}); body.append(tr);};
   const visibility = () => items.forEach(({tr, parents}) => {tr.hidden = parents.some(key => !inventoryOpen.get(key));});
   const renderRow = row => {
     const tr = document.createElement('tr'), status = row.status.state;
     tr.className = 'inventory-simulation';
     const percentage = row.progress.fraction === null ? '—' : (100 * row.progress.fraction).toFixed(1) + '%';
-    const source = row.local_copy ? 'Local copy' + (row.origin_profile ? ' · ' + siteLabel(row.origin_profile) : '') : row.site ? siteLabel(row.site) + (row.local_paths?.length ? ' · local copy' : '') : '—';
-    tr.innerHTML = `<td>${escape(displayName(row))}</td><td>${escape(source)}</td><td><span class="badge ${status === 'finished' ? 'ready' : ''}">${escape(status)}</span>${row.termination ? ' <span class="inventory-termination" title="' + escape(row.termination.stopReason) + '">' + escape(row.termination.stopReason) + '</span>' : ''}</td><td>${percentage}</td><td><div class="table-actions"></div></td>`;
-    tr.firstElementChild.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}`;
+    const source = sourceLabel(row) || '—';
+    const time = timestamp(row), date = Number.isNaN(time) ? '—' : inventoryDateFormat.format(time);
+    tr.innerHTML = `<td>${escape(displayName(row))}</td><td><div class="table-actions"></div></td><td><span class="badge ${status === 'finished' ? 'ready' : ''}">${escape(status)}</span>${row.termination ? ' <span class="inventory-termination" title="' + escape(row.termination.stopReason) + '">' + escape(row.termination.stopReason) + '</span>' : ''}</td><td class="inventory-load">${percentage}</td><td class="inventory-date">${date}</td><td class="inventory-source">${escape(source)}</td>`;
+    tr.firstElementChild.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}\nState: ${status}\nLoad: ${percentage}\nDate: ${date}\nSource: ${source}`;
     if (row.attempt) {
-      const logs = document.createElement('button'); logs.className = 'small'; logs.textContent = 'Logs';
+      const logs = document.createElement('button'); logs.className = 'small'; logs.textContent = 'Log';
       logs.onclick = () => operation('logs', {site: row.site, attempt: row.attempt});
       tr.querySelector('.table-actions').append(logs);
       if (['running','queued','prepared','stopping'].includes(status)) {
@@ -259,20 +390,35 @@ function renderInventory(rows) {
         tr.querySelector('.table-actions').append(stop);
       }
     }
+    if (!row.missing) {
+      const folder = document.createElement('button'); folder.className = 'small folder-location';
+      folder.textContent = 'Open';
+      folder.onclick = () => openFolderLocation(row);
+      const actions = tr.querySelector('.table-actions');
+      actions.append(folder); appendRunActions(actions, [row]);
+    }
     append(tr);
   };
   const section = (label, members, kind, id, render, open = false) => {
     const key = JSON.stringify([selection, ...lineage, id]);
     if (!inventoryOpen.has(key)) inventoryOpen.set(key, kind === 'site' || open);
     const tr = document.createElement('tr'); tr.className = 'inventory-' + kind;
-    const th = document.createElement('th'); th.colSpan = 5; th.scope = 'rowgroup';
+    const th = document.createElement('th'); th.colSpan = 6; th.scope = 'rowgroup';
     const button = document.createElement('button'); button.className = 'inventory-toggle';
     const update = () => {
       button.setAttribute('aria-expanded', String(inventoryOpen.get(key)));
       button.textContent = `${inventoryOpen.get(key) ? '▾' : '▸'} ${label} (${members.length})`;
     };
     button.onclick = () => {inventoryOpen.set(key, !inventoryOpen.get(key)); update(); visibility();};
-    update(); th.append(button); tr.append(th); append(tr);
+    update(); th.append(button); tr.append(th);
+    if (kind === 'settings' && members.some(row => !row.missing)) {
+      th.colSpan = 1;
+      const actions = document.createElement('td'), buttons = document.createElement('div');
+      buttons.className = 'table-actions';
+      appendRunActions(buttons, members.filter(row => !row.missing));
+      actions.colSpan = 5; actions.append(buttons); tr.append(actions);
+    }
+    append(tr);
     lineage.push(key); render(members); lineage.pop();
   };
   const category = row => ['running', 'stopping'].includes(row.status.state) ? 'Running' :
@@ -287,12 +433,12 @@ function renderInventory(rows) {
   const renderSeeds = (members, open) => {
     const settings = new Map();
     for (const row of members) {
-      if (!row.settings_group) {renderRow(row); continue;}
-      if (!settings.has(row.settings_group)) settings.set(row.settings_group, []);
-      settings.get(row.settings_group).push(row);
+      const executable = row.executable_sha256 || row.build?.executable_sha256;
+      const key = row.settings_group ? JSON.stringify([row.site, runParent(row.folder), row.settings_group, executable]) : row;
+      if (!settings.has(key)) settings.set(key, []);
+      settings.get(key).push(row);
     }
     for (const [id, seeds] of settings) {
-      seeds.sort(compareNames);
       if (seeds.length === 1) {renderRow(seeds[0]); continue;}
       const first = seeds[0], label = displayName(first).replace(new RegExp(`s${first.seed}$`), '');
       section(label || displayName(first), seeds, 'settings', id, rows => rows.forEach(renderRow), open);
@@ -312,7 +458,8 @@ function renderInventory(rows) {
   visibility();
 }
 async function refresh() {
-  if (restarting) return;
+  if (restarting || initialRefresh) return;
+  if (firstState) initialRefresh = true;
   try {
     const state = await api('state');
     if (restarting) return;
@@ -332,10 +479,11 @@ async function refresh() {
     $('readiness-list').innerHTML = list; $('setup-readiness').innerHTML = list;
     if (state.interface_version === 4 && state.packages.MTSManager && !startOptions) await loadStartOptions();
     if (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites) || JSON.stringify(state.campaigns) !== JSON.stringify(previousCampaigns)) {
+      if (!firstState && startOptions && JSON.stringify(state.campaigns) !== JSON.stringify(previousCampaigns)) await loadStartOptions();
       fillSites(state.sites);
       fillMonitorSources(state.campaigns || inventorySnapshot?.campaigns);
-      if (ready && state.sites.length && state.interface_version >= 3) await loadInventory();
-      if (ready) await fillPlotCampaigns(state.campaigns || []);
+      if (ready && state.sites.length && state.interface_version >= 3) await loadInventory(!firstState);
+      if (ready) await fillPlotSources(state.campaigns || []);
       if (ready && (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites))) await loadSlurmOptions();
     }
     updateActions();
@@ -345,9 +493,23 @@ async function refresh() {
         sessionStorage.removeItem('mts-token');
       } catch {} // Remember only a token accepted by this running server.
       if (!ready) view('setup');
+      if (ready) {
+        await loadAnimationPresets();
+        await recoverWorkspace();
+      }
+      recoveringWorkspace = false;
       firstState = false;
+      if ($('plot-preview-image').classList.contains('hidden')) schedulePlotCheck();
     }
     const task = state.task, terminalHistory = state.history ?? [];
+    const scan = task.animation_scan;
+    if (scan?.energy_range && task.id !== lastAnimationScan && task.id !== lastResult &&
+        JSON.stringify(scan.animation_selection) === JSON.stringify(animationSelection())) {
+      lastAnimationScan = task.id;
+      animationEnergyRange = scan.energy_range;
+      updateOpacityLimits();
+      queueWorkspaceDraft();
+    }
     const entry = clientHistory.find(client => task.id && client.task_id === task.id) ||
       (pendingOperation?.legacy ? pendingOperation : null);
     if (entry) {
@@ -383,6 +545,29 @@ async function refresh() {
       lastResult = task.id; $('task-result').textContent = task.state === 'aborted' ? 'Operation aborted.' :
         task.state === 'partial' ? 'Some server operations failed; see terminal.' : 'Operation completed.';
       if (task.state === 'aborted') await loadInventory(false);
+      if (task.result?.archived || task.result?.restored || task.result?.campaign_archived) {
+        if ($('archive-log').open) await loadArchiveLog();
+        if (task.result.restored) $('task-result').textContent = 'Restored to the original location.';
+        if (task.result.campaign_notes?.length && task.state === 'complete') {
+          $('task-result').textContent = 'Simulations archived. Campaign settings retained. See the terminal.';
+        }
+      }
+      if (task.result?.animation_preview &&
+          JSON.stringify(task.result.animation_selection) === JSON.stringify(animationSelection())) {
+        $('animate-preview-image').src = '/previews/' + encodeURIComponent(task.result.animation_preview) +
+          '?token=' + encodeURIComponent(accessToken);
+        $('animate-preview-output').hidden = false;
+        $('animate-output').hidden = true;
+      }
+      if (task.result?.video) {
+        const url = '/videos/' + task.result.video.split('/').map(encodeURIComponent).join('/') + '?token=' + encodeURIComponent(accessToken);
+        if (JSON.stringify(task.result.animation_selection) === JSON.stringify(animationSelection())) {
+          $('animate-video').src = $('animate-download').href = url;
+          $('animate-output').hidden = false;
+          $('animate-preview-output').hidden = true;
+        }
+        $('task-result').textContent = `Animation saved (${task.result.seconds.toFixed(1)} s).`;
+      }
       if (task.result?.pdf) {
         const link = $('plot-open-pdf');
         link.href = '/figures/' + task.result.pdf.split('/').map(encodeURIComponent).join('/') + '?token=' + encodeURIComponent(accessToken);
@@ -390,24 +575,36 @@ async function refresh() {
         $('task-result').textContent = 'Figure saved: ' + task.result.name;
         if (task.result.warnings?.length) $('plot-warning').textContent = task.result.warnings.join(' ');
       }
+      if (task.result?.plot_selection) {
+        const previous = task.result.previous_selection;
+        const follow = !previous || $('plot-campaign').value === previous;
+        monitorPlot = task.result;
+        await fillPlotSources(state.campaigns || [], follow ? monitorPlot : null);
+        if (!previous) view('plot');
+      }
       if (task.result?.config_hash) $('task-result').textContent = 'Submitted.';
       if (task.result?.slurm_plan || task.result?.slurm_result) renderSlurmResult(task.result);
       if (task.result?.inspected_host) showSSHInspection(task.result);
       if (task.result?.saved_profile && sshEditor) await openSSHEditor(sshEditor.host, 'profile', task.result.saved_profile);
       if (task.result?.configured && sshEditor?.type === 'connection') closeSSHEditor();
+      queueWorkspaceDraft();
     }
     if (task.state === 'running' || !terminalHistory.some(entry => entry.id === task.id)) $('task-result').textContent = '';
   } catch (error) {
     if (lastConnectionError !== error.message) message('Connection failed. ' + error.message);
     lastConnectionError = error.message;
-  }
+  } finally {initialRefresh = false;}
 }
 $('install-packages').onclick = () => operation('install');
 $('build-simulator').onclick = () => operation('build');
 $('refresh-jobs').onclick = () => operation('inventory', inventorySelection());
 $('hard-refresh').onclick = () => operation('hard_refresh', {site: $('hard-refresh-site').value});
 $('update-managers').onclick = () => operation('update_managers');
-$('jobs-site').onchange = () => loadInventory();
+$('jobs-site').onchange = () => {
+  $('archive-campaign').classList.add('hidden');
+  loadInventory();
+};
+$('archive-campaign').onclick = () => operation('archive_campaign', inventorySelection());
 $('abort').onclick = async () => {
   try {await api('abort', {}); $('abort').disabled = true; await refresh();} catch (error) {message(error.message);}
 };
@@ -600,16 +797,22 @@ $('simulation-preset').onchange = async () => {
     $('simulation-download').disabled = false;
   } catch (error) {message(error.message);}
 };
+async function importSimulation(file) {
+  if (!startOptions) await loadStartOptions();
+  const {settings, label} = await api('simulation_preset', {action: 'import', text: await file.text()});
+  $('simulation-preset').value = '';
+  $('simulation-download').disabled = true;
+  $('run-label').value = label;
+  $('simulation-preset-name').value = label || file.name.replace(/\.conf$/i, '');
+  showPreset(settings);
+  view('start');
+  $('run-form').scrollIntoView({block: 'start'});
+  queueWorkspaceDraft();
+}
 $('simulation-upload').onchange = async event => {
-  const file = event.target.files[0];
-  if (!file) return;
+  const [file] = event.target.files;
   try {
-    if (!startOptions) await loadStartOptions();
-    const {settings} = await api('simulation_preset', {action: 'import', text: await file.text()});
-    $('simulation-preset').value = '';
-    $('simulation-download').disabled = true;
-    $('simulation-preset-name').value = file.name.replace(/\.conf$/i, '');
-    showPreset(settings);
+    if (file) await importSimulation(file);
   } catch (error) {message(error.message);}
   finally {event.target.value = '';}
 };
@@ -697,6 +900,7 @@ function addCampaignAxis() {
   row.querySelector('[data-remove]').onclick = () => {row.remove(); updateCampaignVtuWarning();};
   updateMode();
   $('campaign-axes').append(row);
+  return row;
 }
 $('campaign-base').onchange = async () => {
   campaignBaseSettings = null;
@@ -716,8 +920,7 @@ $('campaign-base').onchange = async () => {
 $('campaign-add-axis').onclick = () => {if (startOptions) addCampaignAxis();};
 $('campaign-form').onsubmit = async event => {
   event.preventDefault();
-  const axes = [...$('campaign-axes').children].map(row => Object.fromEntries(
-    [...row.querySelectorAll('[data-axis]')].map(input => [input.dataset.axis, input.value])));
+  const axes = campaignAxes();
   try {
     const disableVTUs = !$('campaign-vtu').disabled && $('campaign-vtu').checked;
     const result = await api('save_campaign', {name: $('campaign-name').value.trim(),
@@ -731,20 +934,281 @@ $('campaign-form').onsubmit = async event => {
 };
 $('campaign-run').onclick = () => operation('run_campaign', {name: $('campaign-saved').value, site: $('campaign-site').value});
 
-async function fillPlotCampaigns(campaigns) {
+function animationSelection() {
+  const seed = isFilePlot() ? 'all' : $('plot-seed').value;
+  return {campaign: $('plot-campaign').value, data: $('plot-data').value.trim(),
+    seed: !seed || seed === 'all' ? 'all' : JSON.parse(seed)};
+}
+function showVisualization(tab) {
+  for (const name of ['plot', 'animate']) {
+    const active = name === tab;
+    $(name + '-tab').setAttribute('aria-selected', String(active));
+    $(name + '-tab').tabIndex = active ? 0 : -1;
+    $(name + '-panel').hidden = !active;
+  }
+  const seed = $('plot-seed').options[0];
+  if (seed) seed.textContent = tab === 'animate' ? 'All seeds' : 'Mean of available seeds ± sample SD';
+  $('animation-settings').disabled = tab !== 'animate';
+  if (tab === 'animate') {
+    clearTimeout(plotTimer);
+    return loadAnimationOptions();
+  } else if (!plotValid) schedulePlotCheck();
+}
+for (const tab of ['plot', 'animate']) {
+  const button = $(tab + '-tab');
+  button.onclick = () => showVisualization(tab);
+  button.onkeydown = event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'plot' : event.key === 'End' ? 'animate' : tab === 'plot' ? 'animate' : 'plot';
+    showVisualization(next);
+    $(next + '-tab').focus();
+  };
+}
+async function loadAnimationOptions() {
+  if ($('animate-panel').hidden) return;
+  const request = ++animationRequest, selection = animationSelection();
+  const settings = $('animation-settings'), status = $('animate-status');
+  const key = JSON.stringify(selection);
+  if (key !== animationSourceKey) {
+    $('animate-video').pause();
+    $('animate-output').hidden = true;
+    $('animate-preview-output').hidden = true;
+    animationSourceKey = key;
+    animationEnergyRange = null;
+  }
+  settings.hidden = true; status.textContent = '';
+  updateActions();
+  try {
+    const options = await api('animation_options?' + new URLSearchParams(selection));
+    if (request !== animationRequest || !options.boundary) return;
+    const periodic = ['periodic', 'periodicAnchored'].includes(options.boundary);
+    if (key !== animationLatticeKey) {
+      $('animate-defect-lattice').value = options.square_model ? 'square' : 'triangular';
+      $('animate-tiling').value = options.boundary === 'periodic' ? 'tile' : 'cell';
+      animationHeatmapKind = null;
+      animationLatticeKey = key;
+    }
+    $('animate-tiling').querySelector('[value="tile"]').disabled = !periodic;
+    if (!periodic && $('animate-tiling').value === 'tile') $('animate-tiling').value = 'cell';
+    const method = $('animate-defect-method');
+    $('animate-defect-method-field').hidden = !options.delaunay_dislocations;
+    method.querySelector('[value="delaunay"]').disabled = !options.delaunay_dislocations;
+    if (!options.delaunay_dislocations) method.value = 'native';
+    $('animate-kind').querySelector('[value="shear"]').disabled = !options.square_model;
+    if (!options.square_model && $('animate-kind').value === 'shear') $('animate-kind').value = 'energy';
+    settings.hidden = false;
+    updateAnimationControls();
+    updateActions();
+  } catch (error) {
+    if (request !== animationRequest) return;
+    status.textContent = error.message;
+    if (recoveringWorkspace) message('Could not restore the animation selection. ' + error.message);
+  }
+}
+function updateOpacityLimits() {
+  const energy = $('animate-kind').value === 'energy';
+  const limits = ['animate-energy-min', 'animate-limit'].map((id, index) => {
+    const input = $(id), scanned = energy ? animationEnergyRange?.[index] : undefined;
+    input.placeholder = Number.isFinite(scanned) ? String(Number(scanned.toPrecision(6))) : 'From data';
+    return input.value ? input.valueAsNumber : scanned;
+  });
+  opacityEditor.setLimits(...limits);
+}
+function updateAnimationControls() {
+  const kind = $('animate-kind').value;
+  const energy = kind === 'energy', coloured = energy || ['shear', 'matrix'].includes(kind);
+  const conditional = energy && $('animate-conditional-opacity').checked;
+  if (coloured && animationHeatmapKind !== kind) {
+    $('animate-heatmap').value = energy ? 'inferno' : 'coolwarm';
+    animationHeatmapKind = kind;
+  }
+  $('animate-matrix-field').hidden = !['matrix', 'disk'].includes(kind);
+  $('animate-tiling-field').hidden = kind === 'disk';
+  $('animate-colouring').hidden = $('animate-colouring').disabled = !coloured;
+  $('animate-energy-min-field').hidden = $('animate-energy-min').disabled = !energy;
+  $('animate-limit-label').textContent = energy ? 'Upper energy limit' : 'Colour limit';
+  $('animate-limit').min = energy ? '' : '0';
+  $('animate-conditional-field').hidden = !energy;
+  $('animate-opacity-editor').hidden = !conditional;
+  $('animate-opacity-field').hidden = $('animate-opacity').disabled = conditional;
+  $('animate-mesh-overlays').hidden = $('animate-defects-field').hidden = kind === 'disk';
+  $('animate-defect-controls').hidden = kind === 'disk' || !$('animate-dislocations').checked;
+  $('animate-defect-tolerance').disabled = $('animate-defect-tolerance-field').hidden =
+    $('animate-defect-controls').hidden || $('animate-defect-method').value !== 'delaunay';
+  $('animate-defect-scale').disabled = $('animate-defect-thickness').disabled = $('animate-defect-controls').hidden;
+  $('animate-title-size').disabled = $('animate-title-field').hidden = !$('animate-show-title').checked;
+  $('animate-node-controls').hidden = kind === 'disk' || !$('animate-show-nodes').checked;
+  $('animate-node-size').disabled = $('animate-node-controls').hidden;
+  $('animate-border-field').hidden = kind === 'disk';
+  $('animate-show-legend-field').hidden = !coloured && $('animate-node-controls').hidden;
+  $('animate-legend-size').disabled = $('animate-legend-field').hidden =
+    $('animate-show-legend-field').hidden || !$('animate-show-legend').checked;
+  $('animate-rate-field').hidden = $('animate-rate').disabled = $('animate-playback').value !== 'load';
+  updateOpacityLimits();
+}
+$('animate-kind').onchange = () => {
+  if ($('animate-kind').value === 'none' && !$('animate-show-nodes').checked) $('animate-show-lines').checked = true;
+  updateAnimationControls();
+};
+for (const id of ['animate-show-nodes', 'animate-playback', 'animate-dislocations', 'animate-defect-method', 'animate-show-title',
+  'animate-show-legend', 'animate-conditional-opacity']) {
+  $(id).onchange = updateAnimationControls;
+}
+for (const id of ['animate-energy-min', 'animate-limit']) $(id).oninput = updateOpacityLimits;
+for (const id of ['animate-rate', 'animate-minimum', 'animate-fps', 'animate-playback']) {
+  $(id).oninput = () => {
+    animationEnergyRange = null;
+    updateOpacityLimits();
+  };
+}
+function runAnimation(action, previewFrame) {
+  const fields = ['animate-fps', 'animate-rate', 'animate-minimum', 'animate-workers', 'animate-node-size',
+    'animate-legend-size', 'animate-title-size', 'animate-defect-scale', 'animate-defect-thickness', 'animate-defect-tolerance',
+    'animate-limit', 'animate-energy-min', 'animate-opacity'];
+  if (fields.some(id => !$(id).reportValidity())) return;
+  const number = id => $(id).valueAsNumber;
+  operation(action, {...animationSelection(), preview_frame: previewFrame,
+    kind: $('animate-kind').value, matrix: $('animate-matrix').value,
+    tiling: $('animate-tiling').value, playback: $('animate-playback').value, fps: number('animate-fps'),
+    seconds_per_load: $('animate-rate').disabled ? 15 : number('animate-rate'), minimum_seconds: number('animate-minimum'),
+    limit: $('animate-colouring').hidden || !$('animate-limit').value ? null : number('animate-limit'),
+    energy_min: $('animate-energy-min').disabled || !$('animate-energy-min').value ? null : number('animate-energy-min'),
+    opacity: $('animate-colouring').hidden || $('animate-opacity').disabled ? 100 : number('animate-opacity'),
+    opacity_curve: $('animate-opacity-editor').hidden ? null : opacityEditor.points,
+    dpi: Number($('animate-dpi').value), heatmap: $('animate-heatmap').value,
+    show_title: $('animate-show-title').checked, title_size: $('animate-title-size').disabled ? 8 : number('animate-title-size'),
+    show_border: $('animate-show-border').checked, show_legend: $('animate-show-legend').checked,
+    dislocations: !$('animate-defect-controls').hidden, dislocation_lattice: $('animate-defect-lattice').value,
+    dislocation_method: $('animate-defect-method').value,
+    dislocation_bond_tolerance: $('animate-defect-tolerance').disabled ? undefined : number('animate-defect-tolerance'),
+    dislocation_scale: $('animate-defect-scale').disabled ? 100 : number('animate-defect-scale'),
+    dislocation_thickness: $('animate-defect-thickness').disabled ? 100 : number('animate-defect-thickness'),
+    workers: $('animate-workers').value ? number('animate-workers') : null,
+    show_nodes: $('animate-show-nodes').checked, show_mesh_lines: $('animate-show-lines').checked,
+    node_size: $('animate-node-size').disabled ? 100 : number('animate-node-size'),
+    legend_size: $('animate-legend-size').disabled ? 100 : number('animate-legend-size'),
+    node_colours: Object.fromEntries(['Fixed', 'Free', 'Displaced'].map(label =>
+      [label, $('animate-node-' + label.toLowerCase()).value]))});
+}
+$('animate-preview-button').onclick = () => runAnimation('animate_preview', 'first');
+$('animate-preview-middle').onclick = () => runAnimation('animate_preview', 'middle');
+$('animate-button').onclick = () => runAnimation('animate');
+
+function isMonitorPlot() {
+  return monitorPlot?.plot_selection === $('plot-campaign').value;
+}
+function isFilePlot() {
+  return filePlot?.plot_selection === $('plot-campaign').value;
+}
+async function selectDataFile(selection) {
+  filePlot = selection;
+  view('plot');
+  await fillPlotSources(lastState?.campaigns || [], selection);
+  await showVisualization(selection.plot_selection === '@csv' ? 'plot' : 'animate');
+  $('plot').scrollIntoView({block: 'start'});
+  queueWorkspaceDraft();
+}
+function askForDataPath(name = '', paths = []) {
+  $('data-file-help').textContent = name ?
+    `Choose or paste the full path to ${name}. The browser supplies the file contents and name.` :
+    'Paste the full path to a CSV, PVD or VTU file.';
+  $('data-file-matches').replaceChildren(...paths.map(path => new Option(path, path)));
+  $('data-file-path').value = paths.length === 1 ? paths[0] : '';
+  $('data-file-status').textContent = '';
+  if (!$('data-file-dialog').open) $('data-file-dialog').showModal();
+}
+$('open-data-path').onclick = () => askForDataPath();
+$('data-file-cancel').onclick = () => $('data-file-dialog').close();
+$('data-file-form').onsubmit = async event => {
+  event.preventDefault();
+  try {
+    const selection = await api('open_data_file', {path: $('data-file-path').value.trim()});
+    await selectDataFile(selection);
+    $('data-file-dialog').close();
+  } catch (error) {$('data-file-status').textContent = error.message;}
+};
+let fileDragDepth = 0, openingDrop = false;
+const hasDraggedFiles = event => event.dataTransfer?.types.includes('Files');
+document.addEventListener('dragenter', event => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  ++fileDragDepth;
+  $('file-drop').hidden = false;
+});
+document.addEventListener('dragover', event => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+});
+document.addEventListener('dragleave', () => {
+  if (fileDragDepth && !--fileDragDepth) $('file-drop').hidden = true;
+});
+document.addEventListener('drop', async event => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  fileDragDepth = 0;
+  $('file-drop').hidden = true;
+  if (openingDrop) return;
+  openingDrop = true;
+  try {
+    const files = event.dataTransfer.files;
+    if (files.length !== 1) throw new Error('Drop one configuration or data file at a time.');
+    const file = files[0];
+    if (/\.conf$/i.test(file.name)) {
+      await importSimulation(file);
+    } else if (/\.(csv|pvd|vtu)$/i.test(file.name)) {
+      let sha256;
+      if (crypto.subtle && file.size <= 64 * 1024 ** 2) {
+        let bytes;
+        try {bytes = await file.arrayBuffer();}
+        catch {askForDataPath(file.name); return;}
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      }
+      const selection = await api('open_data_file', {name: file.name, size: file.size, sha256});
+      if (selection.paths) askForDataPath(file.name, selection.paths);
+      else await selectDataFile(selection);
+    } else throw new Error('Drop a .conf, .csv, .pvd or .vtu file.');
+  } catch (error) {message(error.message);}
+  finally {openingDrop = false;}
+});
+$('plot-other-seeds').onchange = event => {
+  const include = event.target.checked;
+  event.target.checked = monitorPlot.include_seeds;
+  operation('plot_monitor', {selection: monitorPlot.plot_selection, include_seeds: include});
+};
+async function fillPlotSources(campaigns, runSelection = null) {
   const select = $('plot-campaign'), previous = select.value;
+  const selected = runSelection?.plot_selection || previous;
   select.replaceChildren(...campaigns.map(name => new Option(name, name)));
-  if (campaigns.includes(previous)) select.value = previous;
-  if (select.value && (!plotSchema || select.value !== previous)) await loadPlotOptions(true);
+  if (filePlot) select.prepend(new Option(filePlot.plot_name, filePlot.plot_selection));
+  if (monitorPlot) select.prepend(new Option(monitorPlot.plot_name, monitorPlot.plot_selection));
+  if ([...select.options].some(option => option.value === selected)) select.value = selected;
+  else if (campaigns.length) select.value = campaigns[0];
+  if (select.value && (!plotSchema || select.value !== previous || runSelection)) {
+    await loadPlotOptions(true, null, Boolean(runSelection?.previous_selection));
+  }
   if (firstState) await loadPlotPresets();
 }
-async function loadPlotOptions(resetSource, saved = null) {
-  const request = ++plotRequest; ++plotCheckRequest; ++previewRevision; clearTimeout(plotTimer);
+async function loadPlotOptions(resetSource, saved = null, keepAxes = false) {
+  const request = ++plotRequest; ++plotCheckRequest; ++previewRevision; ++animationRequest; clearTimeout(plotTimer);
   plotSchema = null;
   plotValid = false; updateActions();
   if (resetSource || saved) previewAutomatic = true;
-  if (!$('plot-campaign').value) return;
-  $('plot-warning').textContent = 'Reading campaign definitions and local data columns…';
+  const monitor = isMonitorPlot(), file = isFilePlot(), csv = file && filePlot.plot_selection === '@csv';
+  if (file) $('plot-data').value = filePlot.path;
+  else if (resetSource) $('plot-data').value = '';
+  $('plot-data').readOnly = monitor || file;
+  $('plot-other-seeds-field').classList.toggle('hidden', !monitor || !monitorPlot.has_other_seeds);
+  $('plot-other-seeds').checked = monitor && monitorPlot.include_seeds;
+  $('plot-seed-field').classList.toggle('hidden', monitor || file);
+  $('plot-normalization-field').classList.toggle('hidden', csv);
+  $('plot-normalization').disabled = csv;
+  if (csv) $('plot-normalization').value = 'none';
+  $('animation-settings').hidden = true;
+  if (!$('plot-campaign').value) {loadAnimationOptions(); return;}
+  $('plot-warning').textContent = 'Reading local data columns…';
   try {
     const query = new URLSearchParams({campaign: $('plot-campaign').value});
     if (!resetSource && $('plot-data').value.trim()) query.set('data', $('plot-data').value.trim());
@@ -752,12 +1216,14 @@ async function loadPlotOptions(resetSource, saved = null) {
     if (request !== plotRequest) return;
     plotSchema = schema; $('plot-data').value = schema.data;
     $('data-folders').replaceChildren(...schema.sources.map(source => new Option(`${source.runs} campaign runs`, source.path)));
-    $('plot-properties').textContent = `${schema.available} local records of ${schema.expected} planned runs. Varied parameters: ` +
+    $('plot-properties').textContent = csv ? 'Numeric columns from the selected CSV file.' : monitor || file ?
+      `${schema.available} of ${schema.expected} selected runs have macro data.` :
+      `${schema.available} local records of ${schema.expected} planned runs. Varied parameters: ` +
       (Object.keys(schema.parameters).map(key => `${schema.labels[key]} (${schema.parameters[key].length})`).join(', ') || 'none') + '.';
     const seeds = $('plot-seed'), previous = seeds.value;
-    seeds.replaceChildren(new Option('Mean of available seeds ± sample SD', 'all'),
+    seeds.replaceChildren(new Option($('animate-panel').hidden ? 'Mean of available seeds ± sample SD' : 'All seeds', 'all'),
       ...schema.seeds.map(seed => new Option('Seed ' + seed, JSON.stringify(seed))));
-    if ([...seeds.options].some(option => option.value === previous)) seeds.value = previous;
+    if (!monitor && [...seeds.options].some(option => option.value === previous)) seeds.value = previous;
     $('plot-reduction').replaceChildren(...Object.entries(schema.reductions).map(([key, label]) => new Option(label, key)));
     if (saved) {
       const axes = new Set([...Object.keys(schema.parameters), ...Object.keys(schema.quantities)]);
@@ -766,7 +1232,7 @@ async function loadPlotOptions(resetSource, saved = null) {
           Object.entries(saved.fixed).some(([key, value]) => !schema.parameters[key]?.includes(value)) ||
           (saved.seed !== 'all' && !schema.seeds.includes(saved.seed))) throw new Error('This preset contains selections absent from the current campaign.');
       $('plot-seed').value = saved.seed === 'all' ? 'all' : JSON.stringify(saved.seed);
-      $('plot-normalization').value = saved.normalization || 'none';
+      $('plot-normalization').value = csv ? 'none' : saved.normalization || 'none';
       $('plot-reduction').value = saved.reduction || 'last';
       $('plot-show-all').checked = Boolean(saved.show_all);
       $('legend-cols').value = saved.ncols || 1; $('legend-loc').value = saved.legend_loc || 'best';
@@ -779,11 +1245,18 @@ async function loadPlotOptions(resetSource, saved = null) {
         if (input.dataset.edited === 'true') input.value = saved[axis + 'label'];
       }
     }
-    updatePlotControls(saved);
+    const monitorY = schema.quantities.avg_sigma12?.available ? 'avg_sigma12' :
+      Object.keys(schema.quantities).find(key => key !== 'load' && schema.quantities[key].kind === 'macro' && schema.quantities[key].available);
+    const csvX = schema.common_axes.x[0];
+    const defaults = csv ? {x: csvX, y: schema.common_axes.y.find(key => key !== csvX)} :
+      {x: 'load', y: monitorY || 'avg_sigma12'};
+    updatePlotControls((monitor || file) && !keepAxes ? defaults : saved);
   } catch (error) {
     if (request !== plotRequest) return;
     plotSchema = null; $('plot-warning').textContent = error.message; updateActions();
+    if (recoveringWorkspace && saved) throw error;
   }
+  if (request === plotRequest) loadAnimationOptions();
 }
 function axisIssue(x, y) {
   const params = plotSchema.parameters, quantities = plotSchema.quantities;
@@ -845,13 +1318,14 @@ function fixedFields(saved = null) {
     select.onchange = schedulePlotCheck; field.append(label, select); $('fixed-fields').append(field);
   }
 }
-function plotSelection() {
+function plotSelection(draft = false) {
   return {campaign: $('plot-campaign').value, data: $('plot-data').value,
     x: $('plot-x').value, y: $('plot-y').value, color: $('plot-color').value || null, gradient: $('plot-gradient').value || null,
     seed: $('plot-seed').value === 'all' ? 'all' : JSON.parse($('plot-seed').value), normalization: $('plot-normalization').value,
     reduction: $('plot-reduction').value,
     fixed: Object.fromEntries([...$('fixed-fields').querySelectorAll('[data-property]')].map(el => [el.dataset.property, JSON.parse(el.value)])),
-    ncols: +$('legend-cols').value, legend_loc: $('legend-loc').value, xlim: limits('xlim'), ylim: limits('ylim'),
+    ncols: +$('legend-cols').value, legend_loc: $('legend-loc').value,
+    xlim: draft ? null : limits('xlim'), ylim: draft ? null : limits('ylim'),
     xscale: $('plot-xscale').value, yscale: $('plot-yscale').value, show_all: $('plot-show-all').checked,
     xlabel: $('plot-xlabel').dataset.edited === 'true' ? $('plot-xlabel').value : null,
     ylabel: $('plot-ylabel').dataset.edited === 'true' ? $('plot-ylabel').value : null,
@@ -888,11 +1362,16 @@ function schedulePlotCheck() {
   clearTimeout(plotTimer); ++plotCheckRequest; ++previewRevision;
   plotValid = false; updateActions();
   $('plot-preview-image').parentElement.classList.add('is-stale');
-  if (!plotSchema) return;
+  if (!plotSchema || $('plot-panel').hidden) return;
+  if (isMonitorPlot() && !plotSchema.available) {
+    $('plot-warning').textContent = 'No macro data is available for this selection. Select the runs again after output is available.';
+    return;
+  }
   syncAxisLabels();
   const issue = axisIssue($('plot-x').value, $('plot-y').value);
   if (issue) {$('plot-warning').textContent = issue; return;}
   if (!$('plot-data').value) {$('plot-warning').textContent = 'No local data is available. Download campaign results or choose a local collection.'; return;}
+  if (recoveringWorkspace) return;
   if (!previewAutomatic) {
     $('plot-preview-status').textContent = 'Automatic preview paused after a render exceeded 5 s. Press Update preview.';
     // Validation remains available without rendering a new image.
@@ -911,6 +1390,10 @@ function schedulePlotCheck() {
   plotTimer = setTimeout(() => requestPlotPreview(false), 400);
 }
 function showPlotValidation(result) {
+  if (isFilePlot() && filePlot.plot_selection === '@csv') {
+    $('plot-warning').textContent = result.warnings.join(' ') || 'Plotting numeric values in CSV row order.';
+    return;
+  }
   $('plot-warning').textContent = `${result.mode === 'curve' ? 'Response curves' : 'Scalar comparison'}; ${result.runs} available runs of ${result.expected} selected. ` +
     (result.warnings.join(' ') || 'Equal weight per seed; uncertainty: sample standard deviation.');
 }
@@ -943,6 +1426,7 @@ async function requestPlotPreview(manual) {
     $('plot-preview-placeholder').classList.add('hidden');
     $('plot-preview-status').textContent = `Preview updated in ${result.seconds.toFixed(2)} s.` +
       (previewAutomatic ? '' : ' Automatic preview paused; use Update preview.');
+    queueWorkspaceDraft();
   } catch (error) {
     if (revision === previewRevision) {plotValid = false; $('plot-warning').textContent = error.message; $('plot-preview-status').textContent = 'Preview unavailable.';}
   } finally {
@@ -951,6 +1435,286 @@ async function requestPlotPreview(manual) {
     if (pending || (revision !== previewRevision && previewAutomatic)) requestPlotPreview(pending);
   }
 }
+function formFields(scope) {
+  return [...document.querySelectorAll(scope)].flatMap(root =>
+    [...root.querySelectorAll('input[id], select[id], textarea[id]')]).filter(input =>
+    !['file', 'password', 'button', 'submit'].includes(input.type));
+}
+function captureFields(scope) {
+  return Object.fromEntries(formFields(scope).map(input => [input.id,
+    input.type === 'checkbox' ? input.checked : input.value]));
+}
+function restoreFields(scope, fields) {
+  const skipped = [];
+  for (const input of formFields(scope)) {
+    if (!Object.hasOwn(fields, input.id)) continue;
+    const value = fields[input.id];
+    if (input.type === 'checkbox' && typeof value === 'boolean') input.checked = value;
+    else if (typeof value === 'string' && (input.tagName !== 'SELECT' ||
+             [...input.options].some(option => option.value === value && !option.disabled))) input.value = value;
+    else skipped.push(input.id);
+  }
+  return skipped;
+}
+const animationFields = '#animation-settings .animation-groups';
+function renderAnimationPresets() {
+  const list = $('animation-presets-list');
+  list.replaceChildren();
+  for (const preset of animationPresets) {
+    const row = document.createElement('div'), label = document.createElement('span'), button = document.createElement('button');
+    row.className = 'plot-preset-row'; label.textContent = preset.name;
+    button.type = 'button'; button.className = 'small'; button.textContent = 'Load';
+    button.onclick = () => {
+      const status = $('animation-preset-status');
+      try {
+        opacityEditor.restore(preset.selection.curve);
+        const skipped = restoreFields(animationFields, preset.selection.fields);
+        animationHeatmapKind = $('animate-kind').value;
+        animationEnergyRange = null;
+        updateAnimationControls();
+        loadedAnimationPresetId = preset.id;
+        $('animation-preset-name').value = preset.name;
+        status.textContent = skipped.length ? 'Preset loaded with settings adjusted for the selected simulation.' : 'Loaded ' + preset.name + '.';
+        updateActions();
+        queueWorkspaceDraft();
+      } catch (error) {status.textContent = error.message;}
+    };
+    row.append(label, button); list.append(row);
+  }
+  if (!animationPresets.length) list.textContent = 'No saved animation presets.';
+}
+async function loadAnimationPresets() {
+  try {
+    animationPresets = (await api('animation_presets')).presets;
+    renderAnimationPresets();
+  } catch (error) {$('animation-preset-status').textContent = error.message;}
+}
+async function saveAnimationPreset(update) {
+  const status = $('animation-preset-status');
+  try {
+    const result = await api('animation_presets', {name: $('animation-preset-name').value,
+      selection: {fields: captureFields(animationFields), curve: opacityEditor.points},
+      ...(update ? {id: loadedAnimationPresetId} : {})});
+    animationPresets = result.presets;
+    loadedAnimationPresetId = result.saved_id;
+    renderAnimationPresets();
+    updateActions();
+    status.textContent = update ? 'Preset updated.' : 'New preset saved.';
+    queueWorkspaceDraft();
+  } catch (error) {status.textContent = error.message;}
+}
+$('animation-preset-new').onclick = () => saveAnimationPreset(false);
+$('animation-preset-update').onclick = () => saveAnimationPreset(true);
+
+const draftKey = 'mts-workspace-draft';
+const draftForms = '#run-form, #campaign-form, #plot-form, #jobs-card, #advanced-tools';
+const draftPanels = '#start, #plot, #setup, #monitor';
+function campaignAxes() {
+  return [...$('campaign-axes').children].map(row => Object.fromEntries(
+    [...row.querySelectorAll('[data-axis]')].map(input => [input.dataset.axis, input.value])));
+}
+function mediaPath(id, property) {
+  const element = $(id), url = element.getAttribute(property);
+  return url ? new URL(url, location.href).pathname : null;
+}
+function saveWorkspaceDraft() {
+  clearTimeout(draftTimer);
+  if (recoveringWorkspace || !lastState || !Object.values(lastState.packages).every(Boolean) || !$('plot-form')) return;
+  try {
+    const plot = plotSchema && $('plot-x').value && $('plot-y').value ? plotSelection(true) : null;
+    sessionStorage.setItem(draftKey, JSON.stringify({
+      version: 1, workspace: lastState.workspace, view: document.querySelector('.view.active')?.id,
+      tab: $('animate-panel').hidden ? 'plot' : 'animate', fields: captureFields(draftForms),
+      details: [...document.querySelectorAll('details[id]')].filter(node => node.closest(draftPanels) && node.open).map(node => node.id),
+      monitorPlot, filePlot, plot, curve: opacityEditor.points, campaignAxes: campaignAxes(),
+      animationEnergyRange, animationSourceKey, animationLatticeKey, lastAnimationScan,
+      inventory: {sort: inventorySort, ascending: inventoryAscending, open: [...inventoryOpen]},
+      presets: {plot: loadedPresetId, animation: loadedAnimationPresetId},
+      media: {plot: $('plot-preview-image').classList.contains('hidden') ? null : mediaPath('plot-preview-image', 'src'),
+        stale: $('plot-preview-image').parentElement.classList.contains('is-stale'),
+        animation: $('animate-preview-output').hidden ? null : mediaPath('animate-preview-image', 'src'),
+        video: $('animate-output').hidden ? null : mediaPath('animate-video', 'src'),
+        videoTime: $('animate-video').currentTime, pdf: mediaPath('plot-open-pdf', 'href')},
+      previewAutomatic, appliedTask: lastResult, slurmCriteria: slurmCriteria(), scroll: window.scrollY,
+    }));
+  } catch {} // A browser may deny access to session storage.
+}
+function queueWorkspaceDraft() {
+  clearTimeout(draftTimer);
+  if (!recoveringWorkspace) draftTimer = setTimeout(saveWorkspaceDraft, 200);
+}
+for (const event of ['input', 'change', 'click', 'toggle', 'pointerup']) document.addEventListener(event, queueWorkspaceDraft, true);
+window.addEventListener('pagehide', saveWorkspaceDraft);
+
+function restoreMedia(saved) {
+  const items = [
+    ['plot-preview-image', saved.plot, '/previews/', 'src'],
+    ['animate-preview-image', saved.animation, '/previews/', 'src'],
+    ['animate-video', saved.video, '/videos/', 'src'],
+    ['animate-download', saved.video, '/videos/', 'href'],
+    ['plot-open-pdf', saved.pdf, '/figures/', 'href'],
+  ];
+  for (const [id, path, prefix, attribute] of items) {
+    if (!path) continue;
+    if (typeof path !== 'string' || !path.startsWith(prefix) || path.includes('..')) throw new Error('Invalid saved media path.');
+    const element = $(id);
+    if (attribute === 'src') element.addEventListener('error', () => {
+      if (mediaPath(id, attribute) !== path) return;
+      message('A saved preview or video is no longer available.');
+      if (id === 'plot-preview-image') {
+        element.classList.add('hidden');
+        $('plot-preview-placeholder').classList.remove('hidden');
+        $('plot-preview-status').textContent = 'Preview unavailable.';
+      } else {
+        $(id === 'animate-video' ? 'animate-output' : 'animate-preview-output').hidden = true;
+      }
+    }, {once: true});
+    element[attribute] = path + '?token=' + encodeURIComponent(accessToken);
+  }
+  if (saved.plot) {
+    $('plot-preview-image').classList.remove('hidden');
+    $('plot-preview-placeholder').classList.add('hidden');
+    $('plot-preview-image').parentElement.classList.toggle('is-stale', Boolean(saved.stale));
+    $('plot-preview-status').textContent = saved.stale ? 'Preview out of date.' : '';
+  }
+  $('animate-preview-output').hidden = !saved.animation;
+  $('animate-output').hidden = !saved.video;
+  if (saved.pdf) $('plot-open-pdf').classList.remove('hidden');
+  if (saved.video && Number.isFinite(saved.videoTime)) {
+    const video = $('animate-video');
+    const seek = () => {if (Number.isFinite(video.duration)) video.currentTime = Math.min(saved.videoTime, video.duration);};
+    if (video.readyState) seek(); else video.addEventListener('loadedmetadata', seek, {once: true});
+  }
+}
+
+async function recoverWorkspace() {
+  let draft;
+  try {
+    const saved = sessionStorage.getItem(draftKey);
+    if (!saved) return;
+    draft = JSON.parse(saved);
+    if (draft.version !== 1 || draft.workspace !== lastState.workspace || !draft.fields || !draft.inventory) {
+      throw new Error('Saved workspace settings use an incompatible format.');
+    }
+  } catch (error) {message('Workspace recovery failed. ' + error.message); return;}
+  const attempt = async (label, recover) => {
+    try {await recover();}
+    catch (error) {message(`Could not restore ${label}. ${error.message}`);}
+  };
+  await attempt('the view and inventory', async () => {
+    view(draft.view);
+    lastResult = draft.appliedTask;
+    const source = draft.fields['jobs-site'];
+    if ([...$('jobs-site').options].some(option => option.value === source)) {
+      $('jobs-site').value = source;
+    } else if (source) message('The saved Monitor source is no longer available.');
+    const sort = [...document.querySelectorAll('.inventory-sort')].find(button => button.dataset.sort === draft.inventory.sort);
+    if (sort) {
+      inventorySort = draft.inventory.sort;
+      inventoryAscending = Boolean(draft.inventory.ascending);
+      document.querySelector('#jobs-card th[aria-sort]')?.removeAttribute('aria-sort');
+      sort.closest('th').setAttribute('aria-sort', inventoryAscending ? 'ascending' : 'descending');
+    }
+    for (const [key, open] of draft.inventory.open) inventoryOpen.set(key, Boolean(open));
+    if ($('jobs-site').value) await loadInventory(false);
+  });
+  await attempt('simulation and campaign settings', async () => {
+    restoreFields('#run-form, #campaign-form', draft.fields);
+    setDirectionChoices($('run-directions').value);
+    const skipped = restoreFields('#run-form', draft.fields);
+    renderExperiment();
+    if ($('campaign-base').value) await $('campaign-base').onchange();
+    skipped.push(...restoreFields('#campaign-form', draft.fields));
+    $('campaign-axes').replaceChildren();
+    for (const axis of draft.campaignAxes) {
+      const row = addCampaignAxis();
+      for (const input of row.querySelectorAll('[data-axis]')) {
+        if (input.dataset.axis === 'parameter') fillCampaignParameters(input, axis.parameter);
+        else if (Object.hasOwn(axis, input.dataset.axis)) input.value = axis[input.dataset.axis];
+      }
+      row.querySelector('[data-axis="parameter"]').onchange();
+    }
+    updateCampaignVtuWarning();
+    if (skipped.length) throw new Error('Some options are no longer available.');
+  });
+  await attempt('setup settings', async () => {
+    const skipped = restoreFields('#advanced-tools', draft.fields);
+    if (slurmSchema && draft.slurmCriteria) {
+      $('slurm-criteria').replaceChildren();
+      for (const criterion of draft.slurmCriteria) {
+        if (!Object.hasOwn(slurmSchema.fields, criterion.field)) {
+          skipped.push(criterion.field);
+          continue;
+        }
+        addSlurmCriterion(criterion);
+      }
+    }
+    if (skipped.length) throw new Error('Some options are no longer available.');
+  });
+  await attempt('plot settings', async () => {
+    const name = draft.fields['plot-campaign'];
+    if (draft.filePlot) {
+      filePlot = draft.filePlot;
+      $('plot-campaign').prepend(new Option(filePlot.plot_name, filePlot.plot_selection));
+    }
+    if (draft.monitorPlot) {
+      const source = draft.monitorPlot.plot_selection;
+      await attempt('the Monitor plot selection', async () => {
+        await api('plot_options?' + new URLSearchParams({campaign: source}));
+        monitorPlot = draft.monitorPlot;
+        $('plot-campaign').prepend(new Option(monitorPlot.plot_name, source));
+      });
+      if (!monitorPlot && name === source) return;
+    }
+    if (!name) return;
+    if (![...$('plot-campaign').options].some(option => option.value === name)) {
+      throw new Error('The selected campaign or simulation is unavailable.');
+    }
+    $('plot-campaign').value = name;
+    $('plot-data').value = draft.fields['plot-data'] || '';
+    await loadPlotOptions(false, draft.plot, true);
+    if (!plotSchema) throw new Error($('plot-warning').textContent);
+    const skipped = restoreFields('#plot-panel', draft.fields);
+    if ($('plot-data').value && plotSchema && !axisIssue($('plot-x').value, $('plot-y').value)) {
+      let spec;
+      try {spec = plotSelection();} catch {} // Keep an unfinished axis limit available for editing.
+      if (spec) {
+        const result = await api('plot_check?' + new URLSearchParams({selection: JSON.stringify(spec)}));
+        showPlotValidation(result);
+        plotValid = true;
+      }
+    }
+    if (skipped.length) throw new Error('Some options are no longer available.');
+  });
+  await attempt('animation settings', async () => {
+    const skipped = restoreFields(animationFields, draft.fields);
+    opacityEditor.restore(draft.curve);
+    animationEnergyRange = draft.animationEnergyRange;
+    lastAnimationScan = draft.lastAnimationScan;
+    animationSourceKey = draft.animationSourceKey || '';
+    animationLatticeKey = draft.animationLatticeKey || '';
+    animationHeatmapKind = $('animate-kind').value;
+    updateAnimationControls();
+    await showVisualization(draft.tab === 'animate' ? 'animate' : 'plot');
+    if (skipped.length) throw new Error('Some options are no longer available.');
+  });
+  await attempt('workspace details', async () => {
+    for (const id of draft.details) if ($(id)?.tagName === 'DETAILS') $(id).open = true;
+    loadedPresetId = plotPresets.some(preset => preset.id === draft.presets?.plot) ? draft.presets.plot : null;
+    loadedAnimationPresetId = animationPresets.some(preset => preset.id === draft.presets?.animation) ? draft.presets.animation : null;
+    restoreFields('.plot-presets', draft.fields);
+    previewAutomatic = draft.previewAutomatic !== false;
+    if (draft.media) {
+      const media = {...draft.media};
+      if (draft.animationSourceKey !== JSON.stringify(animationSelection())) media.animation = media.video = null;
+      if (!plotSchema || $('plot-campaign').value !== draft.fields['plot-campaign']) media.stale = true;
+      restoreMedia(media);
+    }
+    if (Number.isFinite(draft.scroll)) requestAnimationFrame(() => window.scrollTo(0, draft.scroll));
+  });
+  updateActions();
+}
+
 async function loadPlotPresets() {
   try {plotPresets = (await api('plot_presets')).presets; renderPlotPresets();}
   catch (error) {$('plot-preset-status').textContent = error.message;}
@@ -985,7 +1749,8 @@ async function savePlotPreset(update) {
 }
 document.querySelectorAll('.plot-slot').forEach(select => select.onchange = updatePlotControls);
 $('plot-show-all').onchange = updatePlotControls;
-for (const id of ['plot-seed', 'plot-normalization', 'plot-reduction', 'legend-cols', 'legend-loc', 'plot-xscale', 'plot-yscale', 'xlim', 'ylim']) $(id).onchange = schedulePlotCheck;
+$('plot-seed').onchange = () => {schedulePlotCheck(); loadAnimationOptions();};
+for (const id of ['plot-normalization', 'plot-reduction', 'legend-cols', 'legend-loc', 'plot-xscale', 'plot-yscale', 'xlim', 'ylim']) $(id).onchange = schedulePlotCheck;
 for (const axis of ['x', 'y']) $('plot-' + axis + 'label').oninput = event => {event.target.dataset.edited = 'true'; schedulePlotCheck();};
 $('plot-labels-default').onclick = () => {for (const axis of ['x', 'y']) $('plot-' + axis + 'label').dataset.edited = 'false'; schedulePlotCheck();};
 $('legend-style').onchange = () => {legendAliases(); schedulePlotCheck();};
@@ -1064,11 +1829,17 @@ function addSlurmCriterion(saved = null) {
   comparison.onchange = invalidateSlurm;
   valueControl(saved?.value); row.append(field, comparison, values, remove); $('slurm-criteria').append(row); invalidateSlurm();
 }
-function slurmSelection() {
-  const criteria = [...$('slurm-criteria').children].map(row => {
-    const field = row.querySelector('[data-role="field"]').value, type = slurmSchema.fields[field].type;
+function slurmCriteria() {
+  return [...$('slurm-criteria').children].map(row => {
+    const field = row.querySelector('[data-role="field"]').value;
     let value = row.querySelector('[data-role="value"]').value;
     if (value === '__custom__') value = row.querySelector('[data-role="custom"]').value;
+    return {field, operator: row.querySelector('[data-role="operator"]').value, value};
+  });
+}
+function slurmSelection() {
+  const criteria = slurmCriteria().map(({field, operator, value}) => {
+    const type = slurmSchema.fields[field].type;
     if (['int', 'float'].includes(type)) {
       if (!value.trim() || !Number.isFinite(+value) || (type === 'int' && !Number.isInteger(+value))) throw new Error('Enter a valid ' + type + ' for ' + slurmSchema.fields[field].label + '.');
       value = +value;
@@ -1076,7 +1847,7 @@ function slurmSelection() {
       if (!['true', 'false'].includes(value.toLowerCase())) throw new Error('Boolean criteria require true or false.');
       value = value.toLowerCase() === 'true';
     }
-    return {field, operator: row.querySelector('[data-role="operator"]').value, value};
+    return {field, operator, value};
   });
   if (!criteria.length) throw new Error('Add at least one criterion.');
   return {site: $('slurm-site').value, action: $('slurm-action').value, match: $('slurm-match').value, criteria};
@@ -1115,6 +1886,7 @@ $('slurm-review').onclick = async () => {
 };
 $('slurm-execute').onclick = () => {if (slurmReviewedToken) {const token = slurmReviewedToken; slurmReviewedToken = null; operation('slurm_execute', {token});}};
 $('quit').onclick = async () => {
+  saveWorkspaceDraft();
   try {await api('quit', {}); clearInterval(poller);
     try {localStorage.removeItem('mts-token'); sessionStorage.removeItem('mts-token'); sessionStorage.removeItem('mts-terminal-history');} catch {}
     document.querySelector('.workspace').innerHTML = '<div class="guide"><h1>MTS is closed.</h1><p>Use the desktop launcher to restart. Simulation jobs continue.</p></div>';}
@@ -1123,6 +1895,7 @@ $('quit').onclick = async () => {
 $('restart').onclick = async () => {
   let entry;
   try {
+    saveWorkspaceDraft();
     await api('restart', {});
     restarting = true;
     clearInterval(poller);

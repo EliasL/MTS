@@ -703,6 +703,14 @@ that differ only in seed. Single-seed groups display the simulation directly.
 Site groups and the full Running hierarchy are initially expanded; queued and
 completed groups are initially collapsed. Display names omit configuration hashes; tooltips
 retain the full folder and hash.
+Column sorting preserves the inventory groups. Date defaults to newest first. It uses
+the first recorded start, or the run creation date when no start was recorded.
+Downloaded copies display the creation date from the saved manifest. Open
+opens local data and copies an SSH command for a known remote origin.
+Plot displays the selected run's data path. Include other seeds selects sibling
+runs with identical saved settings except seed and matching executable
+checksums. The execution host discovers remote siblings from their manifests.
+The desktop retrieves macro CSV and run metadata for the selected runs.
 Refresh allows 60 seconds per site request and makes at most three attempts for
 timeouts or connection failures. Invalid data fails without retrying.
 
@@ -731,6 +739,21 @@ completion are displayed distinctly. Finished records are cached, with lifecycle
 and metadata changes invalidating derived data. Hard refresh rereads records
 without deleting output. Storage estimates use bounded sampling rather than
 unrestricted recursive size scans.
+
+Archive checks each attempt and the run lock on the execution host before
+renaming inactive run folders into `<output-root>-archive`. A rename across
+filesystems is rejected. The manager updates its run index, invalidates cached
+records and journals the archive paths. Monitor data excludes archived rows
+from active and missing counts. The Archive log lists archived runs and
+campaign settings. Restore verifies the recorded identity, checks the original
+location for conflicts, renames the folder on its current filesystem and
+updates the run index and inventory.
+
+The desktop moves a campaign definition to `MTSManager/campaigns-archive/`
+after fresh checks on configured sites and local downloads confirm that all
+planned runs are archived and no unarchived copies remain. An unverified site
+defers the settings move. The archive result reports simulation moves
+separately from deferred campaign settings.
 
 Start simulations and Monitor data include help explaining prepared folders,
 configuration hashes, retained binaries, saved commands, resume, job chains and

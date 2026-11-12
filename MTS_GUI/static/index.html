@@ -1,11 +1,11 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MTS</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MTS</title><link rel="stylesheet" href="/style.css"><script src="/opacity_curve.js" defer></script><script src="/app.js" defer></script></head>
 <body><div class="app">
 <aside class="sidebar"><a class="wordmark" href="/">MTS</a><small>Mesoscopic Tensorial Simulation</small>
 <nav aria-label="Workspace"><button class="active" data-view="overview">Overview</button><button data-view="start">Start simulations</button><button data-view="monitor">Monitor data</button><button data-view="plot">Plot</button><button data-view="ssh">SSH connections</button><button data-view="setup">Setup and tools</button></nav>
 </aside>
-<main class="workspace"><header class="topbar"><span class="path" id="workspace-path">Connecting…</span><div class="actions"><a href="/InstallationGuide.html" target="_blank" rel="noopener">Installation guide</a><button id="restart" class="small">Restart MTS</button><button id="quit" class="small">Quit MTS</button></div></header>
+<main class="workspace"><header class="topbar"><span class="path" id="workspace-path">Connecting…</span><div class="actions"><button id="open-data-path" class="small">Open data file</button><a href="/InstallationGuide.html" target="_blank" rel="noopener">Installation guide</a><button id="restart" class="small">Restart MTS</button><button id="quit" class="small">Quit MTS</button></div></header>
 <div class="workspace-layout"><div class="content"><section class="view active" id="overview"><div class="intro"><h1>Overview</h1><span class="badge" id="ready-badge">Checking installation</span></div>
 <div class="grid three"><article class="card start-card"><h2>Start simulations</h2><button class="primary" data-view="start">Configure</button></article><article class="card start-card"><h2>Monitor data</h2><button data-view="monitor">View</button></article><article class="card start-card"><h2>Plot</h2><button data-view="plot">Plot</button></article></div>
 <article class="card readiness"><div class="section-row"><h2>Installation status</h2><button class="small" data-view="setup">Setup</button></div><div id="readiness-list"></div></article></section>
@@ -118,11 +118,16 @@
 </div></fieldset></template>
 </section>
 <section class="view" id="monitor"><div class="intro"><h1>Monitor data</h1></div>
-<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Simulation</th><th>Source</th><th>State</th><th>Load budget</th><th>Actions</th></tr></thead><tbody id="jobs"><tr><td colspan="5" class="empty">Refresh to update data overview.</td></tr></tbody></table></div></article></section>
-<section class="view" id="plot"><div class="intro"><h1>Plot</h1></div><form class="card" id="plot-form"><div class="fields">
-<div class="field"><label for="plot-campaign">Campaign</label><select id="plot-campaign" required></select></div>
-<div class="field"><label for="plot-data">Local simulation data</label><input id="plot-data" list="data-folders" placeholder="/path/to/downloaded/runs" required><datalist id="data-folders"></datalist><small>Choose a local collection. Data retrieval is separate from plotting.</small></div>
-</div><label class="plot-show-all"><input id="plot-show-all" type="checkbox"> Show all options</label><p id="plot-properties" class="muted"></p><div class="fields groups">
+<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th scope="col"><button class="inventory-sort" data-sort="simulation" type="button">Simulation</button></th><th scope="col">Actions</th><th scope="col"><button class="inventory-sort" data-sort="state" type="button">State</button></th><th scope="col" class="inventory-load"><button class="inventory-sort" data-sort="load" type="button">Load</button></th><th scope="col" class="inventory-date" aria-sort="descending"><button class="inventory-sort" data-sort="date" type="button">Date</button></th><th scope="col" class="inventory-source"><button class="inventory-sort" data-sort="source" type="button">Source</button></th></tr></thead><tbody id="jobs"><tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr></tbody></table></div><div id="inventory-notice" role="status"></div></article></section>
+<section class="view" id="plot"><div class="intro"><div class="view-tabs" role="tablist" aria-label="Visualization">
+<button id="plot-tab" type="button" role="tab" aria-selected="true" aria-controls="plot-panel">Plot</button>
+<button id="animate-tab" type="button" role="tab" aria-selected="false" aria-controls="animate-panel" tabindex="-1">Animate</button>
+</div></div><form class="card" id="plot-form"><div class="fields">
+<div class="field"><label for="plot-campaign">Selection</label><select id="plot-campaign" required></select></div>
+<div class="field"><label for="plot-data">Local data</label><input id="plot-data" list="data-folders" placeholder="/path/to/downloaded/runs" required><datalist id="data-folders"></datalist><small>Choose a run collection or drop a data file.</small></div>
+<div class="field" id="plot-seed-field"><label for="plot-seed">Seeds</label><select id="plot-seed"></select></div>
+</div><label id="plot-other-seeds-field" class="plot-show-all hidden"><input id="plot-other-seeds" type="checkbox"> Include other seeds</label>
+<div id="plot-panel" role="tabpanel" aria-labelledby="plot-tab"><label class="plot-show-all"><input id="plot-show-all" type="checkbox"> Show all options</label><p id="plot-properties" class="muted"></p><div class="fields groups">
 <fieldset class="settings-group"><legend>Axes</legend><div class="fields packed">
 <div class="field"><label for="plot-x">X axis</label><select id="plot-x" class="plot-slot" required></select></div>
 <div class="field"><label for="plot-y">Y axis</label><select id="plot-y" class="plot-slot" required></select></div>
@@ -130,10 +135,9 @@
 <fieldset class="settings-group"><legend>Series and response</legend><div class="fields">
 <div class="field"><label for="plot-color">Color</label><select id="plot-color" class="plot-slot"></select></div>
 <div class="field"><label for="plot-gradient">Gradient</label><select id="plot-gradient" class="plot-slot"></select></div>
-<div class="field"><label for="plot-seed">Seeds</label><select id="plot-seed"></select></div>
-<div class="field"><label for="plot-normalization">Y normalization</label><select id="plot-normalization"><option value="none">None</option><option value="L">Divide by L</option><option value="N">Divide by rows × cols</option></select></div>
+<div class="field" id="plot-normalization-field"><label for="plot-normalization">Y normalization</label><select id="plot-normalization"><option value="none">None</option><option value="L">Divide by L</option><option value="N">Divide by rows × cols</option></select></div>
 <div class="field" id="plot-reduction-field"><label for="plot-reduction">Response column as scalar</label><select id="plot-reduction"></select></div>
-</div></fieldset></div><div class="fields" id="fixed-fields"></div><p id="plot-warning" class="notice" role="status">Select a campaign and local data.</p>
+</div></fieldset></div><div class="fields" id="fixed-fields"></div><p id="plot-warning" class="notice" role="status">Choose a campaign and local data, or select simulations in Monitor data.</p>
 <details id="plot-legend-axes"><summary>Legend and axes</summary><div class="fields">
 <div class="field"><label for="legend-cols">Legend columns</label><input id="legend-cols" type="number" min="1" value="1"></div>
 <div class="field"><label for="legend-loc">Legend location</label><select id="legend-loc"><option>best</option><option>upper right</option><option>upper left</option><option>lower right</option><option>lower left</option></select></div>
@@ -149,6 +153,85 @@
 <div class="plot-output"><div class="plot-preview"><img id="plot-preview-image" class="hidden" alt="Plot preview"><p id="plot-preview-placeholder" class="muted">Choose plot settings to generate a preview.</p></div>
 <div class="plot-output-actions"><button id="plot-preview-update" type="button">Update preview</button><button class="primary" id="plot-button" type="submit">Export PDF</button><a id="plot-open-pdf" class="button hidden" target="_blank" rel="noopener">Open PDF</a><p id="plot-preview-status" class="muted" role="status"></p></div></div>
 <div class="plot-presets"><h2>Plot presets</h2><div class="inline-fields wrap"><input id="plot-preset-name" aria-label="Preset name" placeholder="Preset name" maxlength="120"><button id="plot-preset-new" type="button">Save as new</button><button id="plot-preset-update" type="button" disabled>Update preset</button></div><p id="plot-preset-status" class="muted" role="status"></p><div id="plot-presets-list"></div></div>
+</div><div id="animate-panel" role="tabpanel" aria-labelledby="animate-tab" hidden>
+<p id="animate-status" class="muted" role="status"></p>
+<fieldset id="animation-settings" class="settings-group" hidden disabled><legend>Animation</legend>
+<div class="fields groups animation-groups">
+<fieldset class="settings-group"><legend>View</legend><div class="fields">
+<div class="field"><label for="animate-kind">View</label><select id="animate-kind"><option value="energy">Energy</option><option value="none">None</option><option value="shear">Integer shear</option><option value="matrix">Matrix components</option><option value="disk">Poincaré disk</option></select></div>
+<div class="field" id="animate-matrix-field" hidden><label for="animate-matrix">Matrix</label><select id="animate-matrix"><option value="T">Total deformation T</option><option value="T_p">Plastic history Tₚ</option><option value="F_E">Elastic deformation Fₑ</option><option value="F_P">Plastic deformation Fₚ</option><option value="F">Deformation gradient F</option></select></div>
+<div class="field" id="animate-tiling-field"><label for="animate-tiling">Tiling</label><select id="animate-tiling"><option value="tile">Tile fixed viewport</option><option value="cell">Single sample</option></select></div>
+</div>
+<div id="animate-mesh-overlays" class="inline-fields wrap">
+<label class="plot-show-all"><input id="animate-show-nodes" type="checkbox"> Nodes</label>
+<label class="plot-show-all"><input id="animate-show-lines" type="checkbox"> Mesh lines</label>
+</div>
+<div class="inline-fields wrap" id="animate-node-controls" hidden>
+<label for="animate-node-size">Node size (% of default)</label><input id="animate-node-size" type="number" min="1" step="any" value="100" required>
+<label for="animate-node-fixed">Fixed</label><input id="animate-node-fixed" type="color" value="#2a3857">
+<label for="animate-node-free">Free</label><input id="animate-node-free" type="color" value="#d24646">
+<label for="animate-node-displaced">Displaced</label><input id="animate-node-displaced" type="color" value="#d69220">
+</div>
+
+<div id="animate-defects-field" class="inline-fields wrap">
+<label class="plot-show-all"><input id="animate-dislocations" type="checkbox"> Dislocations</label>
+<div id="animate-defect-controls" class="inline-fields wrap" hidden>
+<span id="animate-defect-method-field" class="inline-fields" hidden>
+<label for="animate-defect-method">Method</label><select id="animate-defect-method"><option value="native">Native mesh</option><option value="delaunay">Delaunay</option></select>
+</span>
+<span id="animate-defect-tolerance-field" class="inline-fields" hidden>
+<label for="animate-defect-tolerance">Bond tolerance</label><input id="animate-defect-tolerance" type="number" min="0.10" max="0.40" step="0.01" value="0.25" required disabled title="Maximum mismatch in lattice spacings for a Delaunay bond.">
+</span>
+<label for="animate-defect-lattice">Lattice</label><select id="animate-defect-lattice"><option value="square">Square</option><option value="triangular">Triangular</option></select>
+<label for="animate-defect-scale">Symbol size (% of default)</label><input id="animate-defect-scale" type="number" min="1" max="1000" value="100" required>
+<label for="animate-defect-thickness">Stroke width (% of default)</label><input id="animate-defect-thickness" type="number" min="1" max="1000" value="100" required>
+</div></div>
+</fieldset>
+<fieldset id="animate-colouring" class="settings-group"><legend>Mesh colouring</legend>
+<div class="fields">
+<div class="field" id="animate-heatmap-field"><label for="animate-heatmap">Heatmap</label><select id="animate-heatmap"><option value="coolwarm">Coolwarm</option><option value="inferno">Inferno</option><option value="viridis">Viridis</option><option value="magma">Magma</option></select></div>
+<div class="field" id="animate-limit-field"><label for="animate-limit" id="animate-limit-label">Colour limit</label><input id="animate-limit" type="number" step="any" placeholder="From data"></div>
+<div class="field" id="animate-energy-min-field"><label for="animate-energy-min">Lower energy limit</label><input id="animate-energy-min" type="number" step="any" placeholder="From data"></div>
+</div>
+<label id="animate-conditional-field" class="plot-show-all"><input id="animate-conditional-opacity" type="checkbox"> Conditional opacity</label>
+<div id="animate-opacity-field" class="field"><label for="animate-opacity">Opacity (%)</label><input id="animate-opacity" type="number" min="0" max="100" value="100" required></div>
+<div id="animate-opacity-editor" hidden>
+<svg id="animate-opacity-chart" viewBox="0 0 320 147" tabindex="0" aria-label="Energy opacity curve" aria-describedby="animate-opacity-help">
+<path class="opacity-axes" d="M43 12V106H286M43 12H286"/>
+<text x="37" y="16" text-anchor="end">100%</text><text x="37" y="109" text-anchor="end">0%</text>
+<text x="43" y="124" text-anchor="middle" data-limit="lower"></text><text x="286" y="124" text-anchor="middle" data-limit="upper"></text>
+<text x="164.5" y="142" text-anchor="middle">Energy</text>
+<polyline/><g/>
+</svg>
+<div class="inline-fields wrap">
+<button id="animate-remove-opacity-node" class="small" type="button">Remove selected node</button>
+<span class="field-label"><button class="help-tip" type="button" aria-label="About editing the opacity curve" aria-describedby="animate-opacity-help">?</button>
+<span id="animate-opacity-help" class="tooltip" role="tooltip">Click to add a node. Drag to move it. Use Page Up or Page Down to select a node, arrow keys to move it, and Delete to remove it. Preview to read limits from the data.</span></span>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group"><legend>Appearance</legend><div class="fields">
+<div class="field"><label for="animate-dpi">Resolution</label><select id="animate-dpi"><option value="100">100 dpi</option><option value="200" selected>200 dpi</option><option value="300">300 dpi</option></select></div>
+</div>
+<label class="plot-show-all"><input id="animate-show-title" type="checkbox" checked> Show title</label>
+<div class="field" id="animate-title-field"><label for="animate-title-size">Title font size (pt)</label><input id="animate-title-size" type="number" min="4" max="16" value="8" step="any" required></div>
+<label id="animate-border-field" class="plot-show-all"><input id="animate-show-border" type="checkbox" checked> Mesh bounding box</label>
+<label id="animate-show-legend-field" class="plot-show-all"><input id="animate-show-legend" type="checkbox" checked> Show legend</label>
+<div id="animate-legend-field" class="inline-fields wrap"><label for="animate-legend-size">Legend size (% of default)</label><input id="animate-legend-size" type="number" min="1" step="any" value="100" required></div>
+</fieldset>
+<fieldset class="settings-group"><legend>Playback and encoding</legend><div class="fields">
+<div class="field"><label for="animate-playback">Playback</label><select id="animate-playback"><option value="load">Load rate</option><option value="saved">Uniform saved states</option></select></div>
+<div class="field" id="animate-rate-field"><label for="animate-rate">Seconds per unit load</label><input id="animate-rate" type="number" min="0.01" step="any" value="15" required></div>
+<div class="field"><label for="animate-minimum">Minimum duration (s)</label><input id="animate-minimum" type="number" min="0.01" step="any" value="7" required></div>
+<div class="field"><label for="animate-fps">Frames per second</label><input id="animate-fps" type="number" min="1" max="60" step="1" value="30" required></div>
+<div class="field"><label for="animate-workers">Frame workers</label><input id="animate-workers" type="number" min="1" max="8" step="1" placeholder="Automatic"></div>
+</div></fieldset>
+</div>
+<div class="inline-fields wrap"><button id="animate-preview-button" type="button">Preview first frame</button><button id="animate-preview-middle" type="button">Preview middle frame</button><button class="primary" id="animate-button" type="button">Generate MP4</button></div>
+<div id="animate-preview-output" hidden><img id="animate-preview-image" alt="Animation frame preview"></div>
+<div id="animate-output" hidden><video id="animate-video" controls playsinline preload="metadata" aria-label="Mesh animation"></video><a id="animate-download" class="button" download="mesh.mp4">Download MP4</a></div>
+<div class="plot-presets"><h2>Animation presets</h2><div class="inline-fields wrap"><input id="animation-preset-name" aria-label="Preset name" placeholder="Preset name" maxlength="120"><button id="animation-preset-new" type="button">Save as new</button><button id="animation-preset-update" type="button" disabled>Update preset</button></div><p id="animation-preset-status" class="muted" role="status"></p><div id="animation-presets-list"></div></div>
+</fieldset></div>
 </form></section>
 <section class="view" id="ssh"><div class="intro"><h1>SSH connections</h1><button id="ssh-check">Check connections</button></div>
 <article class="card"><p class="muted">Check account access and deployed versions. Check connections checks enabled sites in parallel; individual checks also support disabled sites. Deploy: grey until checked, green when current, red when an update is needed, white when absent.</p><div id="ssh-list"></div></article><article id="ssh-editor" class="card hidden"></article>
@@ -163,6 +246,11 @@
 <div class="setup-item"><div><h3>Compiler tools</h3><p>Optional installation. See the <a href="/InstallationGuide.html" target="_blank" rel="noopener">installation guide</a>.</p><pre id="tools-command">bash setup.sh --local-sim --install-build-tools</pre></div></div></article>
 <details class="card" id="advanced-tools"><summary>Advanced</summary>
 <div class="setup-item"><div><h3>Inventory</h3><p>Rebuild the selected server inventories and reread finished simulations. Simulation files are retained.</p><div class="inline-fields"><select id="hard-refresh-site" aria-label="Hard reset server"><option value="local">local</option></select><button id="hard-refresh" class="danger">Hard reset inventory</button></div></div></div>
+<div class="setup-item"><details id="archive-log"><summary>Archive log</summary>
+<p>Restore archived simulations and campaign settings to their original locations.</p>
+<p id="archive-log-status" class="muted" role="status"></p>
+<div class="table-wrap"><table><thead><tr><th scope="col">Item</th><th scope="col">Source</th><th scope="col">Archived on</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody id="archive-log-rows"></tbody></table></div>
+</details></div>
 <div class="setup-item"><div><details id="slurm-control"><summary>SLURM control</summary>
 <p>Build a command for queued MTS jobs. Review matches before execution. Running jobs are excluded.</p>
 <div class="fields"><div class="field"><label for="slurm-site">On</label><select id="slurm-site"><option value="*">All Slurm sites</option></select></div>
@@ -188,5 +276,25 @@
 <h2 id="operation-warning-title">Action required</h2>
 <p id="operation-warning-message"></p>
 <form method="dialog"><button autofocus>Close</button></form>
+</dialog>
+<dialog id="archive-warning" aria-labelledby="archive-warning-title" aria-describedby="archive-warning-message">
+<h2 id="archive-warning-title">Archive simulations</h2>
+<p id="archive-warning-message">Archiving moves the simulation to an adjacent folder and preserves its files. To move it back, use Restore in Setup and tools → Advanced → Archive log.</p>
+<p id="archive-destinations"></p>
+<form method="dialog">
+<label class="plot-show-all"><input type="checkbox" id="archive-skip-warning"> Do not show again</label>
+<div class="inline-fields wrap"><button value="cancel" autofocus>Cancel</button><button class="primary" value="archive">Archive</button></div>
+</form>
+</dialog>
+<div id="file-drop" hidden>Drop a configuration, CSV or mesh file</div>
+<dialog id="data-file-dialog" aria-labelledby="data-file-title">
+<h2 id="data-file-title">Open data file</h2>
+<p id="data-file-help"></p>
+<form id="data-file-form">
+<label class="field">File path<input id="data-file-path" list="data-file-matches" placeholder="/path/to/file.csv" required autofocus></label>
+<datalist id="data-file-matches"></datalist>
+<p id="data-file-status" role="status"></p>
+<div class="inline-fields wrap"><button id="data-file-cancel" type="button">Cancel</button><button class="primary">Open</button></div>
+</form>
 </dialog>
 </body></html>

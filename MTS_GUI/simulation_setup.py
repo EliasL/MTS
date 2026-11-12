@@ -56,8 +56,8 @@ def preset(folder, data):
 
     action = data["action"]
     if action == "import":
-        _, settings = Config.parse_settings(data["text"])
-        return {"settings": Config(**settings).as_dict()}
+        name, settings = Config.parse_settings(data["text"])
+        return {"settings": Config(**settings).as_dict(), "label": name.split("[", 1)[0] if name else ""}
     name = checked_name(data["name"])
     path = folder / (name + ".conf")
     if action == "load":
