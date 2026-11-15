@@ -264,14 +264,20 @@ function updateActions() {
   if (!busy && campaignSiteReason) $('campaign-run').parentElement.title = campaignSiteReason;
   const setupReason = !startOptions ? 'Simulation settings are unavailable. Check MTSManager in Setup and tools.' : '';
   customMesh.refresh();
-  const configurationReason = setupReason || indentationIssue() || rectangleIssue();
+  const triangular = $('run-energy-function').value === 'contiTriangular';
+  $('run-triangular-reconnection-warning').hidden = !triangular || $('run-reconnection').value === 'none';
+  const vtuRate = $('run-vtu-rate');
+  vtuRate.disabled = !$('run-write-vtus').checked;
+  const vtuIssue = !vtuRate.disabled && !(vtuRate.valueAsNumber > 0)
+    ? 'Enter a positive VTU file rate.' : '';
+  const vtuSettingsReason = startOptions && !Object.hasOwn(startOptions.defaults, 'vtuFilesPerUnitLoad')
+    ? 'Update MTSManager to use VTU files per unit load.' : '';
+  const configurationReason = setupReason || vtuSettingsReason || indentationIssue() || rectangleIssue() || vtuIssue;
   const runSite = $('run-site').value;
-  const rectangleBuildReason = boundaryDisplacement() && runSite === 'local' && !lastState.local_rectangle_build
-    ? 'Rebuild MTS2D from the Overview to use boundary displacement.' : '';
-  const indentationBuildReason = indentationExperiment() && runSite === 'local' && !lastState.local_indentation_build
-    ? 'Rebuild MTS2D from the Overview to use nanoindentation.' : '';
+  const currentBuildReason = runSite === 'local' && !lastState.local_current_configuration
+    ? 'Rebuild MTS2D from the Overview to use the current configuration.' : '';
   updateRunActions(continuationPlan ? 'Presets are unavailable while continuing a run.' : configurationReason, $('run-button').parentElement.title ||
-    configurationReason || continuationIssue() || siteReason(runSite) || indentationBuildReason || rectangleBuildReason ||
+    configurationReason || continuationIssue() || siteReason(runSite) || currentBuildReason ||
     (!continuationPlan && customMesh.issue()));
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
@@ -692,7 +698,8 @@ async function refresh() {
       `<div class="readiness-row"><span>${escape(name)}</span><span class="badge ${ok ? 'ready' : ''}">${ok ? 'Installed' : 'Not installed'}</span></div>`).join('');
     $('readiness-list').innerHTML = packageRows;
     $('setup-readiness').innerHTML = packageRows +
-      `<div class="readiness-row"><span>Local simulator</span><span class="badge ${buildStyle}">${buildLabel}</span></div>`;
+      `<div class="readiness-row"><span>Local simulator</span><span class="badge ${buildStyle}"${buildStatus === 'outdated' ?
+        ' title="Local simulations can use the installed build when it supports the requested settings. Rebuild Release to use the current source."' : ''}>${buildLabel}</span></div>`;
     $('overview-build-status').textContent = buildLabel;
     $('overview-build-status').className = 'badge ' + buildStyle;
     $('overview-build').hidden = buildStatus === 'installed';
@@ -873,7 +880,7 @@ const runFields = {
   seed: 'seed', boundary: 'boundary', reconnectionMethod: 'reconnection', totalLoad: 'load',
   loadIncrement: 'increment', startLoad: 'start-load', directions: 'directions',
   segmentLoad: 'segment', repeat: 'repeat',
-  writeMeshVTUs: 'write-vtus', logDuringMinimization: 'log-minimization',
+  writeMeshVTUs: 'write-vtus', vtuFilesPerUnitLoad: 'vtu-rate', logDuringMinimization: 'log-minimization',
   minimizer: 'minimizer', energyFunction: 'energy-function', initialGuessNoise: 'initial-noise',
   indenterRadius: 'indenter-radius', indentationContact: 'indentation-contact',
 };
@@ -929,9 +936,10 @@ function continuationIssue() {
 function rectangleIssue() {
   if (!boundaryDisplacement()) return '';
   if (!Object.hasOwn(startOptions.defaults, 'drivenEdge')) return 'Update MTSManager to use boundary displacement.';
-  if ($('run-energy-function').value !== 'contiSquare') return 'Choose the square-lattice energy function (contiSquare).';
   if ($('run-reconnection').value === 'delaunay') return 'Choose Edge flip or None for rectangle boundaries.';
   const vertical = verticalDrivenEdge();
+  const triangular = $('run-energy-function').value === 'contiTriangular';
+  if (triangular && !vertical) return 'Choose the top or bottom driven edge for a triangular sample.';
   for (const edge of vertical ? ['left', 'right'] : ['top', 'bottom']) {
     if (['fixed', vertical ? 'fixed_y' : 'fixed_x'].includes($('run-edge-' + edge).value)) {
       return 'The ' + edge + ' edge fixes the driven component at a shared corner.';
@@ -939,9 +947,9 @@ function rectangleIssue() {
   }
   if ($('run-increment').valueAsNumber <= 0) return 'Enter a positive displacement increment.';
   const end = $('run-start-load').valueAsNumber + runTotalLoad();
-  const span = $(vertical ? 'run-rows' : 'run-cols').valueAsNumber - 1;
+  const span = ($(vertical ? 'run-rows' : 'run-cols').valueAsNumber - 1) * (triangular ? Math.sqrt(3) / 2 : 1);
   if ($('run-deformation').value === 'compression' && end >= span) {
-    return 'Final compression displacement must be less than ' + span + ' mesh length units.';
+    return 'Final compression displacement must be less than ' + Number(span.toPrecision(8)) + ' mesh length units.';
   }
   return '';
 }
@@ -1024,7 +1032,8 @@ function updateEndLoad() {
     (indentationExperiment() ? 'Final depth ' : axial ? 'Final axial stretch ' : 'Final load ') + Number(value.toPrecision(12));
 }
 $('run-start-load').oninput = $('run-load').oninput = () => {updateEndLoad(); updateActions();};
-for (const id of ['increment', 'rows', 'cols', 'indenter-radius']) $('run-' + id).oninput = updateActions;
+for (const id of ['increment', 'rows', 'cols', 'indenter-radius', 'vtu-rate']) $('run-' + id).oninput = updateActions;
+$('run-write-vtus').onchange = updateActions;
 $('run-energy-function').onchange = $('run-reconnection').onchange = updateActions;
 $('run-axial-method').onchange = $('run-driven-edge').onchange = renderExperiment;
 for (const edge of rectangleEdges) $('run-edge-' + edge).onchange = updateActions;
@@ -1053,6 +1062,7 @@ function runConfiguration() {
   for (const [key, id] of Object.entries(runFields)) {
     if (['indenterRadius', 'indentationContact'].includes(key) && !indentationExperiment()) continue;
     const input = $('run-' + id);
+    if (key === 'vtuFilesPerUnitLoad' && input.disabled && Number.isNaN(input.valueAsNumber)) continue;
     settings[key] = input.type === 'checkbox' ? input.checked :
       input.type === 'number' ? input.valueAsNumber : input.value;
   }

@@ -38,13 +38,13 @@ def local_build_status(site_paths):
     executable = Path(site_paths["executable"])
     manifest = executable.parent / "build-manifest.json"
     if not executable.is_file() or not manifest.is_file():
-        return "missing", False, False
+        return "missing", False
     try:
         record = read_json(manifest)
     except (OSError, ValueError):
-        return "missing", False, False
+        return "missing", False
     if not isinstance(record, dict) or not record.get("revision"):
-        return "missing", False, False
+        return "missing", False
 
     source = Path(site_paths["source"])
     try:
@@ -55,13 +55,10 @@ def local_build_status(site_paths):
             revision = read_json(source / "SOURCE.json")["revision"]
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError):
         revision = None
-    supports_rectangle = getattr(provenance, "supports_rectangle_boundary", None)
-    supports_indentation = getattr(provenance, "supports_indentation", None)
-    rectangle = bool(supports_rectangle and supports_rectangle(record))
-    indentation = bool(supports_indentation and supports_indentation(record))
-    current = supports_indentation or supports_rectangle
-    outdated = (revision and record["revision"] != revision) or (current and not current(record))
-    return ("outdated" if outdated else "installed"), rectangle, indentation
+    supports_current = getattr(provenance, "supports_current_configuration", None)
+    current = bool(supports_current and supports_current(record))
+    outdated = (revision and record["revision"] != revision) or not current
+    return ("outdated" if outdated else "installed"), current
 
 
 class Workspace:
@@ -1138,8 +1135,7 @@ class Workspace:
         sites = []
         servers = []
         build_status = "missing"
-        local_rectangle_build = False
-        local_indentation_build = False
+        local_current_configuration = False
         if packages["MTSManager"] and site_file.exists():
             from MTS_Management.cluster import load_sites, paths
             profiles = load_sites(site_file)
@@ -1153,7 +1149,7 @@ class Workspace:
                                     "profiles": [p.name for p in profiles.values() if (p.ssh or "local") == host]})
                     seen.add(host)
             if "local" in profiles and not profiles["local"].ssh:
-                build_status, local_rectangle_build, local_indentation_build = local_build_status(paths(profiles["local"]))
+                build_status, local_current_configuration = local_build_status(paths(profiles["local"]))
         with self.lock:
             task = dict(self.task, logs=list(self.task["logs"]))
             history = [{k: list(v) if k == "logs" else v for k, v in entry.items() if k != "result"}
@@ -1162,8 +1158,7 @@ class Workspace:
                 "components": {name: (ROOT / name / ("CMakeLists.txt" if name == "MTS2D"
                                                     else "pyproject.toml")).exists() for name in COMPONENTS},
                 "packages": packages, "local_build": build_status != "missing",
-                "local_build_status": build_status, "local_rectangle_build": local_rectangle_build,
-                "local_indentation_build": local_indentation_build,
+                "local_build_status": build_status, "local_current_configuration": local_current_configuration,
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "campaigns": sorted(self.campaign_definitions()) if packages["MTSManager"] else [],

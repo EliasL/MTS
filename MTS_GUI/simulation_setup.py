@@ -138,7 +138,5 @@ def campaign_definition(preset_folder, data):
     if not axes:
         raise ValueError("Choose at least one sweep parameter.")
     configs = sweep(base, **axes)
-    if any(config["writeMeshVTUs"] and config["nrVTUFrames"] <= 0 for config in configs):
-        raise ValueError("Set nrVTUFrames to a positive value for runs that write mesh VTUs.")
     return {"name": name, "runs": [{"label": f"{name}-{index}", "settings": config.as_dict()}
                                     for index, config in enumerate(configs, 1)]}

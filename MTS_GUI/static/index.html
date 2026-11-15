@@ -36,6 +36,7 @@
 <div class="field" id="run-indentation-contact-field" hidden><label for="run-indentation-contact">Indenter contact</label><select id="run-indentation-contact" disabled><option value="penalty">Frictionless penalty</option><option value="projection">Projection and pinning</option></select></div>
 <div class="field"><label for="run-reconnection">Reconnection</label><select id="run-reconnection"><option value="none">None</option><option value="edgeFlip">Edge flip</option><option value="delaunay">Delaunay</option></select></div>
 </div></fieldset>
+<p class="notice warning" id="run-triangular-reconnection-warning" role="status" hidden>T is unreliable for deformation history after triangular reconnection.</p>
 <fieldset id="run-edge-settings" class="settings-group fresh-run-only" hidden><legend>Edge constraints</legend>
 <div class="fields packed">
 <label class="field">Driven edge<select id="run-driven-edge"><option value="top">Top</option><option value="bottom">Bottom</option><option value="left">Left</option><option value="right">Right</option></select></label>
@@ -84,6 +85,7 @@
 <button class="help-tip" type="button" aria-label="About mesh VTUs" aria-describedby="run-vtu-help">?</button>
 <span class="tooltip" role="tooltip" id="run-vtu-help">Save mesh snapshots for inspecting or animating the deformation. CSV output and restart checkpoints are controlled separately.</span>
 </div></div>
+<div class="field"><label for="run-vtu-rate">VTU files per unit load</label><input id="run-vtu-rate" type="number" min="0" step="any" value="100" required></div>
 <label class="field check"><input id="run-log-minimization" type="checkbox"> Log during minimization</label>
 <div class="field"><label for="run-minimizer">Minimizer</label><select id="run-minimizer"><option value="LBFGS">L-BFGS</option><option value="CG">Conjugate gradient</option><option value="FIRE">FIRE</option></select></div>
 <div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option></select></div>

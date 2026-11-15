@@ -61,6 +61,11 @@ contacting nodes on the indenter and fixes them for the current loading step.
 Plot the vertical indenter reaction force against load to obtain a force–depth
 curve.
 
+Select `contiTriangular` for a triangular lattice. Boundary displacement
+supports top or bottom loading on its slanted-sided sample. After triangular
+reconnection, the exported `T` field is unsuitable for deformation history.
+Set **VTU files per unit load** in **Additional settings** to control regular
+mesh snapshots. The initial and final states and detected events can add files.
 
 Open **Custom mesh** below **Additional settings** to preview the mesh generated
 by MTS2D on the selected execution site. The legend shows the free, constrained

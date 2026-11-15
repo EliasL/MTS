@@ -24,7 +24,7 @@ from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 class Boundaries(unittest.TestCase):
     def test_local_build_status_distinguishes_outdated_from_missing(self):
         from MTS_GUI.server import local_build_status
-        from MTS_Management.config import DEFAULTS, INDENTATION_SETTINGS
+        from MTS_Management.config import DEFAULTS
         from MTS_Management.files import digest, write_json
 
         with tempfile.TemporaryDirectory() as folder:
@@ -34,19 +34,19 @@ class Boundaries(unittest.TestCase):
             source.mkdir()
             paths = {"source": source, "executable": executable}
             write_json(source / "SOURCE.json", {"revision": "current"})
-            self.assertEqual(local_build_status(paths), ("missing", False, False))
+            self.assertEqual(local_build_status(paths), ("missing", False))
             executable.touch()
             manifest = root / "build-manifest.json"
             record = {"revision": "previous", "configuration_keys_sha256": digest(sorted(DEFAULTS))}
             write_json(manifest, record)
-            self.assertEqual(local_build_status(paths), ("outdated", True, True))
+            self.assertEqual(local_build_status(paths), ("outdated", True))
             write_json(manifest, record | {"revision": "current"})
-            self.assertEqual(local_build_status(paths), ("installed", True, True))
+            self.assertEqual(local_build_status(paths), ("installed", True))
             write_json(manifest, {"revision": "current",
-                                  "configuration_keys_sha256": digest(sorted(DEFAULTS.keys() - INDENTATION_SETTINGS))})
-            self.assertEqual(local_build_status(paths), ("outdated", True, False))
-            write_json(manifest, {"revision": "current", "configuration_keys_sha256": "obsolete"})
-            self.assertEqual(local_build_status(paths), ("outdated", False, False))
+                                  "configuration_keys_sha256": digest(sorted(
+                                      DEFAULTS.keys() - {"constitutiveReference", "vtuFilesPerUnitLoad"}
+                                      | {"nrVTUFrames"}))})
+            self.assertEqual(local_build_status(paths), ("outdated", False))
 
     def test_download_receipt_identifies_remote_folder_without_attempt_files(self):
         import shlex

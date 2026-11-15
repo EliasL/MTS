@@ -202,8 +202,10 @@ boundaries, and nonnegative engineering strain. Their incremental stretch is
 the ratio of the prescribed stretches at the new and old loads.
 
 For boundary displacement, use compression or tension with
-`boundary = rectangle` on a square-lattice mesh. `drivenEdge` selects
-`top`, `bottom`, `left` or `right`. The driven edge moves perpendicular
+`boundary = rectangle`. `drivenEdge` selects
+`top`, `bottom`, `left` or `right` on a square mesh. A triangular mesh
+has slanted sides and supports `top` and `bottom`; row spacing is
+\(\sqrt{3}/2\) in mesh length units. The driven edge moves perpendicular
 to itself, inward for compression and outward for tension. Each of the four
 edge settings accepts `free`, `fixed_x`, `fixed_y` or `fixed`. Stationary
 components are combined at corners. The driven edge's normal component is
@@ -228,6 +230,11 @@ radial repulsive force. The `projection` law projects and pins contacting
 nodes during each loading step. The checkpoint preserves the unloaded
 contact reference and the active pins. Macro output records the vertical
 indenter reaction, contact node count and contact energy.
+
+The triangular Conti model changes the material reference before reducing
+the metric, using the area-normalized triangular basis. Triangular
+reconnection assigns triangular reference elements. The exported `T` is
+reference-dependent after reconnection and unsuitable for history analysis.
 
 Unusual combinations that are mathematically defined are allowed. Step noise
 is available in every loading mode, including without relaxation. For simple
@@ -647,6 +654,8 @@ Checkpoint loading:
 2. Checks mesh dimensions and boundary topology against the configuration.
 3. Preserves saved constraints and reference geometry. Rectangle checkpoints
    store component constraints and require the same loading geometry on resume.
+   Triangular checkpoints record the constitutive reference and require a
+   compatible executable.
 4. Reevaluates scientific completion.
 5. Recovers the existing CSV schema and checks column compatibility.
 6. Backs up output according to the configured policy, removes CSV rows beyond
@@ -688,9 +697,10 @@ For a custom mesh, the destination also retains the verified initial VTU.
 
 During execution, MTS2D writes macro data, configured mesh/diagnostic output and
 checkpoints. These files record physical progress independently of the GUI.
-Ordinary mesh VTUs can be triggered by an absolute load change above 0.01,
-a relative change above `1 / nrVTUFrames` (0.01 by default), a plastic or
-energy event, or a forced save. `nrVTUFrames` does not limit the file count.
+Ordinary mesh VTUs are written at the first accepted step crossing each
+`1 / vtuFilesPerUnitLoad` interval from the initial load. The default is
+100 files per unit load. Initial and final states, plastic or energy events,
+and forced saves can add files to the regular series.
 Console output is captured in the attempt log. Checkpoint intervals and output
 settings determine what state can be recovered after interruption.
 
