@@ -618,11 +618,14 @@ Temporary files are excluded from resume discovery; write failures produce
 errors. Crash/replay diagnostics are distinct from ordinary restart checkpoints.
 
 Automatic resume selects the ordinary completed checkpoint with the greatest
-saved loading-step index. Filesystem modification time does not define physical
-progress. Copies of the same saved state are equivalent candidates; conflicting
-states at the same greatest index produce an error. The log records the selected
-file, load and step. Corruption produces an error rather than an unreported
-fallback or restart from zero.
+saved loading-step index. The last complete macro CSV load prioritizes nearby
+load-named dumps. After opening a candidate, MTS2D skips native dump names whose
+rounded load ranges end below the confirmed checkpoint load. It checks rotating
+checkpoints and overlapping ranges by saved step. Without a usable CSV load, or
+if inspected names, loads and steps disagree, MTS2D checks every candidate.
+Conflicting states at the greatest step and corruption in an inspected
+checkpoint raise errors. The log records the search count and selected file,
+load and step.
 
 Checkpoint loading:
 
@@ -639,6 +642,11 @@ Checkpoint loading:
 Malformed CSV/checkpoint data raises an error. Loading and output recovery are
 the same for direct and scheduler-launched MTS2D invocations. The scheduler
 captures resume errors in the attempt log and process exit status.
+
+**More → Resume** submits a new attempt in a failed run's existing folder.
+The execution site verifies the saved configuration, inactivity and presence of
+a restart checkpoint before submitting the retained MTS2D binary with
+`--resume`. MTS2D selects the checkpoint when the attempt starts.
 
 ### 10.1 Extending a run into a new folder
 
@@ -665,6 +673,9 @@ destination requires a distinct configuration at that site.
 
 During execution, MTS2D writes macro data, configured mesh/diagnostic output and
 checkpoints. These files record physical progress independently of the GUI.
+Ordinary mesh VTUs can be triggered by an absolute load change above 0.01,
+a relative change above `1 / nrVTUFrames` (0.01 by default), a plastic or
+energy event, or a forced save. `nrVTUFrames` does not limit the file count.
 Console output is captured in the attempt log. Checkpoint intervals and output
 settings determine what state can be recovered after interruption.
 
@@ -752,6 +763,11 @@ Server records are grouped as Running, Queued and Completed, in that order.
 Campaign views group records by site with the same status subgroups. Completed
 includes failed and stopped attempts, whose outcome remains explicit. Missing
 simulations, local copies and unknown states remain labelled separately.
+Failed attempts show the error reason when their logs or scheduler accounting
+identify it. Otherwise they show **Error**. A registered folder that is absent at
+refresh appears as **Missing**. **Remove all missing** removes those records
+from the selected inventory after rechecking folder paths on their execution
+sites.
 Groups are collapsible. Locally available saved settings identify subgroups
 that differ only in seed. Single-seed groups display the simulation directly.
 Site groups and the full Running hierarchy are initially expanded; queued and
@@ -846,6 +862,7 @@ code. The archived document describes their pre-transition execution path.
 | Submission history | [journal.py](MTSManager/MTS_Management/journal.py) |
 | Inventory | [inventory.py](MTSManager/MTS_Management/inventory.py), [inventory_cache.py](MTSManager/MTS_Management/inventory_cache.py) |
 | Simulator CLI and configuration | [main.cpp](MTS2D/src/main.cpp), [param_parser.cpp](MTS2D/src/Data/param_parser.cpp) |
+| Run-folder startup and checkpoint selection | [run_folder.cpp](MTS2D/src/Simulation/run_folder.cpp) |
 | Startup and loading | [simulation.cpp](MTS2D/src/Simulation/simulation.cpp), [simulation_outputs.cpp](MTS2D/src/Simulation/simulation_outputs.cpp) |
 | Configuration/output handling | [data_export.cpp](MTS2D/src/Data/data_export.cpp), [data_csv.cpp](MTS2D/src/Data/data_csv.cpp) |
 | Checkpoint serialization | [cereal_help.h](MTS2D/src/Data/cereal_help.h) |

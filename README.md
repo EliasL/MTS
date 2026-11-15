@@ -55,6 +55,11 @@ Setup, the manager and the VS Code managed build task share
 `MTS2D/build/release/MTS2D`. Generated build directories are ignored by Git;
 optional Debug builds live in `MTS2D/build/debug`.
 
+For C++ editing in VS Code, open the MTS folder and install the recommended
+clangd extension. clangd reads the compilation database from the managed
+simulator build. If you have not built the simulator, run the VS Code task
+**Configure MTS2D for clangd** to generate it.
+
 ## Project structure
 
 This repository owns the GUI, installation guide and setup script. Three Git

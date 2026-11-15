@@ -2,6 +2,15 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Configure MTS2D for clangd",
+            "type": "process",
+            "command": "cmake",
+            "args": ["--preset", "release"],
+            "options": {
+                "cwd": "${workspaceFolder}/MTS2D"
+            }
+        },
+        {
             "label": "Build managed simulator",
             "type": "process",
             "command": "${workspaceFolder}/.venv/bin/python",

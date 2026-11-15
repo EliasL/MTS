@@ -268,6 +268,9 @@ Column headers sort the rows within the existing groups. Date defaults to newest
 first. Source, Date and Load are hidden in that order as the table narrows.
 The simulation tooltip includes their values. Open opens a local folder or
 copies the SSH command for a remote folder. Log displays the attempt log.
+Storage errors appear as **Error: storage space** when the attempt records
+identify the cause. After a refresh, deleted run folders appear as **Missing**.
+**Remove all missing** clears those records from the current Monitor selection.
 
 Plot displays the selected run's data path. Include other seeds appears when
 the same output directory has runs that share the saved settings and executable
@@ -284,11 +287,15 @@ sequential slip, edit the sequence to add slips. Sample geometry, material,
 boundary conditions, loading mode and reconnection carry forward. The form
 clears existing stopping targets so the new load limit can govern the extension.
 
-**Run simulation** selects the latest checkpoint, copies the source history
+**Start simulation** selects the latest checkpoint, copies the source history
 through that step into a new folder on the original execution site, and appends
 the continuation there. The Terminal reports the selected step and copy progress.
 Each destination needs distinct settings at that site. Load further requires
 a current manager on remote execution hosts.
+
+**More → Resume** starts a new attempt for a failed run in its existing folder.
+It uses the saved settings and executable. MTS2D selects the latest saved
+checkpoint and continues writing to the original run folder.
 
 **More → Archive** moves an inactive run or seed group into a sibling directory named
 `<output-root>-archive`. The execution host checks that both paths are on the

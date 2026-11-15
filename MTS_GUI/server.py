@@ -115,7 +115,9 @@ class Workspace:
                 if isinstance(result, str):
                     self.log(result)
                 partial = isinstance(result, dict) and bool(result.get("errors"))
-                self.log(f"{title}: completed{' with errors' if partial else ''} in {time.monotonic() - started:.2f} s")
+                outcome = ("submitted" if isinstance(result, dict) and result.get("config_hash") else
+                           "completed with errors" if partial else "completed")
+                self.log(f"{title}: {outcome} in {time.monotonic() - started:.2f} s")
                 with self.lock:
                     self.task.update(state="partial" if partial else "complete", result=result)
             except CancelledError as error:
@@ -320,16 +322,17 @@ class Workspace:
                 remote.setdefault("local_paths", []).append(row["folder"])
             else:
                 rows.append(row)
-        found = {row["config_hash"] for row in rows}
+        found = {row["config_hash"] for row in rows if not row.get("missing")}
         archived = {row["config_hash"] for snapshot in snapshots.values() for row in snapshot["rows"]
                     if row.get("archived")} if expected else set()
         if expected:
             archived.update(self.archived_downloads())
         archived &= expected.keys()
         missing = set(expected) - found - archived
+        registered_missing = {row["config_hash"] for row in rows if row.get("missing")}
         rows.extend({"config_hash": h, "folder": expected[h], "site": None, "attempt": None,
                      "campaign": campaign, "status": {"state": "missing"}, "termination": None,
-                     "progress": {"fraction": None}, "missing": True} for h in sorted(missing))
+                     "progress": {"fraction": None}, "missing": True} for h in sorted(missing - registered_missing))
         groups = {h: group for _, _, _, saved in self.campaign_files.values() for h, group in saved.items()}
         for row in rows:
             if row.get("local_copy"):
@@ -413,6 +416,40 @@ class Workspace:
                 rows[0]["status"]["state"] not in {"finished", "failed", "stopped"}):
             raise ExpectedError("Select one stopped run on its execution site.")
         return rows[0]
+
+    def remove_missing_runs(self, scope):
+        from MTS_Management.cluster import load_sites
+        from MTS_Management.errors import ExpectedError
+
+        profiles = load_sites(ROOT / "MTSManager/sites.toml")
+        groups = {}
+        for row in self.inventory_overview(**scope)["rows"]:
+            if row.get("missing") and row["site"]:
+                groups.setdefault(row["site"], []).append(
+                    {key: row[key] for key in ("folder", "config_hash")})
+        removed, errors = 0, {}
+        for name, runs in groups.items():
+            try:
+                result = self.manager_call(name, "remove_missing", runs=runs)
+                hashes = set(result["removed"])
+                removed += len(hashes)
+                keys = {(row["folder"], row["config_hash"]) for row in runs if row["config_hash"] in hashes}
+                for alias, profile in profiles.items():
+                    if profile.ssh != profiles[name].ssh:
+                        continue
+                    overlap = {row["config_hash"] for row in self.inventory_cache(alias, site=profile)["rows"]
+                               if (row["folder"], row["config_hash"]) in keys}
+                    if overlap:
+                        self.inventory_cache(alias, rows=[], site=profile, config_hashes=overlap)
+            except (ConnectionError, subprocess.SubprocessError, RuntimeError) as error:
+                detail = (f"Update the manager on {site_label(name)} in Setup and tools."
+                          if "Unknown remote operation: remove_missing" in str(error) else str(error))
+                errors[name] = detail
+                self.log(detail)
+        if errors and not removed:
+            raise ExpectedError(next(iter(errors.values())))
+        self.log(f"Removed {removed} missing run records from the inventory.")
+        return {"missing_removed": removed, "errors": errors}
 
     def run_plot_source(self, selection):
         from MTS_Management.errors import ExpectedError
@@ -1309,6 +1346,23 @@ class Workspace:
             if "error" in result:
                 raise ExpectedError(result["error"])
             return {"continuation_plan": result | {"site": row["site"], "selection": data}}
+        if action == "remove_missing":
+            return self.remove_missing_runs(data)
+        if action == "resume":
+            from MTS_Management.errors import ExpectedError
+            row = self.continuation_source(data)
+            if row["status"]["state"] != "failed":
+                raise ExpectedError("Select one run whose latest attempt failed.")
+            selection = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
+            try:
+                result = self.manager_call(row["site"], "resume", timeout=120, selection=selection)
+            except RuntimeError as error:
+                if "Unknown remote operation: resume" not in str(error):
+                    raise
+                raise ExpectedError(f"Update the manager on {site_label(row['site'])} in Setup and tools.") from error
+            if result.get("error"):
+                raise ExpectedError(result["error"])
+            return {"config_hash": row["config_hash"]}
         if action == "run":
             config = simulation_setup.simulation_config(data)
             if continuation := data.get("continuation"):
@@ -1568,10 +1622,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "run_campaign", "continuation_plan", "plot", "plot_monitor", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "slurm_plan", "slurm_execute",
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "resume", "run_campaign", "continuation_plan", "plot", "plot_monitor", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "remove_missing", "slurm_plan", "slurm_execute",
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 title = {"plot_monitor": "Prepare plot data", "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
-                         "restore_archive": "Restore", "continuation_plan": "Load further"}.get(action, action.capitalize())
+                         "restore_archive": "Restore", "continuation_plan": "Load further",
+                         "run": "Start simulation", "remove_missing": "Remove all missing"}.get(action, action.capitalize())
                 task_id = self.server.app.start(title, lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs"})
                 self.reply(202, {"started": action, "task_id": task_id})

@@ -95,7 +95,7 @@
 </div><textarea id="run-extra" spellcheck="false"></textarea></details>
 <div class="form-footer inline-fields wrap">
 <div class="inline-fields wrap fresh-run-only"><label for="simulation-preset-name">Preset name</label><input id="simulation-preset-name" maxlength="80" placeholder="Preset name">
-<button id="simulation-save" type="button" disabled>Save preset</button></div><button class="primary" id="run-button" type="submit" disabled>Run simulation</button>
+<button id="simulation-save" type="button" disabled>Save preset</button></div><button class="primary" id="run-button" type="submit" disabled>Start simulation</button>
 </div>
 <p id="run-action-reasons" class="muted" role="status" hidden></p>
 </form>
@@ -130,7 +130,7 @@
 </div></fieldset></template>
 </section>
 <section class="view" id="monitor"><div class="intro"><h1>Monitor data</h1></div>
-<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th scope="col"><button class="inventory-sort" data-sort="simulation" type="button">Simulation</button></th><th scope="col">Actions</th><th scope="col"><button class="inventory-sort" data-sort="state" type="button">State</button></th><th scope="col" class="inventory-load"><button class="inventory-sort" data-sort="load" type="button">Load</button></th><th scope="col" class="inventory-date" aria-sort="descending"><button class="inventory-sort" data-sort="date" type="button">Date</button></th><th scope="col" class="inventory-source"><button class="inventory-sort" data-sort="source" type="button">Source</button></th></tr></thead><tbody id="jobs"><tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr></tbody></table></div><div id="inventory-notice" role="status"></div></article></section>
+<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small hidden" id="remove-missing" type="button">Remove all missing</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th scope="col"><button class="inventory-sort" data-sort="simulation" type="button">Simulation</button></th><th scope="col">Actions</th><th scope="col"><button class="inventory-sort" data-sort="state" type="button">State</button></th><th scope="col" class="inventory-load"><button class="inventory-sort" data-sort="load" type="button">Load</button></th><th scope="col" class="inventory-date" aria-sort="descending"><button class="inventory-sort" data-sort="date" type="button">Date</button></th><th scope="col" class="inventory-source"><button class="inventory-sort" data-sort="source" type="button">Source</button></th></tr></thead><tbody id="jobs"><tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr></tbody></table></div><div id="inventory-notice" role="status"></div></article></section>
 <section class="view" id="plot"><div class="intro"><div class="view-tabs" role="tablist" aria-label="Visualization">
 <button id="plot-tab" type="button" role="tab" aria-selected="true" aria-controls="plot-panel">Plot</button>
 <button id="animate-tab" type="button" role="tab" aria-selected="false" aria-controls="animate-panel" tabindex="-1">Animate</button>
@@ -312,6 +312,7 @@
 </form>
 </dialog>
 <div id="run-more-menu" popover aria-label="More run actions">
+<button id="run-more-resume" class="small" type="button">Resume</button>
 <button id="run-more-further" class="small" type="button">Load further</button>
 <button id="run-more-archive" class="small" type="button">Archive</button>
 </div>

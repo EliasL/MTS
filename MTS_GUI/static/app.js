@@ -44,7 +44,7 @@ function fillMonitorSources(campaigns = lastState?.campaigns || inventorySnapsho
     site => new Option(siteLabel(site.label || site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
-const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-middle','animate-button','refresh-jobs','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
+const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-middle','animate-button','refresh-jobs','remove-missing','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
 function buttonHint(button) {
   if (button.parentElement.classList.contains('action-hint')) return button.parentElement;
   const hint = document.createElement('span');
@@ -157,7 +157,8 @@ async function operation(action, data = {}) {
     command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=60${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
   }
   const labels = {plot_monitor: 'Prepare plot data', archive_monitor: 'Archive',
-    archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further'};
+    archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further',
+    run: 'Start simulation', resume: 'Resume', remove_missing: 'Remove all missing'};
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
     labels[action] || action, command, 'running');
   pendingOperation = entry;
@@ -217,6 +218,7 @@ async function loadInventory(logSelection = true) {
     }
     inventorySnapshot = snapshot;
     $('archive-campaign').classList.toggle('hidden', !snapshot.expected || snapshot.archived !== snapshot.expected);
+    $('remove-missing').classList.toggle('hidden', !snapshot.rows.some(row => row.missing && row.site));
     fillMonitorSources(snapshot.campaigns);
     renderInventory(snapshot.rows);
     if (!snapshot.rows.length && snapshot.updated_at == null) $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr>';
@@ -295,7 +297,7 @@ function updateRunActions(saveReason, runReason) {
   }
   const status = $('run-action-reasons');
   const text = continuationPlan ? runReason : saveReason && saveReason === runReason ? saveReason :
-    [saveReason && 'Save preset — ' + saveReason, runReason && 'Run simulation — ' + runReason]
+    [saveReason && 'Save preset — ' + saveReason, runReason && 'Start simulation — ' + runReason]
       .filter(Boolean).join(' ');
   if (status.textContent !== text) status.textContent = text;
   status.hidden = !text;
@@ -507,10 +509,13 @@ function openRunMenu(anchor, rows) {
     runMoreMenu.hidePopover();
     if (sameAnchor) return;
   }
-  const further = $('run-more-further'), archive = $('run-more-archive');
+  const resume = $('run-more-resume'), further = $('run-more-further'), archive = $('run-more-archive');
   const stoppable = ['finished', 'failed', 'stopped'];
   const furtherUnavailable = rows.length !== 1 || !rows[0].site || !stoppable.includes(rows[0].status.state);
   const archiveUnavailable = rows.some(row => ![...stoppable, 'local copy'].includes(row.status.state));
+  const canResume = rows.length === 1 && rows[0].site && rows[0].status.state === 'failed';
+  resume.classList.toggle('hidden', !canResume);
+  resume.onclick = () => {runMoreMenu.hidePopover(); operation('resume', selectedRuns(rows));};
   further.dataset.unavailable = String(furtherUnavailable);
   further.dataset.disabledReason = furtherUnavailable ? 'Select one stopped run on its execution site.' : '';
   archive.dataset.unavailable = String(archiveUnavailable);
@@ -527,7 +532,8 @@ function openRunMenu(anchor, rows) {
   const top = below + menu.height <= window.innerHeight - 4 ? below : Math.max(4, trigger.top - menu.height - 4);
   runMoreMenu.style.left = left + 'px';
   runMoreMenu.style.top = top + 'px';
-  if (!further.disabled) further.focus({preventScroll: true});
+  if (canResume && !resume.disabled) resume.focus({preventScroll: true});
+  else if (!further.disabled) further.focus({preventScroll: true});
   else if (!archive.disabled) archive.focus({preventScroll: true});
 }
 function appendRunActions(container, rows) {
@@ -574,12 +580,15 @@ function renderInventory(rows) {
   const visibility = () => items.forEach(({tr, parents}) => {tr.hidden = parents.some(key => !inventoryOpen.get(key));});
   const renderRow = row => {
     const tr = document.createElement('tr'), status = row.status.state;
+    const stateLabel = status === 'failed' ?
+      (row.status.failure_reason ? 'Error: ' + row.status.failure_reason : 'Error') :
+      status === 'missing' ? 'Missing' : status;
     tr.className = 'inventory-simulation';
     const percentage = row.progress.fraction === null ? '—' : (100 * row.progress.fraction).toFixed(1) + '%';
     const source = sourceLabel(row) || '—';
     const time = timestamp(row), date = Number.isNaN(time) ? '—' : inventoryDateFormat.format(time);
-    tr.innerHTML = `<td>${escape(displayName(row))}</td><td><div class="table-actions"></div></td><td><span class="badge ${status === 'finished' ? 'ready' : ''}">${escape(status)}</span>${row.termination ? ' <span class="inventory-termination" title="' + escape(row.termination.stopReason) + '">' + escape(row.termination.stopReason) + '</span>' : ''}</td><td class="inventory-load">${percentage}</td><td class="inventory-date">${date}</td><td class="inventory-source">${escape(source)}</td>`;
-    tr.firstElementChild.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}\nState: ${status}\nLoad: ${percentage}\nDate: ${date}\nSource: ${source}`;
+    tr.innerHTML = `<td>${escape(displayName(row))}</td><td><div class="table-actions"></div></td><td><span class="badge ${status === 'finished' ? 'ready' : status === 'failed' ? 'failed' : ''}">${escape(stateLabel)}</span>${row.termination ? ' <span class="inventory-termination" title="' + escape(row.termination.stopReason) + '">' + escape(row.termination.stopReason) + '</span>' : ''}</td><td class="inventory-load">${percentage}</td><td class="inventory-date">${date}</td><td class="inventory-source">${escape(source)}</td>`;
+    tr.firstElementChild.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}\nState: ${stateLabel}\nLoad: ${percentage}\nDate: ${date}\nSource: ${source}`;
     if (row.attempt) {
       const logs = document.createElement('button'); logs.className = 'small'; logs.textContent = 'Log';
       logs.onclick = () => operation('logs', {site: row.site, attempt: row.attempt});
@@ -754,6 +763,10 @@ async function refresh() {
       lastResult = task.id; $('task-result').textContent = task.state === 'aborted' ? 'Operation aborted.' :
         task.state === 'partial' ? 'Some server operations failed; see terminal.' : 'Operation completed.';
       if (task.state === 'aborted') await loadInventory(false);
+      if (task.result?.missing_removed != null) {
+        await loadInventory(false);
+        if (task.state === 'complete') $('task-result').textContent = `Removed ${task.result.missing_removed} missing run records.`;
+      }
       if (task.result?.archived || task.result?.restored || task.result?.campaign_archived) {
         if ($('archive-log').open) await loadArchiveLog();
         if (task.result.restored) $('task-result').textContent = 'Restored to the original location.';
@@ -808,10 +821,12 @@ async function refresh() {
 $('install-packages').onclick = () => operation('install');
 $('overview-build').onclick = $('build-simulator').onclick = () => operation('build');
 $('refresh-jobs').onclick = () => operation('inventory', inventorySelection());
+$('remove-missing').onclick = () => operation('remove_missing', inventorySelection());
 $('hard-refresh').onclick = () => operation('hard_refresh', {site: $('hard-refresh-site').value});
 $('update-managers').onclick = () => operation('update_managers');
 $('jobs-site').onchange = () => {
   $('archive-campaign').classList.add('hidden');
+  $('remove-missing').classList.add('hidden');
   loadInventory();
 };
 $('archive-campaign').onclick = () => operation('archive_campaign', inventorySelection());
