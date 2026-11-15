@@ -61,6 +61,17 @@ contacting nodes on the indenter and fixes them for the current loading step.
 Plot the vertical indenter reaction force against load to obtain a force–depth
 curve.
 
+
+Open **Custom mesh** below **Additional settings** to preview the mesh generated
+by MTS2D on the selected execution site. The legend shows the free, constrained
+and driven nodes. The periodic image outline shows the current cell and the cell
+after applying 0.1 load. Click to remove triangles, Shift-click to restore material
+with local lattice triangulation, and scroll over the mesh to adjust the brush
+radius. Boundary conditions remain on surviving nodes of the original edges.
+Select **None** or **Edge flip** reconnection for an edited mesh. Download
+`initialMesh.vtu` to keep a separate copy. Starting an edited run saves the file
+in its run folder. The preview supports up to 200,000 triangles.
+
 Sequential slip drives selected boundary regions of an open sample. Choose a
 midpoint sequence or enter a custom sequence such as
 `1.5,2.5,2.5` for three full slips. Additional settings contains the loading

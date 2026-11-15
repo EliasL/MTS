@@ -65,6 +65,7 @@ output-root/
   .inventory.sqlite3
   <label>[<first-20-configuration-hash-digits>]/
     config.conf                      # Prepared before submission
+    initialMesh.vtu                  # Initial geometry for custom-mesh runs
     manifest.json                    # Original settings and executable association
     .run.lock                        # Held by MTS2D during execution
     macroData.csv
@@ -113,6 +114,10 @@ use separate output roots. A conflicting truncated hash raises an error.
 
 Labels contain 1–120 ASCII characters, start with a letter or digit and otherwise
 use letters, digits, underscores, dots or hyphens.
+
+For a custom initial mesh, `initialMeshSha256` records the checksum of
+`initialMesh.vtu` and participates in the configuration hash. Generated meshes
+omit this setting and retain their existing identity.
 
 ### 2.2 Manifests and checksums
 
@@ -353,6 +358,12 @@ If the base preset writes mesh snapshots, the campaign can disable them for
 all its runs. This choice becomes part of each saved run configuration.
 Saving a preset or a campaign does not submit a run.
 
+**Custom mesh** requests a VTU preview from MTS2D on the selected execution
+site. The browser can remove triangles and restore material with local
+triangulation on the original lattice. An edited individual run submits its
+VTU with the settings. The execution site needs a simulator build and manager
+that support custom initial meshes.
+
 For remote execution:
 
 1. The local GUI constructs settings from visible fields and explicit overrides.
@@ -480,6 +491,7 @@ Preparation runs on the execution host:
    It rejects a conflicting truncated hash or inconsistent manifest.
 5. Creates the run folder, `config.conf` and `manifest.json` if absent. For an
    existing run it verifies the saved settings and executable association.
+   When supplied, the custom initial VTU is verified and staged with these files.
 6. Creates the attempt directory and records the exact invocation, environment,
    resources and submission script. Continuation attempts reuse the saved
    invocation appropriate to that binary.
@@ -576,6 +588,8 @@ Before modifying scientific output, MTS2D:
    It does not erase an incomplete run to start again.
 7. Restores physical state and recovers output when resuming, or initializes a
    fresh state in a prepared folder without scientific output.
+   For custom meshes, fresh startup verifies and reads `initialMesh.vtu` before
+   initializing the solver. Unused lattice nodes are excluded from the solver.
 8. Logs the resolved settings and selected checkpoint, preserving `config.conf`.
 
 The folder lock covers discovery, output recovery and execution. Output remains
@@ -668,6 +682,7 @@ manifest records the source identity and checkpoint checksum. The scientific
 state and load-step numbering carry forward through the normal folder-based
 resume path. The Terminal reports byte progress for the history files. The
 destination requires a distinct configuration at that site.
+For a custom mesh, the destination also retains the verified initial VTU.
 
 ## 11. Scientific output and completion records
 
@@ -838,7 +853,8 @@ configuration identity are checked and a retrieval receipt records source site,
 time and selected runs.
 
 Macro retrieval includes configuration, manifest, macro data and termination
-summary. Full retrieval additionally includes the run tree and attempt logs.
+summary, as well as the initial VTU for custom meshes. Full retrieval
+additionally includes the run tree and attempt logs.
 Corresponding campaign files are available locally so supplemental settings and
 binary paths can be interpreted without contacting the cluster.
 

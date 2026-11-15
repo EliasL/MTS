@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MTS</title><link rel="stylesheet" href="/style.css"><script src="/opacity_curve.js" defer></script><script src="/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MTS</title><link rel="stylesheet" href="/style.css"><script src="/opacity_curve.js" defer></script><script src="/custom_mesh.js" defer></script><script src="/app.js" defer></script></head>
 <body><div class="app">
 <aside class="sidebar"><a class="wordmark" href="/">MTS</a><small>Mesoscopic Tensorial Simulation</small>
 <nav aria-label="Workspace"><button class="active" data-view="overview">Overview</button><button data-view="start">Start simulations</button><button data-view="monitor">Monitor data</button><button data-view="plot">Plot</button><button data-view="ssh">SSH connections</button><button data-view="setup">Setup and tools</button></nav>
@@ -93,6 +93,32 @@
 <button class="help-tip" type="button" aria-label="List settings without a dedicated control" aria-describedby="run-extra-help">?</button>
 <span class="tooltip settings-keys" role="tooltip" id="run-extra-help">Loading available settings…</span>
 </div><textarea id="run-extra" spellcheck="false"></textarea></details>
+<details id="run-custom-mesh" class="fresh-run-only">
+<summary>Custom mesh</summary>
+<div class="mesh-editor">
+<div class="inline-fields wrap mesh-editor-controls">
+<label for="mesh-radius">Brush radius</label><input id="mesh-radius" type="range" min="0.25" max="10" step="0.05" value="0.8"><output id="mesh-radius-value" for="mesh-radius">0.80</output>
+<button class="small" type="button" id="mesh-reset" disabled>Reset edits</button>
+<button class="small" type="button" id="mesh-download" disabled>Download VTU</button>
+</div>
+<p class="muted mesh-instructions" id="mesh-instructions">Click to remove triangles. Shift-click to restore material. Scroll over the mesh to change the brush radius.</p>
+<div id="mesh-viewport" class="mesh-viewport" hidden>
+<canvas id="mesh-canvas" role="img" aria-label="Initial mesh with loading and boundary conditions" aria-describedby="mesh-instructions mesh-legend"></canvas>
+<div id="mesh-brush" class="mesh-brush" hidden></div>
+</div>
+<div id="mesh-legend" class="mesh-legend" hidden>
+<span><i class="mesh-key mesh-free"></i>Free</span>
+<span><i class="mesh-key mesh-fixed-x"></i>Fixed x</span>
+<span><i class="mesh-key mesh-fixed-y"></i>Fixed y</span>
+<span><i class="mesh-key mesh-fixed"></i>Fixed x and y</span>
+<span><i class="mesh-key mesh-driven"></i>Driven</span>
+<span id="mesh-periodic-key" hidden><i class="mesh-line-sample"></i>Periodic image</span>
+<span id="mesh-loaded-key" hidden><i class="mesh-line-sample mesh-dashed"></i>After +0.1 load</span>
+</div>
+<p id="mesh-status" class="muted" role="status"></p>
+<button class="small" type="button" id="mesh-retry" hidden>Retry preview</button>
+</div>
+</details>
 <div class="form-footer inline-fields wrap">
 <div class="inline-fields wrap fresh-run-only"><label for="simulation-preset-name">Preset name</label><input id="simulation-preset-name" maxlength="80" placeholder="Preset name">
 <button id="simulation-save" type="button" disabled>Save preset</button></div><button class="primary" id="run-button" type="submit" disabled>Start simulation</button>

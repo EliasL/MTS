@@ -263,6 +263,7 @@ function updateActions() {
   $('campaign-run').disabled ||= Boolean(campaignSiteReason);
   if (!busy && campaignSiteReason) $('campaign-run').parentElement.title = campaignSiteReason;
   const setupReason = !startOptions ? 'Simulation settings are unavailable. Check MTSManager in Setup and tools.' : '';
+  customMesh.refresh();
   const configurationReason = setupReason || indentationIssue() || rectangleIssue();
   const runSite = $('run-site').value;
   const rectangleBuildReason = boundaryDisplacement() && runSite === 'local' && !lastState.local_rectangle_build
@@ -270,7 +271,8 @@ function updateActions() {
   const indentationBuildReason = indentationExperiment() && runSite === 'local' && !lastState.local_indentation_build
     ? 'Rebuild MTS2D from the Overview to use nanoindentation.' : '';
   updateRunActions(continuationPlan ? 'Presets are unavailable while continuing a run.' : configurationReason, $('run-button').parentElement.title ||
-    configurationReason || continuationIssue() || siteReason(runSite) || indentationBuildReason || rectangleBuildReason);
+    configurationReason || continuationIssue() || siteReason(runSite) || indentationBuildReason || rectangleBuildReason ||
+    (!continuationPlan && customMesh.issue()));
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
@@ -851,6 +853,21 @@ $('campaign-site').onchange = $('campaign-saved').onchange = updateActions;
 $('plot-data').onchange = () => loadPlotOptions(false);
 $('plot-campaign').onchange = () => loadPlotOptions(true);
 
+const customMesh = new CustomMeshEditor(
+  () => startOptions && !continuationPlan && $('start').classList.contains('active')
+    ? {...runConfiguration(), site: $('run-site').value} : null,
+  async (data, signal) => {
+    const response = await fetch('/api/mesh_preview', {method: 'POST', signal,
+      headers: {'X-MTS-Token': accessToken, 'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+    if (!response.ok) throw new Error((await response.json()).error || 'Could not generate the mesh preview.');
+    return response.text();
+  },
+  updateActions,
+);
+for (const event of ['input', 'change']) $('run-form').addEventListener(event, ({target}) => {
+  if (target.id.startsWith('run-')) customMesh.refresh();
+});
+
 const runFields = {
   deformation: 'deformation', loading: 'loading', rows: 'rows', cols: 'cols', nrThreads: 'threads',
   seed: 'seed', boundary: 'boundary', reconnectionMethod: 'reconnection', totalLoad: 'load',
@@ -1059,6 +1076,7 @@ function runConfiguration() {
   return {settings, overrides: $('run-extra').value};
 }
 function showPreset(settings) {
+  customMesh.clear();
   const rectangle = settings.boundary === 'rectangle';
   $('run-axial-method').value = rectangle ? 'displacement' : 'affine';
   for (const [key, id] of Object.entries(runFields)) {
@@ -1101,7 +1119,8 @@ async function loadStartOptions() {
 function updateExtraSettingsHelp() {
   if (!startOptions) return;
   $('run-extra-help').textContent = Object.keys(startOptions.defaults)
-    .filter(key => !hasRunField(key) && !continuationPlan?.fixed_settings.includes(key)).sort().join(', ');
+    .filter(key => key !== 'initialMeshSha256' && !hasRunField(key) &&
+      !continuationPlan?.fixed_settings.includes(key)).sort().join(', ');
 }
 function setContinuation(plan) {
   const previouslyFixed = continuationPlan?.fixed_settings ?? [];
@@ -1140,6 +1159,7 @@ async function showContinuation(plan) {
 $('simulation-new').onclick = () => {
   const site = $('run-site').value;
   setContinuation(null);
+  customMesh.clear();
   $('run-form').reset();
   $('run-advanced').open = false;
   $('run-site').value = site;
@@ -1214,6 +1234,11 @@ $('run-form').onsubmit = event => {
       selection: continuationPlan.selection, checkpoint: continuationPlan.checkpoint,
       checkpoint_catalog: continuationPlan.checkpoint_catalog,
     };
+    if (!continuationPlan && customMesh.modified) {
+      const issue = customMesh.issue();
+      if (issue) return message(issue);
+      data.initial_mesh = customMesh.exportVtu();
+    }
     operation('run', data);
   }
 };
@@ -1227,7 +1252,7 @@ function fillCampaignParameters(select, value = select.value) {
   const defaults = startOptions.defaults;
   const slip = campaignBaseSettings?.deformation === 'sequentialSlip';
   const keys = $('campaign-show-all').checked ?
-    ['L', ...Object.keys(defaults).sort()] : slip ?
+    ['L', ...Object.keys(defaults).filter(key => key !== 'initialMeshSha256').sort()] : slip ?
       ['directions', ...Object.keys(commonSweepParameters).filter(key => key !== 'startLoad' && key !== 'totalLoad')] :
       Object.keys(commonSweepParameters);
   if (value && !keys.includes(value)) keys.push(value);

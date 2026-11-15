@@ -103,6 +103,22 @@ textarea{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;min-he
 details{margin-top:18px}
 summary{cursor:pointer;font-size:13px;font-weight:500;color:var(--ink)}
 details .fields,details textarea{margin-top:12px}
+.mesh-editor{margin-top:10px}
+.mesh-editor-controls{justify-content:flex-start}
+.mesh-editor-controls input{width:min(8rem,35vw);padding:0;accent-color:var(--accent)}
+.mesh-editor-controls output{font-variant-numeric:tabular-nums;min-width:2.8em;font-size:12px}
+.mesh-instructions,.mesh-legend,#mesh-status{font-size:12px;margin:8px 0}
+.mesh-viewport{position:relative;overflow:hidden;background:#f7f9fb;border:1px solid var(--line);border-radius:var(--radius)}
+.mesh-viewport canvas{display:block;width:100%;height:clamp(280px,48vh,470px);touch-action:none;cursor:crosshair}
+.mesh-brush{position:absolute;top:0;left:0;pointer-events:none;border:1.5px solid #a1324b;border-radius:50%;background:#a1324b18}
+.mesh-brush.restore{border-color:#087d69;background:#087d691a}
+.mesh-legend{display:flex;align-items:center;flex-wrap:wrap;gap:5px 14px;color:var(--muted)}
+.mesh-legend span{display:inline-flex;align-items:center;gap:5px}
+.mesh-key{width:8px;height:8px;display:inline-block;background:currentColor;border-radius:50%}
+.mesh-free{color:#13796a}.mesh-fixed-x{color:#a05513}.mesh-fixed-y{color:#1556a5}
+.mesh-fixed{color:#363838}.mesh-driven{color:#772cb3}
+.mesh-line-sample{display:inline-block;width:15px;border-top:2px solid #536980}
+.mesh-dashed{border-top-style:dashed;border-color:#772cb3;margin-left:8px}
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 12px;font-size:12px;margin:18px 0}
 .notice.error{border-color:#963b35;background:#f8eae8;color:#853c34}
 .notice.warning{border-color:#bc8b27;background:#fff6db;color:#775400}

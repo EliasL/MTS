@@ -158,7 +158,7 @@ def install_build_tools():
         if not brew:
             raise RuntimeError("Install Homebrew from https://brew.sh, then rerun setup. "
                                "The installer does not install a system package manager automatically.")
-        run([brew, "install", "cmake", "libomp"])
+        run([brew, "install", "cmake", "libomp", "openssl"])
     elif system == "Linux":
         values = {}
         for line in Path("/etc/os-release").read_text().splitlines():
@@ -167,10 +167,10 @@ def install_build_tools():
                 values[k] = v.strip('"')
         if values.get("ID") not in {"ubuntu", "debian"}:
             raise RuntimeError("Automatic build-tool installation currently supports Ubuntu/Debian. "
-                               "Install a C++17 compiler, CMake, OpenMP and zlib development files, "
+                               "Install a C++17 compiler, CMake, OpenMP, OpenSSL and zlib development files, "
                                "then use setup.sh --local-sim.")
         run(["sudo", "apt-get", "update"])
-        run(["sudo", "apt-get", "install", "build-essential", "cmake", "zlib1g-dev"])
+        run(["sudo", "apt-get", "install", "build-essential", "cmake", "zlib1g-dev", "libssl-dev"])
     else:
         raise RuntimeError("MTS currently supports macOS and Linux.")
 

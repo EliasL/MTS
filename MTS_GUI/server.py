@@ -953,6 +953,23 @@ class Workspace:
                 "campaigns": sorted(path.parent.name for path in
                                     (ROOT / "MTSManager/campaigns/gui").glob("*/simulations.json"))}
 
+    def mesh_preview(self, data):
+        from MTS_Management.cluster import call, load_sites
+        from MTS_Management.errors import ExpectedError
+
+        config = simulation_setup.simulation_config(data)
+        profiles = load_sites(ROOT / "MTSManager/sites.toml")
+        site = profiles.get(data.get("site"))
+        if site is None:
+            raise ExpectedError("Choose an execution site for the mesh preview.")
+        try:
+            result = call(site, "mesh_preview", settings=config.as_dict(), timeout=45)
+        except RuntimeError as error:
+            if "Unknown remote operation: mesh_preview" not in str(error):
+                raise
+            raise ExpectedError(f"Update the manager on {site_label(site.name)} in Setup and tools.") from error
+        return result["vtu"].encode("ascii")
+
     def save_campaign(self, data):
         from MTS_Management.files import locked, write_json
 
@@ -1366,6 +1383,8 @@ class Workspace:
         if action == "run":
             config = simulation_setup.simulation_config(data)
             if continuation := data.get("continuation"):
+                if "initial_mesh" in data:
+                    raise ValueError("A continuation uses the original initial mesh.")
                 row = self.continuation_source(continuation["selection"])
                 if data["site"] != row["site"]:
                     raise ValueError("Continue loading on the original execution site.")
@@ -1378,16 +1397,34 @@ class Workspace:
                                            campaign="GUI", continuation=source)
                 self.log(f"Continuation submitted in {result['output_folder']}.")
                 return {"config_hash": config.config_hash}
-            folder = STATE / "configurations"
-            folder.mkdir(exist_ok=True)
-            path = folder / (config.config_hash + ".conf")
-            config.write(path, data.get("label") or None)
-            command = ["run", path, "--site", data.get("site", "local"), "--campaign", "GUI"]
-            if data.get("label"):
-                command += ["--label", data["label"]]
-            if data.get("site", "local") == "local":
-                command += ["--mode", "detached"]
-            self.manager(*command)
+            temporary = nullcontext(STATE / "configurations")
+            mesh = data.get("initial_mesh")
+            if "initial_mesh" in data:
+                from MTS_Management.config import Config
+                from MTS_Management.errors import ExpectedError
+                from MTS_Management.initial_mesh import mesh_checksum
+
+                if config["reconnectionMethod"] == "delaunay":
+                    raise ExpectedError("Use None or Edge flip reconnection for a custom initial mesh.")
+                config = Config(**(config.as_dict() | {"initialMeshSha256": mesh_checksum(mesh)}))
+                temporary = tempfile.TemporaryDirectory(prefix="mts-custom-mesh-")
+            with temporary as directory:
+                folder = Path(directory)
+                folder.mkdir(exist_ok=True)
+                path = folder / (config.config_hash + ".conf")
+                config.write(path, data.get("label") or None)
+                command = ["run", path, "--site", data.get("site", "local"), "--campaign", "GUI"]
+                if mesh is not None:
+                    from MTS_Management.initial_mesh import MESH_FILE, mesh_bytes
+
+                    vtu = path.with_name(MESH_FILE)
+                    vtu.write_bytes(mesh_bytes(mesh))
+                    command += ["--initial-mesh", vtu]
+                if data.get("label"):
+                    command += ["--label", data["label"]]
+                if data.get("site", "local") == "local":
+                    command += ["--mode", "detached"]
+                self.manager(*command)
             return {"config_hash": config.config_hash}
         if action == "run_campaign":
             name = simulation_setup.checked_name(data["name"])
@@ -1585,13 +1622,16 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, {"error": "Requests must originate from this MTS session."})
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if not 0 <= length <= 65536 or self.headers.get("Content-Type") != "application/json":
-                raise ValueError("Expected a JSON request of at most 64 KiB")
-            data = json.loads(self.rfile.read(length))
             action = urlsplit(self.path).path.removeprefix("/api/")
+            length = int(self.headers.get("Content-Length", "0"))
+            limit = 20 * 1024 * 1024 if action == "run" else 65536
+            if not 0 <= length <= limit or self.headers.get("Content-Type") != "application/json":
+                raise ValueError(f"Expected a JSON request of at most {limit // 1024:,} KiB.")
+            data = json.loads(self.rfile.read(length))
             if action == "slurm_program":
                 self.reply(200, self.server.app.slurm_program(data))
+            elif action == "mesh_preview":
+                self.reply(200, self.server.app.mesh_preview(data), "application/vnd.vtk.vtu")
             elif action == "plot_preview":
                 self.reply(200, self.server.app.plot_preview(data))
             elif action == "plot_presets":

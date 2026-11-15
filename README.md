@@ -49,7 +49,7 @@ On macOS this requests Apple's Command Line Tools when needed, then uses an
 existing Homebrew installation for CMake and OpenMP. Finish any Apple dialogs and
 rerun the command if instructed. Install Homebrew separately if it is missing.
 On Ubuntu/Debian it uses apt and may request an administrator password in Terminal.
-Other Linux distributions need a C++17 compiler, CMake, OpenMP and zlib development
+Other Linux distributions need a C++17 compiler, CMake, OpenMP, OpenSSL and zlib development
 files installed manually. The Setup page can rebuild the simulator afterward.
 Setup, the manager and the VS Code managed build task share
 `MTS2D/build/release/MTS2D`. Generated build directories are ignored by Git;
