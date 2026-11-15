@@ -83,9 +83,9 @@
 <div class="field"><div class="field-label">
 <label class="field check"><input id="run-write-vtus" type="checkbox" checked> Write mesh VTUs</label>
 <button class="help-tip" type="button" aria-label="About mesh VTUs" aria-describedby="run-vtu-help">?</button>
-<span class="tooltip" role="tooltip" id="run-vtu-help">Save mesh snapshots for inspecting or animating the deformation. CSV output and restart checkpoints are controlled separately.</span>
+<span class="tooltip" role="tooltip" id="run-vtu-help">Save mesh snapshots for inspection and animation. For a load-based animation, multiply frames per second by seconds per unit load to choose the regular snapshot rate. Plastic events and large energy drops can add snapshots.</span>
 </div></div>
-<div class="field"><label for="run-vtu-rate">VTU files per unit load</label><input id="run-vtu-rate" type="number" min="0" step="any" value="100" required></div>
+<div class="field"><label for="run-vtu-rate">VTU files per unit load</label><input id="run-vtu-rate" type="number" min="0" step="any" value="30" required></div>
 <label class="field check"><input id="run-log-minimization" type="checkbox"> Log during minimization</label>
 <div class="field"><label for="run-minimizer">Minimizer</label><select id="run-minimizer"><option value="LBFGS">L-BFGS</option><option value="CG">Conjugate gradient</option><option value="FIRE">FIRE</option></select></div>
 <div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option></select></div>

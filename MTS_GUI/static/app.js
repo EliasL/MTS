@@ -27,7 +27,7 @@ let previewBusy = false, previewAutomatic = true, previewRevision = 0, previewMa
 let plotPresets = [], loadedPresetId = null, monitorPlot = null, filePlot = null;
 let animationPresets = [], loadedAnimationPresetId = null, recoveringWorkspace = true, draftTimer, initialRefresh = false;
 let animationRequest = 0, animationSourceKey = '', animationLatticeKey = '';
-let animationHeatmapKind, animationEnergyRange, lastAnimationScan;
+let animationHeatmapKind, animationRangeScan, lastAnimationScan;
 let animationPreviewFrame = 'middle', animationPreviewOverride = false;
 const opacityEditor = createOpacityEditor($('animate-opacity-chart'), $('animate-remove-opacity-node'));
 let startOptions, campaignBaseSettings, continuationPlan;
@@ -823,12 +823,11 @@ async function refresh() {
     }
     const task = state.task, terminalHistory = state.history ?? [];
     const scan = task.animation_scan;
-    if (scan?.energy_range && task.id !== lastAnimationScan && task.id !== lastResult &&
-        scan.range_from_last_frame === $('animate-range-from-last-frame').checked &&
-        JSON.stringify(scan.animation_selection) === JSON.stringify(animationSelection())) {
+    if (scan?.colour_limits && task.id !== lastAnimationScan && task.id !== lastResult &&
+        animationRangeMatches(scan)) {
       lastAnimationScan = task.id;
-      animationEnergyRange = scan.energy_range;
-      updateOpacityLimits();
+      animationRangeScan = scan;
+      updateAnimationLimits();
       queueWorkspaceDraft();
     }
     const entry = clientHistory.find(client => task.id && client.task_id === task.id) ||
@@ -1549,7 +1548,7 @@ async function loadAnimationOptions() {
     $('animate-output').hidden = true;
     $('animate-preview-output').hidden = true;
     animationSourceKey = key;
-    animationEnergyRange = null;
+    animationRangeScan = null;
     animationPreviewOverride = false;
   }
   settings.hidden = true; status.textContent = '';
@@ -1582,14 +1581,34 @@ async function loadAnimationOptions() {
     if (recoveringWorkspace) message('Could not restore the animation selection. ' + error.message);
   }
 }
-function updateOpacityLimits() {
-  const energy = $('animate-kind').value === 'energy';
-  const limits = ['animate-energy-min', 'animate-limit'].map((id, index) => {
-    const input = $(id), scanned = energy ? animationEnergyRange?.[index] : undefined;
+function animationRangeOptions() {
+  return {
+    kind: $('animate-kind').value, matrix: $('animate-matrix').value,
+    stress_component: $('animate-stress-component').value,
+    playback: $('animate-playback').value, fps: $('animate-fps').valueAsNumber,
+    seconds_per_load: $('animate-rate').disabled ? 15 : $('animate-rate').valueAsNumber,
+    minimum_seconds: $('animate-minimum').valueAsNumber,
+    range_from_last_frame: $('animate-range-from-last-frame').checked,
+  };
+}
+function animationRangeMatches(scan) {
+  const options = animationRangeOptions();
+  return JSON.stringify(scan.animation_selection) === JSON.stringify(animationSelection()) &&
+    Object.keys(options).every(key => options[key] === scan.range_options[key]);
+}
+function updateAnimationLimits() {
+  const kind = $('animate-kind').value;
+  const limits = animationRangeScan && animationRangeMatches(animationRangeScan) ? animationRangeScan.colour_limits : [];
+  const [lower, upper] = [
+    ['animate-energy-min', kind === 'energy' ? limits[0] : null],
+    ['animate-limit', kind !== 'stress' ? limits[1] : null],
+    ['animate-stress-limit', kind === 'stress' ? limits[1] : null],
+  ].map(([id, scanned]) => {
+    const input = $(id);
     input.placeholder = Number.isFinite(scanned) ? String(Number(scanned.toPrecision(6))) : 'From data';
     return input.value ? input.valueAsNumber : scanned;
   });
-  opacityEditor.setLimits(...limits);
+  opacityEditor.setLimits(lower, upper);
 }
 function updateAnimationControls() {
   const kind = $('animate-kind').value;
@@ -1625,7 +1644,7 @@ function updateAnimationControls() {
   $('animate-legend-size').disabled = $('animate-legend-field').hidden =
     $('animate-show-legend-field').hidden || !$('animate-show-legend').checked;
   $('animate-rate-field').hidden = $('animate-rate').disabled = $('animate-playback').value !== 'load';
-  updateOpacityLimits();
+  updateAnimationLimits();
 }
 $('animate-kind').onchange = () => {
   if ($('animate-kind').value === 'none' && !$('animate-show-nodes').checked) $('animate-show-lines').checked = true;
@@ -1635,12 +1654,9 @@ for (const id of ['animate-show-nodes', 'animate-playback', 'animate-dislocation
   'animate-show-legend', 'animate-conditional-opacity']) {
   $(id).onchange = updateAnimationControls;
 }
-for (const id of ['animate-energy-min', 'animate-limit']) $(id).oninput = updateOpacityLimits;
-for (const id of ['animate-rate', 'animate-minimum', 'animate-fps', 'animate-playback', 'animate-range-from-last-frame']) {
-  $(id).oninput = () => {
-    animationEnergyRange = null;
-    updateOpacityLimits();
-  };
+for (const id of ['animate-energy-min', 'animate-limit', 'animate-rate', 'animate-minimum', 'animate-fps',
+  'animate-range-from-last-frame', 'animate-stress-component', 'animate-matrix']) {
+  $(id).oninput = updateAnimationLimits;
 }
 function runAnimation(action, previewFrame) {
   const fields = ['animate-fps', 'animate-rate', 'animate-minimum', 'animate-workers', 'animate-node-size',
@@ -1650,12 +1666,9 @@ function runAnimation(action, previewFrame) {
   const number = id => $(id).valueAsNumber;
   const kind = $('animate-kind').value;
   const limit = kind === 'stress' ? 'animate-stress-limit' : 'animate-limit';
-  operation(action, {...animationSelection(), preview_frame: previewFrame,
-    kind, matrix: $('animate-matrix').value, stress_component: $('animate-stress-component').value,
-    tiling: $('animate-tiling').value, playback: $('animate-playback').value, fps: number('animate-fps'),
-    seconds_per_load: $('animate-rate').disabled ? 15 : number('animate-rate'), minimum_seconds: number('animate-minimum'),
+  operation(action, {...animationSelection(), ...animationRangeOptions(), preview_frame: previewFrame,
+    tiling: $('animate-tiling').value,
     limit: $('animate-colouring').hidden || !$(limit).value ? null : number(limit),
-    range_from_last_frame: $('animate-range-from-last-frame').checked,
     energy_min: $('animate-energy-min').disabled || !$('animate-energy-min').value ? null : number('animate-energy-min'),
     opacity: $('animate-colouring').hidden || $('animate-opacity').disabled ? 100 : number('animate-opacity'),
     opacity_curve: $('animate-opacity-editor').hidden ? null : opacityEditor.points,
@@ -2088,7 +2101,7 @@ function renderAnimationPresets() {
         $('animate-range-from-last-frame').checked = $('animate-range-from-last-frame').defaultChecked;
         const skipped = restoreFields(animationFields, preset.selection.fields);
         animationHeatmapKind = $('animate-kind').value;
-        animationEnergyRange = null;
+        animationRangeScan = null;
         updateAnimationControls();
         loadedAnimationPresetId = preset.id;
         $('animation-preset-name').value = preset.name;
@@ -2145,7 +2158,7 @@ function saveWorkspaceDraft() {
       tab: $('animate-panel').hidden ? 'plot' : 'animate', fields: captureFields(draftForms),
       details: [...document.querySelectorAll('details[id]')].filter(node => node.closest(draftPanels) && node.open).map(node => node.id),
       monitorPlot, filePlot, plot, curve: opacityEditor.points, campaignAxes: campaignAxes(), continuationPlan,
-      animationEnergyRange, animationSourceKey, animationLatticeKey, lastAnimationScan,
+      animationRangeScan, animationSourceKey, animationLatticeKey, lastAnimationScan,
       inventory: {sort: inventorySort, ascending: inventoryAscending, open: [...inventoryOpen]},
       presets: {plot: loadedPresetId, animation: loadedAnimationPresetId},
       media: {plot: $('plot-preview-image').classList.contains('hidden') ? null : mediaPath('plot-preview-image', 'src'),
@@ -2315,7 +2328,7 @@ async function recoverWorkspace() {
       $('animate-energy-min').value = $('animate-energy-min').defaultValue;
     }
     opacityEditor.restore(draft.curve);
-    animationEnergyRange = Object.hasOwn(draft.fields, 'animate-range-from-last-frame') ? draft.animationEnergyRange : null;
+    animationRangeScan = draft.animationRangeScan;
     lastAnimationScan = draft.lastAnimationScan;
     animationSourceKey = draft.animationSourceKey || '';
     animationLatticeKey = draft.animationLatticeKey || '';

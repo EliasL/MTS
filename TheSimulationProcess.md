@@ -714,8 +714,9 @@ During execution, MTS2D writes macro data, configured mesh/diagnostic output and
 checkpoints. These files record physical progress independently of the GUI.
 Ordinary mesh VTUs are written at the first accepted step crossing each
 `1 / vtuFilesPerUnitLoad` interval from the initial load. The default is
-100 files per unit load. Initial and final states, plastic or energy events,
-and forced saves can add files to the regular series.
+30 files per unit load. Initial and final states, plastic events, and forced
+saves can add files. An energy drop during relaxation also adds a snapshot if
+it exceeds `energyDropThreshold`, which defaults to 0.01 in total-energy units.
 Console output is captured in the attempt log. Checkpoint intervals and output
 settings determine what state can be recovered after interruption.
 

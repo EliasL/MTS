@@ -665,7 +665,7 @@ class Workspace:
         from MTS_Management.errors import ExpectedError
         from MTS_Management.files import file_digest
         from MTS_Plotting.mesh_movie import (
-            ENERGY_RANGE_PROGRESS, display_limit_sources, display_scan_frames, encoder_path, frame_schedule,
+            COLOUR_LIMITS_PROGRESS, display_limit_sources, display_scan_frames, encoder_path, frame_schedule,
             preview_frame_index, tiled_display,
         )
         from MTS_Plotting.runs import Run
@@ -677,11 +677,11 @@ class Workspace:
         range_from_last_frame = data.get("range_from_last_frame", True)
 
         def log_animation(line):
-            if line.startswith(ENERGY_RANGE_PROGRESS):
-                energy_range = json.loads(line.removeprefix(ENERGY_RANGE_PROGRESS))
+            if line.startswith(COLOUR_LIMITS_PROGRESS):
+                colour_limits = json.loads(line.removeprefix(COLOUR_LIMITS_PROGRESS))
                 with self.lock:
-                    self.task["animation_scan"] = {"animation_selection": selection, "energy_range": energy_range,
-                                                   "range_from_last_frame": range_from_last_frame}
+                    self.task["animation_scan"] = {"animation_selection": selection, "colour_limits": colour_limits,
+                                                   "range_options": range_options}
             self.log(line)
 
         override = STATE / "ffmpeg-path"
@@ -695,6 +695,9 @@ class Workspace:
                                                 "dislocation_bond_tolerance", "dislocation_scale",
                                                 "dislocation_thickness", "energy_min", "stress_component", "opacity",
                                                 "opacity_curve") if key in data})
+        range_options = {key: spec[key] for key in ("kind", "matrix", "playback", "fps", "seconds_per_load",
+                                                    "minimum_seconds", "range_from_last_frame")}
+        range_options["stress_component"] = spec.get("stress_component", "12")
         rendering = {k: v for k, v in spec.items() if k != "workers"}
         source = self.run_plot_sources.get(data["campaign"])
         output = (STATE / "previews" / f"animation-{secrets.token_hex(8)}.png" if preview else
