@@ -38,13 +38,13 @@ def local_build_status(site_paths):
     executable = Path(site_paths["executable"])
     manifest = executable.parent / "build-manifest.json"
     if not executable.is_file() or not manifest.is_file():
-        return "missing", False
+        return "missing", False, False
     try:
         record = read_json(manifest)
     except (OSError, ValueError):
-        return "missing", False
+        return "missing", False, False
     if not isinstance(record, dict) or not record.get("revision"):
-        return "missing", False
+        return "missing", False, False
 
     source = Path(site_paths["source"])
     try:
@@ -56,9 +56,12 @@ def local_build_status(site_paths):
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError):
         revision = None
     supports_rectangle = getattr(provenance, "supports_rectangle_boundary", None)
+    supports_indentation = getattr(provenance, "supports_indentation", None)
     rectangle = bool(supports_rectangle and supports_rectangle(record))
-    outdated = (revision and record["revision"] != revision) or (supports_rectangle and not rectangle)
-    return ("outdated" if outdated else "installed"), rectangle
+    indentation = bool(supports_indentation and supports_indentation(record))
+    current = supports_indentation or supports_rectangle
+    outdated = (revision and record["revision"] != revision) or (current and not current(record))
+    return ("outdated" if outdated else "installed"), rectangle, indentation
 
 
 class Workspace:
@@ -402,6 +405,15 @@ class Workspace:
             raise ExpectedError("The selection changed. Refresh Monitor data and select the runs again.")
         return [available[k] for k in selected]
 
+    def continuation_source(self, selection):
+        from MTS_Management.errors import ExpectedError
+
+        rows = self.selected_inventory_runs(selection)
+        if (len(rows) != 1 or not rows[0]["site"] or
+                rows[0]["status"]["state"] not in {"finished", "failed", "stopped"}):
+            raise ExpectedError("Select one stopped run on its execution site.")
+        return rows[0]
+
     def run_plot_source(self, selection):
         from MTS_Management.errors import ExpectedError
 
@@ -570,7 +582,10 @@ class Workspace:
         from MTS_Management.data import mesh_snapshots
         from MTS_Management.errors import ExpectedError
         from MTS_Management.files import file_digest
-        from MTS_Plotting.mesh_movie import ENERGY_RANGE_PROGRESS, encoder_path, frame_schedule
+        from MTS_Plotting.mesh_movie import (
+            ENERGY_RANGE_PROGRESS, display_limit_sources, encoder_path, frame_schedule, tiled_display,
+        )
+        from MTS_Plotting.runs import Run
 
         folder = self.animation_source(data)
         if folder is None:
@@ -592,7 +607,7 @@ class Workspace:
                                                 "title_size", "show_border", "show_legend", "dislocations",
                                                 "dislocation_lattice", "dislocation_method",
                                                 "dislocation_bond_tolerance", "dislocation_scale",
-                                                "dislocation_thickness", "energy_min", "opacity",
+                                                "dislocation_thickness", "energy_min", "stress_component", "opacity",
                                                 "opacity_curve") if key in data})
         rendering = {k: v for k, v in spec.items() if k != "workers"}
         source = self.run_plot_sources.get(data["campaign"])
@@ -636,11 +651,31 @@ class Workspace:
                 indices = frame_schedule(
                     catalog, playback=spec["playback"], fps=spec["fps"],
                     seconds_per_load=spec["seconds_per_load"], minimum_seconds=spec["minimum_seconds"])
-                frames = [catalog[index]["name"] for index in sorted(set(indices))]
-                self.log(f"Downloading {len(frames)} mesh states from {site_label(site.name)}.")
+                scheduled = [catalog[index] for index in sorted(set(indices))]
+                frames = [frame["name"] for frame in scheduled]
                 identities = {anchor["config_hash"]: anchor["manifest_sha256"]}
-                folder, = fetch_many(site, identities, temporary, expected_manifests=identities,
-                                     retain_binaries=False, mesh_frames=frames)
+
+                def download_frames(names):
+                    self.log(f"Downloading {len(names)} mesh states from {site_label(site.name)}.")
+                    fetched, = fetch_many(site, identities, temporary, expected_manifests=identities,
+                                          retain_binaries=False, mesh_frames=names)
+                    return fetched
+
+                if preview:
+                    position = spec["preview_frame"]
+                    if position not in {"first", "middle"}:
+                        raise ValueError("Choose the first or middle animation frame.")
+                    kind = spec["kind"]
+                    limits = {"kind": kind, "tiled": tiled_display(Run.read(folder).config, kind, spec["tiling"]),
+                              "limit": spec["limit"], "lower_limit": spec.get("energy_min", 0.)}
+                    _, _, scans = display_limit_sources(folder, scheduled, **limits)
+                    if not any(scans):
+                        chosen = catalog[indices[len(indices) // 2 if position == "middle" else 0]]["name"]
+                        folder = download_frames([chosen])
+                        _, _, scans = display_limit_sources(folder, scheduled, **limits)
+                        frames = [name for name in frames if name != chosen] if any(scans) else []
+                if frames:
+                    folder = download_frames(frames)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", dir=STATE) as options:
                 json.dump(spec, options)
                 options.flush()
@@ -1050,6 +1085,7 @@ class Workspace:
         servers = []
         build_status = "missing"
         local_rectangle_build = False
+        local_indentation_build = False
         if packages["MTSManager"] and site_file.exists():
             from MTS_Management.cluster import load_sites, paths
             profiles = load_sites(site_file)
@@ -1063,7 +1099,7 @@ class Workspace:
                                     "profiles": [p.name for p in profiles.values() if (p.ssh or "local") == host]})
                     seen.add(host)
             if "local" in profiles and not profiles["local"].ssh:
-                build_status, local_rectangle_build = local_build_status(paths(profiles["local"]))
+                build_status, local_rectangle_build, local_indentation_build = local_build_status(paths(profiles["local"]))
         with self.lock:
             task = dict(self.task, logs=list(self.task["logs"]))
             history = [{k: list(v) if k == "logs" else v for k, v in entry.items() if k != "result"}
@@ -1073,6 +1109,7 @@ class Workspace:
                                                     else "pyproject.toml")).exists() for name in COMPONENTS},
                 "packages": packages, "local_build": build_status != "missing",
                 "local_build_status": build_status, "local_rectangle_build": local_rectangle_build,
+                "local_indentation_build": local_indentation_build,
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "campaigns": sorted(self.campaign_definitions()) if packages["MTSManager"] else [],
@@ -1258,8 +1295,35 @@ class Workspace:
             return {"inventory_updated": True, "updated_sites": updated, "errors": errors}
         if action in {"logs", "stop"}:
             return self.manager_call(data.get("site", "local"), action, attempt=data["attempt"])
+        if action == "continuation_plan":
+            row = self.continuation_source(data)
+            keys = ("folder", "config_hash", "manifest_sha256")
+            from MTS_Management.errors import ExpectedError
+            try:
+                result = self.manager_call(row["site"], "continuation_plan", timeout=600,
+                                           selection={key: row[key] for key in keys})
+            except RuntimeError as error:
+                if "Unknown remote operation: continuation_plan" not in str(error):
+                    raise
+                raise ExpectedError("Update the manager on the execution site to use Load further.") from error
+            if "error" in result:
+                raise ExpectedError(result["error"])
+            return {"continuation_plan": result | {"site": row["site"], "selection": data}}
         if action == "run":
             config = simulation_setup.simulation_config(data)
+            if continuation := data.get("continuation"):
+                row = self.continuation_source(continuation["selection"])
+                if data["site"] != row["site"]:
+                    raise ValueError("Continue loading on the original execution site.")
+                source = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
+                source.update({key: continuation[key] for key in ("checkpoint", "checkpoint_catalog")
+                               if key in continuation})
+                self.log(f"Preparing a new run on {site_label(row['site'])}.")
+                result = self.manager_call(row["site"], "run", timeout=3600,
+                                           settings=config.as_dict(), label=data.get("label") or None,
+                                           campaign="GUI", continuation=source)
+                self.log(f"Continuation submitted in {result['output_folder']}.")
+                return {"config_hash": config.config_hash}
             folder = STATE / "configurations"
             folder.mkdir(exist_ok=True)
             path = folder / (config.config_hash + ".conf")
@@ -1504,10 +1568,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "run_campaign", "plot", "plot_monitor", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "slurm_plan", "slurm_execute",
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "run_campaign", "continuation_plan", "plot", "plot_monitor", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "slurm_plan", "slurm_execute",
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 title = {"plot_monitor": "Prepare plot data", "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
-                         "restore_archive": "Restore"}.get(action, action.capitalize())
+                         "restore_archive": "Restore", "continuation_plan": "Load further"}.get(action, action.capitalize())
                 task_id = self.server.app.start(title, lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs"})
                 self.reply(202, {"started": action, "task_id": task_id})

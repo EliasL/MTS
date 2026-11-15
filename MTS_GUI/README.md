@@ -32,10 +32,9 @@ remain independent of the GUI process.
 Start simulations configures and launches runs. Monitor data displays records
 for a server or a campaign. Plot exports campaign response curves and scalar comparisons.
 
-Overview shows the local simulator build status. Select **Build Release** to
-install a local build or **Rebuild Release** to compile the checked-out source.
-The status is **Outdated** when the installed build records a different source
-revision or configuration schema.
+Overview shows the local simulator build status. **Build Release** appears
+when a local build is missing. **Rebuild Release** appears when the installed
+build records a different source revision or configuration schema.
 
 Drop one file anywhere in the workspace. A `.conf` file fills the individual
 simulation form for review. A `.csv` file opens in Plot, where its numeric
@@ -53,6 +52,14 @@ sample. Displacement is prescribed perpendicular to the driven edge, in mesh
 length units. For vertical compression with a sliding top and fixed base,
 drive Top, set Top to Free and Bottom to Fixed in x and y, and leave Left and
 Right free. Build MTS2D at the execution site before running this protocol.
+
+Nanoindentation presses a circular indenter into the centre of the relaxed
+top surface. The bottom is fixed, and the sides are free. Set the indenter
+radius and the depth schedule in mesh length units. **Frictionless penalty**
+allows sliding under normal repulsion. **Projection and pinning** places
+contacting nodes on the indenter and fixes them for the current loading step.
+Plot the vertical indenter reaction force against load to obtain a force–depth
+curve.
 
 Sequential slip drives selected boundary regions of an open sample. Choose a
 midpoint sequence or enter a custom sequence such as
@@ -270,7 +277,20 @@ termination metadata. Including other seeds downloads their data from the same
 server. Remote seed discovery requires a current manager on the execution host.
 Campaign-wide plots use the campaign selector and a local data collection.
 
-Archive moves an inactive run or seed group into a sibling directory named
+**More → Load further** opens **Continue loading** for a stopped run with a
+checkpoint. Set the extra load and execution settings. The default adds one
+unit to the previous maximum. For
+sequential slip, edit the sequence to add slips. Sample geometry, material,
+boundary conditions, loading mode and reconnection carry forward. The form
+clears existing stopping targets so the new load limit can govern the extension.
+
+**Run simulation** selects the latest checkpoint, copies the source history
+through that step into a new folder on the original execution site, and appends
+the continuation there. The Terminal reports the selected step and copy progress.
+Each destination needs distinct settings at that site. Load further requires
+a current manager on remote execution hosts.
+
+**More → Archive** moves an inactive run or seed group into a sibling directory named
 `<output-root>-archive`. The execution host checks that both paths are on the
 same filesystem and moves the directory by renaming it. A server run and its
 downloaded copies can be archived separately. Setup and tools → Advanced →
@@ -286,9 +306,10 @@ view after access is restored. The Archive log also restores campaign settings.
 ## Animate
 
 Animate shares the Plot selection. Select one run to generate an MP4 from
-its saved mesh snapshots. Available views are element energy, square-model
-integer shear, matrix components, and the Poincaré disk of a deformation
-metric. The integer-shear view uses plastic history for reconnecting runs
+its saved mesh snapshots. Available views include element energy, Cauchy
+stress components, square-model integer shear, deformation matrix components,
+and the Poincaré disk. Stress colours span zero symmetrically using the
+maximum absolute element stress or a supplied limit. The integer-shear view uses plastic history for reconnecting runs
 and the plastic deformation gradient for other runs.
 
 Use Nodes and Mesh lines to overlay the mesh or show its geometry with the
@@ -320,8 +341,8 @@ Mesh bounding box adds 2% padding on each side of the mesh viewport.
 The viewport also leaves room for any visible node markers. Mesh colouring
 controls the heatmap, limits and opacity. For Energy, Conditional opacity
 maps energy to opacity with a piecewise-linear curve. The colour bar uses
-the same curve. The energy limit fields display the automatic limits after
-the data scan. Nodes on the curve keep their relative positions when the
+the same curve. The lower energy limit defaults to zero. Clear either energy
+limit to use its automatic value. Nodes on the curve keep their relative positions when the
 energy limits change. Default playback uses 15 seconds
 per unit accumulated load, a minimum of seven seconds, and 30 frames per
 second. Uniform saved states is available for playback by snapshot order.
@@ -330,10 +351,11 @@ MP4 export requires FFmpeg with H.264 encoding. MTS uses FFmpeg from the
 system path or the executable listed in `.mts/ffmpeg-path`. For a remote
 run selected in Monitor data, the current server manager provides the mesh
 snapshot catalogue and MTS retrieves the snapshots used in the movie.
-Rendered frames go directly to the encoder. Preview first frame and Preview
-middle frame render a still after scanning the same mesh states as the video
-for bounds and colour limits. The middle frame follows the video playback
-schedule.
+Rendered frames go directly to the encoder. Previews use the same fixed display
+limits as the video. Matching macro CSV rows supply mesh bounds and the
+maximum element energy when available. The Terminal lists the quantities
+that require scanning the mesh snapshots. The middle preview frame follows
+the video playback schedule.
 Automatic worker selection uses available memory and the first frame's peak
 memory, while reserving one CPU when possible. An estimate from a matching
 preview allows parallel rendering to start immediately.

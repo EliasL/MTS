@@ -122,8 +122,15 @@ details .fields,details textarea{margin-top:12px}
 .terminal-history summary::before{content:'▸';flex-shrink:0}
 .terminal-history details[open]>summary::before{content:'▾'}
 .terminal-history summary span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.terminal-history .remove-message{padding:0 5px;border:0;background:transparent;font-size:18px;line-height:1}
+.terminal-history :is(.copy-message,.remove-message){padding:0 5px;border:0;background:transparent;font-size:18px;line-height:1}
+.terminal-history details:not([open]) .copy-message{display:none}
+.terminal-history .copy-message{min-width:28px;font-size:15px}
+.terminal-history .copy-message:hover{background:#edf0f3}
 .terminal-history pre{margin:0;max-height:55vh;overflow:auto;font-size:11px}
+.terminal-brace{display:inline;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-decoration:underline dotted}
+.terminal-brace:hover{background:#ffffff26}
+.terminal-brace[aria-expanded="false"]::after{content:'…}'}
+.terminal-brace[aria-expanded="false"]+.terminal-brace-content,.terminal-brace[aria-expanded="false"]+.terminal-brace-content+span{display:none}
 .terminal-history details[data-warning="true"]{border-color:#b3842b}
 .terminal-history details[data-warning="true"] pre{color:#ffe19a}
 #operation-warning,#archive-warning,#data-file-dialog{width:min(35rem,calc(100% - 32px));padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);color:var(--ink)}
@@ -140,7 +147,13 @@ table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;color:var(--muted);font-weight:500;padding:10px 8px;background:#f6f7f8;border-bottom:1px solid var(--line)}
 td{padding:12px 8px;border-bottom:1px solid var(--line)}
 td:first-child{max-width:300px;overflow-wrap:anywhere}
-.table-actions{display:flex;gap:6px}
+.table-actions{display:flex;align-items:center;gap:6px}
+#run-more-menu{position:fixed;inset:auto;margin:0;padding:4px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--ink);box-shadow:0 3px 12px #20283030}
+#run-more-menu:popover-open{display:grid;gap:3px}
+#run-more-menu .action-hint>button{width:100%;justify-content:flex-start;border-color:transparent}
+#run-continuation .section-row{margin-bottom:0}
+#run-continuation-source{margin:6px 0 0}
+#run-form.is-continuation .fresh-run-only{display:none!important}
 .empty{text-align:center;padding:32px 12px;color:var(--muted);font-size:12px}
 .inline-fields{display:flex;gap:8px;align-items:center;min-width:0}
 .inline-fields select{width:120px}

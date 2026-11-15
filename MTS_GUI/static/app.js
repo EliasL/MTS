@@ -23,7 +23,7 @@ let animationPresets = [], loadedAnimationPresetId = null, recoveringWorkspace =
 let animationRequest = 0, animationSourceKey = '', animationLatticeKey = '';
 let animationHeatmapKind, animationEnergyRange, lastAnimationScan;
 const opacityEditor = createOpacityEditor($('animate-opacity-chart'), $('animate-remove-opacity-node'));
-let startOptions, campaignBaseSettings;
+let startOptions, campaignBaseSettings, continuationPlan;
 let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const siteLabel = name => String(name).toUpperCase();
@@ -157,7 +157,7 @@ async function operation(action, data = {}) {
     command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=60${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
   }
   const labels = {plot_monitor: 'Prepare plot data', archive_monitor: 'Archive',
-    archive_campaign: 'Archive campaign settings', restore_archive: 'Restore'};
+    archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further'};
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
     labels[action] || action, command, 'running');
   pendingOperation = entry;
@@ -245,7 +245,7 @@ function updateActions() {
   const busy = lastState.task.state === 'running' || pendingOperation?.state === 'running', ready = Object.values(lastState.packages).every(Boolean);
   const busyReason = busy ? 'An operation is running. Wait for ' +
     (lastState.task.command || lastState.task.title || pendingOperation?.title || 'it') + ' to finish.' : '';
-  for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button:not(.folder-location), #ssh-list button, #ssh-editor button')]) {
+  for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button:not(.folder-location), #run-more-menu button, #ssh-list button, #ssh-editor button')]) {
     button.disabled = busy || button.dataset.disabledConnection === 'true' || button.dataset.unavailable === 'true';
     buttonHint(button).title = busyReason || button.dataset.disabledReason || '';
   }
@@ -261,12 +261,14 @@ function updateActions() {
   $('campaign-run').disabled ||= Boolean(campaignSiteReason);
   if (!busy && campaignSiteReason) $('campaign-run').parentElement.title = campaignSiteReason;
   const setupReason = !startOptions ? 'Simulation settings are unavailable. Check MTSManager in Setup and tools.' : '';
-  const configurationReason = setupReason || rectangleIssue();
+  const configurationReason = setupReason || indentationIssue() || rectangleIssue();
   const runSite = $('run-site').value;
   const rectangleBuildReason = boundaryDisplacement() && runSite === 'local' && !lastState.local_rectangle_build
     ? 'Rebuild MTS2D from the Overview to use boundary displacement.' : '';
-  updateRunActions(configurationReason, $('run-button').parentElement.title ||
-    configurationReason || siteReason(runSite) || rectangleBuildReason);
+  const indentationBuildReason = indentationExperiment() && runSite === 'local' && !lastState.local_indentation_build
+    ? 'Rebuild MTS2D from the Overview to use nanoindentation.' : '';
+  updateRunActions(continuationPlan ? 'Presets are unavailable while continuing a run.' : configurationReason, $('run-button').parentElement.title ||
+    configurationReason || continuationIssue() || siteReason(runSite) || indentationBuildReason || rectangleBuildReason);
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
@@ -292,12 +294,63 @@ function updateRunActions(saveReason, runReason) {
     button.parentElement.title = reason;
   }
   const status = $('run-action-reasons');
-  const text = saveReason && saveReason === runReason ? saveReason :
+  const text = continuationPlan ? runReason : saveReason && saveReason === runReason ? saveReason :
     [saveReason && 'Save preset — ' + saveReason, runReason && 'Run simulation — ' + runReason]
       .filter(Boolean).join(' ');
   if (status.textContent !== text) status.textContent = text;
   status.hidden = !text;
 }
+function terminalBracePairs(output) {
+  const pairs = new Map(), openings = [];
+  let quote = '';
+  for (let index = 0; index < output.length; index++) {
+    const character = output[index];
+    if (quote) {
+      if (character === '\\') index++;
+      else if (character === quote || character === '\n') quote = '';
+    } else if (character === '{') {
+      openings.push(index);
+    } else if (openings.length) {
+      if (character === '}') pairs.set(openings.pop(), index);
+      else if (character === '"' || character === "'") quote = character;
+    }
+  }
+  return pairs;
+}
+
+function renderTerminalOutput(pre, output) {
+  const pairs = terminalBracePairs(output);
+  if (!pairs.size) {pre.textContent = output; return;}
+  const expanded = new Set([...pre.querySelectorAll('.terminal-brace[aria-expanded="true"]')].map(button => button.dataset.offset));
+  const fragment = document.createDocumentFragment(), sections = [];
+  let parent = fragment, start = 0;
+  for (const {index} of output.matchAll(/[{}]/g)) {
+    if (pairs.has(index)) {
+      parent.append(output.slice(start, index));
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'terminal-brace'; button.textContent = '{';
+      button.dataset.offset = index;
+      button.setAttribute('aria-label', 'Terminal brace section');
+      button.setAttribute('aria-expanded', expanded.has(button.dataset.offset));
+      button.onclick = () => button.setAttribute('aria-expanded', button.getAttribute('aria-expanded') === 'false');
+      const content = document.createElement('span'); content.className = 'terminal-brace-content';
+      parent.append(button, content);
+      sections.push({end: pairs.get(index), parent});
+      parent = content;
+    } else if (sections.at(-1)?.end === index) {
+      parent.append(output.slice(start, index));
+      parent = sections.pop().parent;
+      const closing = document.createElement('span'); closing.textContent = '}';
+      parent.append(closing);
+    } else {
+      continue;
+    }
+    start = index + 1;
+  }
+  fragment.append(output.slice(start));
+  pre.replaceChildren(fragment);
+}
+
 function renderTerminal(history = backendHistory) {
   try {sessionStorage.setItem('mts-terminal-history', JSON.stringify({token: accessToken, entries: clientHistory}));} catch {}
   backendHistory = history;
@@ -311,8 +364,26 @@ function renderTerminal(history = backendHistory) {
     if (!node) {
       for (const previous of container.children) if (previous.dataset.state !== 'running') previous.open = false;
       node = document.createElement('details'); node.dataset.id = entry.id;
-      node.innerHTML = '<summary><span></span><button class="remove-message" aria-label="Delete terminal message" title="Delete terminal message">×</button></summary><pre></pre>';
-      node.querySelector('button').onclick = async event => {
+      node.innerHTML = `<summary><span></span>
+        <button type="button" class="copy-message" aria-label="Copy terminal message" title="Copy terminal message">⧉</button>
+        <button type="button" class="remove-message" aria-label="Delete terminal message" title="Delete terminal message">×</button>
+        </summary><pre></pre>`;
+      const copyButton = node.querySelector('.copy-message');
+      let copyFeedbackTimer;
+      copyButton.onclick = async event => {
+        event.preventDefault(); event.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(node.querySelector('pre').textContent);
+          copyButton.textContent = '✓';
+          copyButton.title = 'Copied';
+          clearTimeout(copyFeedbackTimer);
+          copyFeedbackTimer = setTimeout(() => {
+            copyButton.textContent = '⧉';
+            copyButton.title = 'Copy terminal message';
+          }, 1500);
+        } catch (error) {message('Clipboard access failed: ' + error.message);}
+      };
+      node.querySelector('.remove-message').onclick = async event => {
         event.preventDefault(); event.stopPropagation();
         try {
           if (entry.id.startsWith('browser-')) {
@@ -330,7 +401,7 @@ function renderTerminal(history = backendHistory) {
     node.querySelector('summary').title = entry.command || entry.title;
     const output = entry.logs.join('\n') || 'Starting…', pre = node.querySelector('pre');
     if (pre.textContent !== output) {
-      pre.textContent = output; pre.scrollTop = pre.scrollHeight; changed = true;
+      renderTerminalOutput(pre, output); pre.scrollTop = pre.scrollHeight; changed = true;
     }
   }
   if (!history.length) container.innerHTML = '<p class="muted">No messages.</p>';
@@ -422,18 +493,53 @@ async function loadArchiveLog() {
   } catch (error) {status.textContent = error.message;}
 }
 $('archive-log').ontoggle = () => {if ($('archive-log').open) loadArchiveLog();};
+const runMoreMenu = $('run-more-menu');
+let runMoreAnchor;
+runMoreMenu.addEventListener('beforetoggle', event => {
+  if (event.newState === 'closed') {
+    runMoreAnchor?.setAttribute('aria-expanded', 'false');
+    runMoreAnchor = null;
+  }
+});
+function openRunMenu(anchor, rows) {
+  if (runMoreMenu.matches(':popover-open')) {
+    const sameAnchor = runMoreAnchor === anchor;
+    runMoreMenu.hidePopover();
+    if (sameAnchor) return;
+  }
+  const further = $('run-more-further'), archive = $('run-more-archive');
+  const stoppable = ['finished', 'failed', 'stopped'];
+  const furtherUnavailable = rows.length !== 1 || !rows[0].site || !stoppable.includes(rows[0].status.state);
+  const archiveUnavailable = rows.some(row => ![...stoppable, 'local copy'].includes(row.status.state));
+  further.dataset.unavailable = String(furtherUnavailable);
+  further.dataset.disabledReason = furtherUnavailable ? 'Select one stopped run on its execution site.' : '';
+  archive.dataset.unavailable = String(archiveUnavailable);
+  archive.dataset.disabledReason = archiveUnavailable ? 'Archive is available after all selected runs have stopped.' : '';
+  further.onclick = () => {runMoreMenu.hidePopover(); operation('continuation_plan', selectedRuns(rows));};
+  archive.onclick = () => {runMoreMenu.hidePopover(); archiveRuns(rows);};
+  updateActions();
+  runMoreAnchor = anchor;
+  anchor.setAttribute('aria-expanded', 'true');
+  runMoreMenu.showPopover({source: anchor});
+  const trigger = anchor.getBoundingClientRect(), menu = runMoreMenu.getBoundingClientRect();
+  const left = Math.max(4, Math.min(trigger.left, document.documentElement.clientWidth - menu.width - 4));
+  const below = trigger.bottom + 4;
+  const top = below + menu.height <= window.innerHeight - 4 ? below : Math.max(4, trigger.top - menu.height - 4);
+  runMoreMenu.style.left = left + 'px';
+  runMoreMenu.style.top = top + 'px';
+  if (!further.disabled) further.focus({preventScroll: true});
+  else if (!archive.disabled) archive.focus({preventScroll: true});
+}
 function appendRunActions(container, rows) {
   const plot = document.createElement('button');
   plot.className = 'small'; plot.textContent = 'Plot';
   plot.onclick = () => operation('plot_monitor', selectedRuns(rows));
-  const archive = document.createElement('button');
-  archive.className = 'small'; archive.textContent = 'Archive';
-  if (rows.some(row => !['finished', 'failed', 'stopped', 'local copy'].includes(row.status.state))) {
-    archive.dataset.unavailable = 'true';
-    archive.dataset.disabledReason = 'Archive is available after all selected runs have stopped.';
-  }
-  archive.onclick = () => archiveRuns(rows);
-  container.append(plot, archive);
+  const more = document.createElement('button');
+  more.className = 'small'; more.type = 'button'; more.textContent = 'More';
+  more.setAttribute('aria-controls', 'run-more-menu');
+  more.setAttribute('aria-expanded', 'false');
+  more.onclick = () => openRunMenu(more, rows);
+  container.append(plot, more);
 }
 for (const button of document.querySelectorAll('.inventory-sort')) {
   button.onclick = () => {
@@ -446,6 +552,7 @@ for (const button of document.querySelectorAll('.inventory-sort')) {
   };
 }
 function renderInventory(rows) {
+  if (runMoreMenu.matches(':popover-open')) runMoreMenu.hidePopover();
   const body = $('jobs'); body.replaceChildren();
   if (!rows.length) {body.innerHTML = '<tr><td colspan="6" class="empty">No managed simulations were found.</td></tr>'; return;}
   const lineage = [], items = [], selection = inventorySelection();
@@ -577,6 +684,7 @@ async function refresh() {
       `<div class="readiness-row"><span>Local simulator</span><span class="badge ${buildStyle}">${buildLabel}</span></div>`;
     $('overview-build-status').textContent = buildLabel;
     $('overview-build-status').className = 'badge ' + buildStyle;
+    $('overview-build').hidden = buildStatus === 'installed';
     $('overview-build').textContent = buildStatus === 'missing' ? 'Build Release' : 'Rebuild Release';
     if (state.interface_version === 4 && state.packages.MTSManager && !startOptions) await loadStartOptions();
     if (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites) || JSON.stringify(state.campaigns) !== JSON.stringify(previousCampaigns)) {
@@ -684,6 +792,7 @@ async function refresh() {
         if (!previous) view('plot');
       }
       if (task.result?.config_hash) $('task-result').textContent = 'Submitted.';
+      if (task.result?.continuation_plan) await showContinuation(task.result.continuation_plan);
       if (task.result?.slurm_plan || task.result?.slurm_result) renderSlurmResult(task.result);
       if (task.result?.inspected_host) showSSHInspection(task.result);
       if (task.result?.saved_profile && sshEditor) await openSSHEditor(sshEditor.host, 'profile', task.result.saved_profile);
@@ -734,6 +843,7 @@ const runFields = {
   segmentLoad: 'segment', repeat: 'repeat',
   writeMeshVTUs: 'write-vtus', logDuringMinimization: 'log-minimization',
   minimizer: 'minimizer', energyFunction: 'energy-function', initialGuessNoise: 'initial-noise',
+  indenterRadius: 'indenter-radius', indentationContact: 'indentation-contact',
 };
 const rectangleEdges = ['top', 'bottom', 'left', 'right'];
 const edgeChoices = [
@@ -748,11 +858,41 @@ for (const edge of rectangleEdges) {
 function axialExperiment() {
   return ['compression', 'tension'].includes($('run-deformation').value);
 }
+function indentationExperiment() {
+  return $('run-deformation').value === 'nanoindentation';
+}
+function indentationIssue() {
+  if (!indentationExperiment()) return '';
+  if (!Object.hasOwn(startOptions.defaults, 'indenterRadius')) return 'Update MTSManager to use nanoindentation.';
+  if ($('run-indenter-radius').valueAsNumber <= 0) return 'Enter a positive indenter radius.';
+  if ($('run-reconnection').value === 'delaunay') return 'Choose Edge flip or None for nanoindentation.';
+  if ($('run-increment').valueAsNumber <= 0) return 'Enter a positive depth increment.';
+  const spacing = $('run-energy-function').value === 'contiTriangular' ? Math.sqrt(3) / 2 : 1;
+  const height = ($('run-rows').valueAsNumber - 1) * spacing;
+  if ($('run-start-load').valueAsNumber + runTotalLoad() >= height) {
+    return 'The final indentation depth must be less than the sample height.';
+  }
+  return '';
+}
 function boundaryDisplacement() {
   return axialExperiment() && $('run-axial-method').value === 'displacement';
 }
 function verticalDrivenEdge() {
   return ['top', 'bottom'].includes($('run-driven-edge').value);
+}
+function runTotalLoad() {
+  return $('run-load').valueAsNumber + (continuationPlan?.original_total_load ?? 0);
+}
+function continuationIssue() {
+  if (!continuationPlan) return '';
+  const end = $('run-start-load').valueAsNumber + runTotalLoad();
+  if (continuationPlan.checkpoint && end <= continuationPlan.checkpoint.load) {
+    return 'Set a final load above the checkpoint load.';
+  }
+  if (axialExperiment() && !boundaryDisplacement() && $('run-deformation').value === 'compression' && end >= 1) {
+    return 'Final compression strain must be less than 1.';
+  }
+  return '';
 }
 function rectangleIssue() {
   if (!boundaryDisplacement()) return '';
@@ -766,7 +906,7 @@ function rectangleIssue() {
     }
   }
   if ($('run-increment').valueAsNumber <= 0) return 'Enter a positive displacement increment.';
-  const end = $('run-start-load').valueAsNumber + $('run-load').valueAsNumber;
+  const end = $('run-start-load').valueAsNumber + runTotalLoad();
   const span = $(vertical ? 'run-rows' : 'run-cols').valueAsNumber - 1;
   if ($('run-deformation').value === 'compression' && end >= span) {
     return 'Final compression displacement must be less than ' + span + ' mesh length units.';
@@ -788,35 +928,44 @@ function setDirectionChoices(value) {
 function updateSlipTotal() {
   if ($('run-deformation').value !== 'sequentialSlip') return;
   const entries = $('run-directions').value.split(',').filter(entry => entry.trim()).length;
-  $('run-load').value = entries;
+  $('run-load').value = entries - (continuationPlan?.original_total_load ?? 0);
 }
 function renderExperiment() {
   const deformation = $('run-deformation').value;
   const slip = deformation === 'sequentialSlip', axial = axialExperiment();
+  const indentation = indentationExperiment();
   const midpoint = deformation === 'directDisplacement';
   const displacement = boundaryDisplacement();
-  const editSequence = slip || (!displacement && $('run-direction-choice').value === 'custom');
-  const schedule = !slip && !axial;
-  $('run-boundary-field').hidden = slip || displacement;
+  const editSequence = slip || (!displacement && !indentation && $('run-direction-choice').value === 'custom');
+  const schedule = !slip && !axial && !indentation;
+  $('run-boundary-field').hidden = slip || displacement || indentation;
   $('run-axial-method-field').hidden = !axial;
   $('run-edge-settings').hidden = !displacement;
-  $('run-direction-choice-field').hidden = slip || displacement;
+  $('run-direction-choice-field').hidden = slip || displacement || indentation;
+  for (const id of ['indenter-radius', 'indentation-contact']) {
+    $('run-' + id + '-field').hidden = !indentation;
+    $('run-' + id).disabled = !indentation || Boolean(continuationPlan);
+  }
   $('run-directions-field').hidden = $('run-directions').disabled = !editSequence;
   $('run-custom-directions-label').textContent = slip ? 'Slip sequence' : 'Custom sequence';
   $('run-midpoint-option').hidden = $('run-midpoint-help').hidden = !midpoint;
   $('run-start-load-field').hidden = slip;
-  $('run-start-load').min = axial ? 0 : '';
+  $('run-start-load').min = axial || indentation ? 0 : '';
+  $('run-loading').closest('.field').hidden = indentation;
   for (const option of $('run-boundary').options) {
     option.disabled = axial && !['periodic', 'fixed'].includes(option.value);
   }
   for (const id of ['run-segment-field', 'run-repeat-field']) $(id).hidden = !schedule;
   $('run-load').readOnly = slip;
-  const unit = displacement ? 'displacement' : axial ? 'strain' : 'load';
+  const unit = indentation ? 'depth' : displacement ? 'displacement' : axial ? 'strain' : 'load';
   const titleUnit = unit[0].toUpperCase() + unit.slice(1);
-  $('run-load-label').textContent = slip ? 'Total load' : 'Additional ' + unit;
+  $('run-load-label').textContent = continuationPlan ? 'Extra ' + unit :
+    slip ? 'Total load' : 'Additional ' + unit;
   $('run-increment-label').textContent = titleUnit + ' increment';
   $('run-start-load-label').textContent = 'Initial ' + unit;
-  $('run-load-explanation').textContent = slip ? 'Each entry contributes one full slip.' :
+  $('run-load-explanation').textContent = continuationPlan ?
+    'Amount added to the source run’s configured maximum.' : slip ? 'Each entry contributes one full slip.' :
+    indentation ? 'Depth is measured downward from the relaxed top surface in mesh length units.' :
     axial && !displacement ? 'Use positive engineering strain. The transformation prescribes stretch along the loading axis and keeps the transverse span fixed.' :
     'Amount applied after initialization. Add it to the initial value to get the final value.';
   $('run-directions-label').textContent = axial ? 'Loading axis' : 'Direction';
@@ -831,18 +980,19 @@ function renderExperiment() {
   updateActions();
 }
 function updateEndLoad() {
-  const initial = $('run-start-load').valueAsNumber, additional = $('run-load').valueAsNumber;
+  const initial = $('run-start-load').valueAsNumber, additional = runTotalLoad();
   const end = initial + additional, axial = axialExperiment() && !boundaryDisplacement();
   const compression = $('run-deformation').value === 'compression';
   const value = axial ? 1 + (compression ? -end : end) : end;
   $('run-load').setCustomValidity(axial && compression && end >= 1 ?
     'Final compression strain must be less than 1.' : '');
-  $('run-end-load').hidden = !Number.isFinite(end) || boundaryDisplacement() ||
-    (!axial && (!initial || $('run-deformation').value === 'sequentialSlip'));
-  $('run-end-load').textContent = (axial ? 'Final axial stretch ' : 'Final load ') + Number(value.toPrecision(12));
+  $('run-end-load').hidden = !Number.isFinite(end) || (!continuationPlan && (boundaryDisplacement() ||
+    (!axial && !indentationExperiment() && (!initial || $('run-deformation').value === 'sequentialSlip'))));
+  $('run-end-load').textContent = continuationPlan ? 'New maximum ' + Number(end.toPrecision(12)) :
+    (indentationExperiment() ? 'Final depth ' : axial ? 'Final axial stretch ' : 'Final load ') + Number(value.toPrecision(12));
 }
 $('run-start-load').oninput = $('run-load').oninput = () => {updateEndLoad(); updateActions();};
-for (const id of ['increment', 'rows', 'cols']) $('run-' + id).oninput = updateActions;
+for (const id of ['increment', 'rows', 'cols', 'indenter-radius']) $('run-' + id).oninput = updateActions;
 $('run-energy-function').onchange = $('run-reconnection').onchange = updateActions;
 $('run-axial-method').onchange = $('run-driven-edge').onchange = renderExperiment;
 for (const edge of rectangleEdges) $('run-edge-' + edge).onchange = updateActions;
@@ -869,11 +1019,19 @@ $('run-deformation').onchange = () => {
 function runConfiguration() {
   const settings = {};
   for (const [key, id] of Object.entries(runFields)) {
+    if (['indenterRadius', 'indentationContact'].includes(key) && !indentationExperiment()) continue;
     const input = $('run-' + id);
     settings[key] = input.type === 'checkbox' ? input.checked :
       input.type === 'number' ? input.valueAsNumber : input.value;
   }
-  if (settings.deformation === 'sequentialSlip') {
+  for (const key of continuationPlan?.fixed_settings ?? []) {
+    if (!hasRunField(key)) settings[key] = continuationPlan.settings[key];
+  }
+  settings.totalLoad = runTotalLoad();
+  if (indentationExperiment()) {
+    Object.assign(settings, {boundary: 'fixedBottom', loading: 'relaxation', directions: 'vertical',
+      segmentLoad: 0, repeat: false});
+  } else if (settings.deformation === 'sequentialSlip') {
     Object.assign(settings, {boundary: 'anchored', startLoad: 0, segmentLoad: 1, repeat: false});
   } else if (axialExperiment()) {
     Object.assign(settings, {segmentLoad: 0, repeat: false});
@@ -891,7 +1049,9 @@ function showPreset(settings) {
   for (const [key, id] of Object.entries(runFields)) {
     const input = $('run-' + id);
     if (input.type === 'checkbox') input.checked = settings[key];
-    else if (key === 'boundary' && rectangle) input.value = 'fixed';
+    else if (key === 'boundary' && (rectangle || settings.boundary === 'fixedBottom')) input.value = 'fixed';
+    else if (key === 'indenterRadius') input.value = settings[key] ?? input.defaultValue;
+    else if (key === 'indentationContact') input.value = settings[key] ?? 'penalty';
     else input.value = settings[key];
   }
   if (rectangle) {
@@ -899,7 +1059,8 @@ function showPreset(settings) {
     for (const edge of rectangleEdges) $('run-edge-' + edge).value = settings[edge];
   }
   $('run-extra').value = Object.entries(settings)
-    .filter(([key, value]) => !hasRunField(key) && value !== startOptions.defaults[key])
+    .filter(([key, value]) => !hasRunField(key) && !continuationPlan?.fixed_settings.includes(key) &&
+      value !== startOptions.defaults[key])
     .map(([key, value]) => key + ' = ' + value).join('\n');
   setDirectionChoices(settings.directions);
   $('run-advanced').open = settings.loading !== 'relaxation' ||
@@ -908,8 +1069,7 @@ function showPreset(settings) {
 }
 async function loadStartOptions() {
   startOptions = await api('start_options');
-  $('run-extra-help').textContent = Object.keys(startOptions.defaults)
-    .filter(key => !hasRunField(key)).sort().join(', ');
+  updateExtraSettingsHelp();
   for (const [id, names, placeholder] of [
     ['simulation-preset', startOptions.presets, 'New configuration'],
     ['campaign-base', startOptions.presets, 'Choose a saved preset'],
@@ -923,8 +1083,48 @@ async function loadStartOptions() {
   if (!$('campaign-axes').children.length) addCampaignAxis();
   updateActions();
 }
+function updateExtraSettingsHelp() {
+  if (!startOptions) return;
+  $('run-extra-help').textContent = Object.keys(startOptions.defaults)
+    .filter(key => !hasRunField(key) && !continuationPlan?.fixed_settings.includes(key)).sort().join(', ');
+}
+function setContinuation(plan) {
+  const previouslyFixed = continuationPlan?.fixed_settings ?? [];
+  const fixed = plan?.fixed_settings ?? [];
+  continuationPlan = plan;
+  $('run-form').classList.toggle('is-continuation', Boolean(plan));
+  updateExtraSettingsHelp();
+  for (const key of new Set([...previouslyFixed, ...fixed])) {
+    if (runFields[key]) $('run-' + runFields[key]).disabled = fixed.includes(key);
+  }
+  for (const id of ['site', 'axial-method', 'driven-edge', ...rectangleEdges.map(edge => 'edge-' + edge)]) {
+    $('run-' + id).disabled = Boolean(plan);
+  }
+  $('run-continuation').hidden = !plan;
+  if (plan) {
+    const checkpoint = plan.checkpoint ? `checkpoint step ${plan.checkpoint.step} at load ${Number(plan.checkpoint.load.toPrecision(12))}` :
+      'Continue from the latest saved checkpoint';
+    const originalEnd = plan.settings.startLoad + plan.original_total_load;
+    $('run-continuation-source').textContent =
+      `${plan.source_label} · ${siteLabel(plan.site)} · ${checkpoint}` +
+      ` · previous maximum ${Number(originalEnd.toPrecision(12))}`;
+  }
+}
+async function showContinuation(plan) {
+  if (!startOptions) await loadStartOptions();
+  setContinuation(plan);
+  $('simulation-preset').value = '';
+  $('simulation-preset-name').value = '';
+  $('simulation-download').disabled = true;
+  $('run-site').value = plan.site;
+  $('run-label').value = plan.label;
+  showPreset({...plan.settings, totalLoad: 1});
+  view('start');
+  $('run-form').scrollIntoView({block: 'start'});
+}
 $('simulation-new').onclick = () => {
   const site = $('run-site').value;
+  setContinuation(null);
   $('run-form').reset();
   $('run-advanced').open = false;
   $('run-site').value = site;
@@ -932,6 +1132,7 @@ $('simulation-new').onclick = () => {
   setDirectionChoices('horizontal');
   renderExperiment();
 };
+$('run-clear-continuation').onclick = $('simulation-new').onclick;
 $('simulation-preset').onchange = async () => {
   const name = $('simulation-preset').value;
   $('simulation-download').disabled = true;
@@ -939,6 +1140,7 @@ $('simulation-preset').onchange = async () => {
   try {
     const {settings} = await api('simulation_preset', {action: 'load', name});
     if ($('simulation-preset').value !== name) return;
+    setContinuation(null);
     $('run-label').value = name;
     $('simulation-preset-name').value = name;
     showPreset(settings);
@@ -946,8 +1148,10 @@ $('simulation-preset').onchange = async () => {
   } catch (error) {message(error.message);}
 };
 async function importSimulation(file) {
+  if (continuationPlan) throw new Error('Cancel continue loading before importing a configuration.');
   if (!startOptions) await loadStartOptions();
   const {settings, label} = await api('simulation_preset', {action: 'import', text: await file.text()});
+  setContinuation(null);
   $('simulation-preset').value = '';
   $('simulation-download').disabled = true;
   $('run-label').value = label;
@@ -965,7 +1169,7 @@ $('simulation-upload').onchange = async event => {
   finally {event.target.value = '';}
 };
 $('simulation-save').onclick = async () => {
-  if ($('simulation-save').disabled || !$('run-form').reportValidity()) return;
+  if (continuationPlan || $('simulation-save').disabled || !$('run-form').reportValidity()) return;
   const name = $('simulation-preset-name').value.trim();
   try {
     await api('simulation_preset', {action: 'save', name, ...runConfiguration()});
@@ -990,7 +1194,12 @@ $('simulation-download').onclick = async () => {
 $('run-form').onsubmit = event => {
   event.preventDefault();
   if (!$('run-button').disabled) {
-    operation('run', {...runConfiguration(), label: $('run-label').value, site: $('run-site').value});
+    const data = {...runConfiguration(), label: $('run-label').value, site: $('run-site').value};
+    if (continuationPlan) data.continuation = {
+      selection: continuationPlan.selection, checkpoint: continuationPlan.checkpoint,
+      checkpoint_catalog: continuationPlan.checkpoint_catalog,
+    };
+    operation('run', data);
   }
 };
 
@@ -1165,13 +1374,17 @@ function updateOpacityLimits() {
 }
 function updateAnimationControls() {
   const kind = $('animate-kind').value;
-  const energy = kind === 'energy', coloured = energy || ['shear', 'matrix'].includes(kind);
+  const energy = kind === 'energy', stress = kind === 'stress';
+  const coloured = energy || stress || ['shear', 'matrix'].includes(kind);
   const conditional = energy && $('animate-conditional-opacity').checked;
   if (coloured && animationHeatmapKind !== kind) {
     $('animate-heatmap').value = energy ? 'inferno' : 'coolwarm';
     animationHeatmapKind = kind;
   }
   $('animate-matrix-field').hidden = !['matrix', 'disk'].includes(kind);
+  $('animate-stress-component-field').hidden = !stress;
+  $('animate-stress-limit-field').hidden = $('animate-stress-limit').disabled = !stress;
+  $('animate-limit-field').hidden = $('animate-limit').disabled = stress;
   $('animate-tiling-field').hidden = kind === 'disk';
   $('animate-colouring').hidden = $('animate-colouring').disabled = !coloured;
   $('animate-energy-min-field').hidden = $('animate-energy-min').disabled = !energy;
@@ -1213,14 +1426,16 @@ for (const id of ['animate-rate', 'animate-minimum', 'animate-fps', 'animate-pla
 function runAnimation(action, previewFrame) {
   const fields = ['animate-fps', 'animate-rate', 'animate-minimum', 'animate-workers', 'animate-node-size',
     'animate-legend-size', 'animate-title-size', 'animate-defect-scale', 'animate-defect-thickness', 'animate-defect-tolerance',
-    'animate-limit', 'animate-energy-min', 'animate-opacity'];
+    'animate-limit', 'animate-stress-limit', 'animate-energy-min', 'animate-opacity'];
   if (fields.some(id => !$(id).reportValidity())) return;
   const number = id => $(id).valueAsNumber;
+  const kind = $('animate-kind').value;
+  const limit = kind === 'stress' ? 'animate-stress-limit' : 'animate-limit';
   operation(action, {...animationSelection(), preview_frame: previewFrame,
-    kind: $('animate-kind').value, matrix: $('animate-matrix').value,
+    kind, matrix: $('animate-matrix').value, stress_component: $('animate-stress-component').value,
     tiling: $('animate-tiling').value, playback: $('animate-playback').value, fps: number('animate-fps'),
     seconds_per_load: $('animate-rate').disabled ? 15 : number('animate-rate'), minimum_seconds: number('animate-minimum'),
-    limit: $('animate-colouring').hidden || !$('animate-limit').value ? null : number('animate-limit'),
+    limit: $('animate-colouring').hidden || !$(limit).value ? null : number(limit),
     energy_min: $('animate-energy-min').disabled || !$('animate-energy-min').value ? null : number('animate-energy-min'),
     opacity: $('animate-colouring').hidden || $('animate-opacity').disabled ? 100 : number('animate-opacity'),
     opacity_curve: $('animate-opacity-editor').hidden ? null : opacityEditor.points,
@@ -1674,7 +1889,7 @@ function saveWorkspaceDraft() {
       version: 1, workspace: lastState.workspace, view: document.querySelector('.view.active')?.id,
       tab: $('animate-panel').hidden ? 'plot' : 'animate', fields: captureFields(draftForms),
       details: [...document.querySelectorAll('details[id]')].filter(node => node.closest(draftPanels) && node.open).map(node => node.id),
-      monitorPlot, filePlot, plot, curve: opacityEditor.points, campaignAxes: campaignAxes(),
+      monitorPlot, filePlot, plot, curve: opacityEditor.points, campaignAxes: campaignAxes(), continuationPlan,
       animationEnergyRange, animationSourceKey, animationLatticeKey, lastAnimationScan,
       inventory: {sort: inventorySort, ascending: inventoryAscending, open: [...inventoryOpen]},
       presets: {plot: loadedPresetId, animation: loadedAnimationPresetId},
@@ -1767,9 +1982,14 @@ async function recoverWorkspace() {
     if ($('jobs-site').value) await loadInventory(false);
   });
   await attempt('simulation and campaign settings', async () => {
+    setContinuation(draft.continuationPlan ?? null);
     restoreFields('#run-form, #campaign-form', draft.fields);
     setDirectionChoices($('run-directions').value);
     const skipped = restoreFields('#run-form', draft.fields);
+    if (continuationPlan) {
+      $('run-extra').value = $('run-extra').value.split('\n').filter(line =>
+        !continuationPlan.fixed_settings.includes(line.split('=', 1)[0].trim())).join('\n');
+    }
     renderExperiment();
     if ($('campaign-base').value) await $('campaign-base').onchange();
     skipped.push(...restoreFields('#campaign-form', draft.fields));
@@ -1836,6 +2056,9 @@ async function recoverWorkspace() {
   });
   await attempt('animation settings', async () => {
     const skipped = restoreFields(animationFields, draft.fields);
+    if (!Object.hasOwn(draft.fields, 'animate-stress-limit') && !$('animate-energy-min').value) {
+      $('animate-energy-min').value = $('animate-energy-min').defaultValue;
+    }
     opacityEditor.restore(draft.curve);
     animationEnergyRange = draft.animationEnergyRange;
     lastAnimationScan = draft.lastAnimationScan;

@@ -215,6 +215,15 @@ identity. The execution site needs a build supporting that configuration.
 Rectangle samples support edge-flip reconnection. Delaunay reconnection uses
 periodic images.
 
+Nanoindentation uses `boundary = fixedBottom` and quasistatic relaxation.
+A circular indenter is centred above the relaxed top surface. Its radius
+and vertical depth are in mesh length units. The default `penalty` law adds
+a quadratic overlap potential with stiffness 100 in simulation units and a
+radial repulsive force. The `projection` law projects and pins contacting
+nodes during each loading step. The checkpoint preserves the unloaded
+contact reference and the active pins. Macro output records the vertical
+indenter reaction, contact node count and contact energy.
+
 Unusual combinations that are mathematically defined are allowed. Step noise
 is available in every loading mode, including without relaxation. For simple
 shear, disabling affine prediction
@@ -630,6 +639,27 @@ Checkpoint loading:
 Malformed CSV/checkpoint data raises an error. Loading and output recovery are
 the same for direct and scheduler-launched MTS2D invocations. The scheduler
 captures resume errors in the attempt log and process exit status.
+
+### 10.1 Extending a run into a new folder
+
+**Load further** reads the saved configuration and checks the checkpoint
+directory of a stopped managed run. The default maximum is the source
+configuration's endpoint plus one load unit. The form permits compatible edits
+before submission.
+
+On submission, the execution site verifies the source manifest and checkpoint
+file inventory and confirms the source attempts have stopped. A defunct launcher
+does not count as an active process. The last complete macro CSV load prioritizes
+load-named dumps. Once a saved load is confirmed, native names whose rounded
+load ranges end below it identify older dumps without decompressing them.
+Rotating checkpoints and overlapping ranges are checked by saved step. The
+execution site then stages an independent run folder. It copies macro rows and
+scientific mesh output through the checkpoint step and saves the source
+configuration, manifest and exact checkpoint in `source-history`. The new
+manifest records the source identity and checkpoint checksum. The scientific
+state and load-step numbering carry forward through the normal folder-based
+resume path. The Terminal reports byte progress for the history files. The
+destination requires a distinct configuration at that site.
 
 ## 11. Scientific output and completion records
 

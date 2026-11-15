@@ -9,27 +9,34 @@
 <div class="workspace-layout"><div class="content"><section class="view active" id="overview"><div class="intro"><h1>Overview</h1><span class="badge" id="ready-badge">Checking installation</span></div>
 <div class="grid three"><article class="card start-card"><h2>Start simulations</h2><button class="primary" data-view="start">Configure</button></article><article class="card start-card"><h2>Monitor data</h2><button data-view="monitor">View</button></article><article class="card start-card"><h2>Plot</h2><button data-view="plot">Plot</button></article></div>
 <article class="card readiness"><div class="section-row"><h2>Installation status</h2><button class="small" data-view="setup">Setup</button></div><div id="readiness-list"></div>
-<div class="readiness-row"><span>Local simulator</span><div class="inline-fields wrap"><span class="badge" id="overview-build-status">Checking</span><button class="small" id="overview-build" type="button" disabled>Build Release</button></div></div></article></section>
+<div class="readiness-row"><span>Local simulator</span><div class="inline-fields wrap"><span class="badge" id="overview-build-status">Checking</span><button class="small" id="overview-build" type="button" hidden disabled>Build Release</button></div></div></article></section>
 <section class="view" id="start"><div class="intro"><h1>Start simulations</h1></div>
 <form class="card" id="run-form">
 <h2>Individual simulation</h2>
-<div class="fields row">
+<div class="notice" id="run-continuation" hidden>
+<div class="section-row"><strong>Continue loading</strong><button class="small" id="run-clear-continuation" type="button">Cancel continue loading</button></div>
+<p id="run-continuation-source"></p>
+</div>
+<div class="fields row fresh-run-only">
 <label class="field">Saved preset<select id="simulation-preset"><option value="">New configuration</option></select></label>
 <label class="field">Import .conf<input id="simulation-upload" type="file" accept=".conf,text/plain"></label>
 <div class="inline-fields wrap"><button class="small" id="simulation-new" type="button">New configuration</button>
 <button class="small" id="simulation-download" type="button" disabled>Download preset</button></div>
 </div>
-<fieldset class="settings-group"><legend>Protocol</legend><div class="fields packed">
+<fieldset class="settings-group fresh-run-only"><legend>Protocol</legend><div class="fields packed">
 <div class="field"><label for="run-deformation">Experiment</label><select id="run-deformation">
 <optgroup label="Transformation"><option value="simpleShear">Simple shear</option></optgroup>
 <optgroup label="Axial loading"><option value="compression">Compression</option><option value="tension">Tension</option></optgroup>
+<optgroup label="Contact"><option value="nanoindentation">Nanoindentation</option></optgroup>
 <optgroup label="Prescribed displacement"><option value="sequentialSlip">Sequential slip</option><option id="run-midpoint-option" value="directDisplacement" hidden>Midpoint displacement (legacy)</option></optgroup>
 </select></div>
 <div class="field" id="run-axial-method-field" hidden><label for="run-axial-method">Loading method</label><select id="run-axial-method"><option value="affine">Affine transformation</option><option value="displacement">Boundary displacement</option></select></div>
 <div class="field" id="run-boundary-field"><label for="run-boundary">Boundary</label><select id="run-boundary"><option value="periodic">Periodic</option><option value="fixed">Fixed</option><option value="anchored">Anchored</option><option value="periodicAnchored">Periodic anchored</option></select></div>
+<div class="field" id="run-indenter-radius-field" hidden><label for="run-indenter-radius">Indenter radius</label><input id="run-indenter-radius" type="number" min="0" step="any" value="25" required disabled></div>
+<div class="field" id="run-indentation-contact-field" hidden><label for="run-indentation-contact">Indenter contact</label><select id="run-indentation-contact" disabled><option value="penalty">Frictionless penalty</option><option value="projection">Projection and pinning</option></select></div>
 <div class="field"><label for="run-reconnection">Reconnection</label><select id="run-reconnection"><option value="none">None</option><option value="edgeFlip">Edge flip</option><option value="delaunay">Delaunay</option></select></div>
 </div></fieldset>
-<fieldset id="run-edge-settings" class="settings-group" hidden><legend>Edge constraints</legend>
+<fieldset id="run-edge-settings" class="settings-group fresh-run-only" hidden><legend>Edge constraints</legend>
 <div class="fields packed">
 <label class="field">Driven edge<select id="run-driven-edge"><option value="top">Top</option><option value="bottom">Bottom</option><option value="left">Left</option><option value="right">Right</option></select></label>
 <label class="field">Top<select id="run-edge-top"></select></label>
@@ -40,13 +47,13 @@
 <p class="muted" id="run-edge-description"></p>
 </fieldset>
 <div class="fields groups">
-<fieldset class="settings-group"><legend>Sample</legend><div class="fields stack">
+<fieldset class="settings-group fresh-run-only"><legend>Sample</legend><div class="fields stack">
 <div class="field"><label for="run-rows">Rows</label><input id="run-rows" type="number" min="2" step="1" value="4" required></div>
 <div class="field"><label for="run-cols">Columns</label><input id="run-cols" type="number" min="2" step="1" value="4" required></div>
 <div class="field"><label for="run-seed">Random seed</label><input id="run-seed" type="number" step="1" value="0" required></div>
 </div></fieldset>
 <fieldset class="settings-group"><legend>Loading path</legend><div class="fields">
-<div class="field" id="run-start-load-field"><label for="run-start-load" id="run-start-load-label">Initial load</label><input id="run-start-load" type="number" step="any" value="0" required></div>
+<div class="field fresh-run-only" id="run-start-load-field"><label for="run-start-load" id="run-start-load-label">Initial load</label><input id="run-start-load" type="number" step="any" value="0" required></div>
 <div class="field"><label for="run-increment" id="run-increment-label">Load increment</label><input id="run-increment" type="number" step="any" value="0.001" required></div>
 <div class="field">
 <div class="field-label"><label for="run-load" id="run-load-label">Additional load</label>
@@ -58,14 +65,14 @@
 </div></fieldset>
 <fieldset class="settings-group"><legend>Execution</legend><div class="fields">
 <div class="field"><label for="run-label">Run label</label><input id="run-label" value="Run" required maxlength="120" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]*"></div>
-<div class="field"><label for="run-site">Execution site</label><select id="run-site" class="sites"><option>local</option></select></div>
+<div class="field fresh-run-only"><label for="run-site">Execution site</label><select id="run-site" class="sites"><option>local</option></select></div>
 <div class="field"><label for="run-threads">Threads</label><input id="run-threads" type="number" min="1" step="1" value="1" required></div>
 </div></fieldset>
 </div>
 <p id="run-slip-help" class="muted hidden">System 1 drives in x from the left edge, or from the right edge for −1. System 2 drives in y from the bottom edge, or from the top edge for −2. Use a single sign per system. The decimal fraction sets the split along the edge and defaults to 0.5. Each entry applies one full slip.</p>
 <p id="run-midpoint-help" class="muted" hidden>Horizontal loading moves the upper half of the constrained nodes in x. Vertical loading moves the right half in y. The split is at the midpoint.</p>
 <details id="run-advanced"><summary>Additional settings</summary><div class="fields">
-<div class="field"><label for="run-loading">Loading mode</label><select id="run-loading"><option value="relaxation">Relaxation</option><option value="reversibility">Reversibility</option><option value="noRelaxation">No relaxation</option></select></div>
+<div class="field fresh-run-only"><label for="run-loading">Loading mode</label><select id="run-loading"><option value="relaxation">Relaxation</option><option value="reversibility">Reversibility</option><option value="noRelaxation">No relaxation</option></select></div>
 <div class="field" id="run-segment-field">
 <div class="field-label"><label for="run-segment">Segment load</label>
 <button class="help-tip" type="button" aria-label="About segment load and repetition" aria-describedby="run-schedule-help">?</button>
@@ -79,7 +86,7 @@
 </div></div>
 <label class="field check"><input id="run-log-minimization" type="checkbox"> Log during minimization</label>
 <div class="field"><label for="run-minimizer">Minimizer</label><select id="run-minimizer"><option value="LBFGS">L-BFGS</option><option value="CG">Conjugate gradient</option><option value="FIRE">FIRE</option></select></div>
-<div class="field"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option></select></div>
+<div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option></select></div>
 <div class="field"><label for="run-initial-noise">Initial guess noise</label><input id="run-initial-noise" type="number" min="0" step="any" value="0" required></div>
 </div>
 <div class="field-label"><label for="run-extra">MTS2D key = value settings</label>
@@ -87,8 +94,8 @@
 <span class="tooltip settings-keys" role="tooltip" id="run-extra-help">Loading available settings…</span>
 </div><textarea id="run-extra" spellcheck="false"></textarea></details>
 <div class="form-footer inline-fields wrap">
-<label for="simulation-preset-name">Preset name</label><input id="simulation-preset-name" maxlength="80" placeholder="Preset name">
-<button id="simulation-save" type="button" disabled>Save preset</button><button class="primary" id="run-button" type="submit" disabled>Run simulation</button>
+<div class="inline-fields wrap fresh-run-only"><label for="simulation-preset-name">Preset name</label><input id="simulation-preset-name" maxlength="80" placeholder="Preset name">
+<button id="simulation-save" type="button" disabled>Save preset</button></div><button class="primary" id="run-button" type="submit" disabled>Run simulation</button>
 </div>
 <p id="run-action-reasons" class="muted" role="status" hidden></p>
 </form>
@@ -163,7 +170,8 @@
 <fieldset id="animation-settings" class="settings-group" hidden disabled><legend>Animation</legend>
 <div class="fields groups animation-groups">
 <fieldset class="settings-group"><legend>View</legend><div class="fields">
-<div class="field"><label for="animate-kind">View</label><select id="animate-kind"><option value="energy">Energy</option><option value="none">None</option><option value="shear">Integer shear</option><option value="matrix">Matrix components</option><option value="disk">Poincaré disk</option></select></div>
+<div class="field"><label for="animate-kind">View</label><select id="animate-kind"><option value="energy">Energy</option><option value="stress">Stress</option><option value="none">None</option><option value="shear">Integer shear</option><option value="matrix">Matrix components</option><option value="disk">Poincaré disk</option></select></div>
+<div class="field" id="animate-stress-component-field" hidden><label for="animate-stress-component">Cauchy stress component</label><select id="animate-stress-component"><option value="12">xy</option><option value="11">xx</option><option value="22">yy</option></select></div>
 <div class="field" id="animate-matrix-field" hidden><label for="animate-matrix">Matrix</label><select id="animate-matrix"><option value="T">Total deformation T</option><option value="T_p">Plastic history Tₚ</option><option value="F_E">Elastic deformation Fₑ</option><option value="F_P">Plastic deformation Fₚ</option><option value="F">Deformation gradient F</option></select></div>
 <div class="field" id="animate-tiling-field"><label for="animate-tiling">Tiling</label><select id="animate-tiling"><option value="tile">Tile fixed viewport</option><option value="cell">Single sample</option></select></div>
 </div>
@@ -196,7 +204,8 @@
 <div class="fields">
 <div class="field" id="animate-heatmap-field"><label for="animate-heatmap">Heatmap</label><select id="animate-heatmap"><option value="coolwarm">Coolwarm</option><option value="inferno">Inferno</option><option value="viridis">Viridis</option><option value="magma">Magma</option></select></div>
 <div class="field" id="animate-limit-field"><label for="animate-limit" id="animate-limit-label">Colour limit</label><input id="animate-limit" type="number" step="any" placeholder="From data"></div>
-<div class="field" id="animate-energy-min-field"><label for="animate-energy-min">Lower energy limit</label><input id="animate-energy-min" type="number" step="any" placeholder="From data"></div>
+<div class="field" id="animate-stress-limit-field" hidden><label for="animate-stress-limit">Stress limit (±)</label><input id="animate-stress-limit" type="number" min="0" step="any" placeholder="From data"></div>
+<div class="field" id="animate-energy-min-field"><label for="animate-energy-min">Lower energy limit</label><input id="animate-energy-min" type="number" step="any" value="0" placeholder="From data"></div>
 </div>
 <label id="animate-conditional-field" class="plot-show-all"><input id="animate-conditional-opacity" type="checkbox"> Conditional opacity</label>
 <div id="animate-opacity-field" class="field"><label for="animate-opacity">Opacity (%)</label><input id="animate-opacity" type="number" min="0" max="100" value="100" required></div>
@@ -302,4 +311,8 @@
 <div class="inline-fields wrap"><button id="data-file-cancel" type="button">Cancel</button><button class="primary">Open</button></div>
 </form>
 </dialog>
+<div id="run-more-menu" popover aria-label="More run actions">
+<button id="run-more-further" class="small" type="button">Load further</button>
+<button id="run-more-archive" class="small" type="button">Archive</button>
+</div>
 </body></html>
