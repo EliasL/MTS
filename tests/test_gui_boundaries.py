@@ -335,6 +335,30 @@ totalLoad = 3
             workspace.operation("inventory", {"site": "first"})
             self.assertEqual(Workspace().inventory_cache("first")["rows"], [])
 
+    def test_local_refresh_returns_fresh_rows_without_starting_an_inventory_task(self):
+        from MTS_Management.files import write_json
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("MTS_GUI.server.ROOT", Path(temporary)), \
+                patch("MTS_GUI.server.STATE", Path(temporary) / ".mts"):
+            manager = Path(temporary) / "MTSManager"
+            output = manager / "output"
+            output.mkdir(parents=True)
+            (manager / "sites.toml").write_text('[sites.local]\n[sites.remote]\nssh = "remote"\n')
+            config_hash = "a" * 64
+            write_json(output / ".run-index.json", {config_hash: "missing-run"})
+
+            workspace = Workspace()
+            remote = workspace.inventory_cache("remote", rows=[])
+            snapshot = workspace.refresh_local_inventory(site="local", selection={"site": "local"})
+
+            self.assertEqual([(row["config_hash"], row["status"]["state"]) for row in snapshot["rows"]],
+                             [(config_hash, "missing")])
+            self.assertIsNotNone(snapshot["updated_at"])
+            self.assertEqual(Workspace().inventory_overview(site="local"), snapshot)
+            self.assertEqual(workspace.inventory_cache("remote"), remote)
+            self.assertEqual(workspace.task["state"], "idle")
+
     def test_campaign_reuses_cached_configurations_and_retains_failed_server_data(self):
         from MTS_Management.cluster import Site
         from MTS_Management.config import Config
@@ -466,7 +490,14 @@ totalLoad = 3
                 spec = {"campaign": result["plot_selection"], "x": "load", "y": "avg_sigma12", "seed": "all"}
                 schema, plot = prepared_plot(*workspace.plot_inputs(spec))
                 self.assertEqual(schema["data"], str(folders[1]))
-                self.assertEqual(workspace.animation_options(spec)["boundary"], "fixed")
+                options = workspace.animation_options(spec)
+                self.assertEqual((options["boundary"], options["preview_frame"]), ("fixed", "middle"))
+                cached = workspace.inventory_cache("local", site=site)["rows"]
+                workspace.inventory_cache("local", site=site, rows=[
+                    row | {"status": {"state": "running"}} if row["config_hash"] == configs[1].config_hash else row
+                    for row in cached])
+                self.assertEqual(workspace.animation_options(spec)["preview_frame"], "last")
+                workspace.inventory_cache("local", site=site, rows=cached)
                 self.assertEqual(plot["series"][0]["mean"], [0, 2])
                 self.assertEqual(plot["runs"], 1)
                 expanded = workspace.open_run_plot({"selection": result["plot_selection"], "include_seeds": True})

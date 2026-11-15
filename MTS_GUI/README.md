@@ -91,7 +91,8 @@ mode and controls for switching and repeating directions.
 
 The built-in simple shear and sequential slip presets are starting points for
 size scaling and boundary slip. Save an individual configuration as a named
-preset to reuse its settings. Presets can be downloaded and imported as native
+preset to reuse its settings. Enter an existing name to update that preset.
+Presets can be downloaded and imported as native
 MTS2D `.conf` files.
 
 To create a campaign, select a saved preset and add sweep parameters. Linear
@@ -274,9 +275,12 @@ configuration hashes, including profiles without a cached inventory. Each profil
 receives one batched request; unrelated runs are not refreshed. Results merge
 with the local cache, retaining unrelated rows and each failed server's previous
 snapshot. Campaign refresh times are recorded separately from full-server
-refresh times. Selecting a source never starts SSH or downloads simulation output.
-Each site request has a 60-second timeout and up to three attempts for timeouts
-or connection failures. Invalid data fails immediately.
+refresh times. Opening Monitor data refreshes the local inventory by default.
+Disable this in Setup and tools → Advanced. Selecting a source never starts SSH
+or downloads simulation output.
+Local Refresh updates the table as soon as the inventory is ready. Remote and
+campaign refreshes allow up to three attempts per site for timeouts or
+connection failures, with a 60-second timeout per attempt.
 
 Server records appear under Running, Queued and Completed, in that order.
 Campaign views show a group for each site with these subgroups. Completed
@@ -382,10 +386,14 @@ system path or the executable listed in `.mts/ffmpeg-path`. For a remote
 run selected in Monitor data, the current server manager provides the mesh
 snapshot catalogue and MTS retrieves the snapshots used in the movie.
 Rendered frames go directly to the encoder. Previews use the same fixed display
-limits as the video. Matching macro CSV rows supply mesh bounds and the
-maximum element energy when available. The Terminal lists the quantities
-that require scanning the mesh snapshots. The middle preview frame follows
-the video playback schedule.
+limits as the video. By default, automatic colour limits come from the last
+saved mesh. Clear **Range from last frame** to use the frames scheduled for the
+animation. Matching macro CSV rows supply mesh bounds and, when using the full
+animation range, the maximum element energy when available. The Terminal lists
+the quantities that require scanning the mesh snapshots. The preview button defaults to the
+last frame for an unfinished run and the middle frame for a completed run.
+Use its arrow to select the first, middle or last frame. The middle frame
+follows the video playback schedule.
 Automatic worker selection uses available memory and the first frame's peak
 memory, while reserving one CPU when possible. An estimate from a matching
 preview allows parallel rendering to start immediately.

@@ -62,11 +62,14 @@ def preset(folder, data):
     path = folder / (name + ".conf")
     if action == "load":
         config = read_preset(folder, name)
-    elif action == "save":
+    elif action in {"save", "update"}:
         config = simulation_config(data)
         with locked(folder / ".presets.lock"):
-            if path.exists() or name in BUILTIN_PRESETS:
-                raise ValueError("A preset with this name already exists. Choose a new name.")
+            exists = path.exists() or name in BUILTIN_PRESETS
+            if action == "save" and exists:
+                raise ValueError("A preset with this name already exists. Use Update preset.")
+            if action == "update" and not exists:
+                raise ValueError("This preset is no longer available. Use Save preset.")
             with NamedTemporaryFile(mode="w", dir=folder, delete=False) as stream:
                 temporary = Path(stream.name)
                 try:

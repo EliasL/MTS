@@ -65,6 +65,7 @@ class Workspace:
     def __init__(self):
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
+        self.local_inventory_lock = threading.Lock()
         self.task = {"state": "idle", "title": "", "logs": [], "result": None}
         self.history = []
         self.stopping = False
@@ -96,7 +97,7 @@ class Workspace:
         with self.lock:
             if self.stopping:
                 raise ValueError("MTS is shutting down.")
-            if self.task["state"] == "running":
+            if self.task["state"] == "running" or self.local_inventory_lock.locked():
                 raise ValueError("An operation is already running. Wait for it to finish.")
             self.task = {"id": secrets.token_hex(8), "state": "running", "title": title,
                          "created_at": time.time() * 1000, "logs": [], "result": None,
@@ -631,6 +632,22 @@ class Workspace:
                 return folders[0]
         return None
 
+    def default_animation_preview(self, campaign, folder):
+        if (folder / "termination.json").is_file():
+            return "middle"
+        anchor = self.run_plot_sources.get(campaign, {}).get("anchor")
+        if anchor and anchor["site"]:
+            from MTS_Management.cluster import load_sites
+
+            site = load_sites(ROOT / "MTSManager/sites.toml").get(anchor["site"])
+            if site is not None and any(
+                    row["folder"] == anchor["folder"] and
+                    row.get("manifest_sha256") == anchor["manifest_sha256"] and
+                    row["status"]["state"] == "finished"
+                    for row in self.inventory_cache(site.name, site=site)["rows"]):
+                return "middle"
+        return "last"
+
     def animation_options(self, data):
         from MTS_Plotting.runs import Run
 
@@ -639,7 +656,8 @@ class Workspace:
             return {}
         config = Run.read(folder).config
         return {"boundary": config["boundary"], "square_model": config["energyFunction"] == "contiSquare",
-                "delaunay_dislocations": config["reconnectionMethod"] == "none"}
+                "delaunay_dislocations": config["reconnectionMethod"] == "none",
+                "preview_frame": self.default_animation_preview(data["campaign"], folder)}
 
     def render_animation(self, data, *, preview=False):
         from MTS_Management.cluster import fetch_many, load_sites
@@ -647,7 +665,8 @@ class Workspace:
         from MTS_Management.errors import ExpectedError
         from MTS_Management.files import file_digest
         from MTS_Plotting.mesh_movie import (
-            ENERGY_RANGE_PROGRESS, display_limit_sources, encoder_path, frame_schedule, tiled_display,
+            ENERGY_RANGE_PROGRESS, display_limit_sources, display_scan_frames, encoder_path, frame_schedule,
+            preview_frame_index, tiled_display,
         )
         from MTS_Plotting.runs import Run
 
@@ -655,17 +674,20 @@ class Workspace:
         if folder is None:
             raise ExpectedError("Select one simulation to generate an animation.")
         selection = {"campaign": data["campaign"], "data": data["data"], "seed": data.get("seed", "all")}
+        range_from_last_frame = data.get("range_from_last_frame", True)
 
         def log_animation(line):
             if line.startswith(ENERGY_RANGE_PROGRESS):
                 energy_range = json.loads(line.removeprefix(ENERGY_RANGE_PROGRESS))
                 with self.lock:
-                    self.task["animation_scan"] = {"animation_selection": selection, "energy_range": energy_range}
+                    self.task["animation_scan"] = {"animation_selection": selection, "energy_range": energy_range,
+                                                   "range_from_last_frame": range_from_last_frame}
             self.log(line)
 
         override = STATE / "ffmpeg-path"
         encoder = None if preview else encoder_path(override.read_text().strip() if override.is_file() else None)
         spec = {k: data[k] for k in ("kind", "matrix", "tiling", "playback", "fps", "seconds_per_load", "minimum_seconds", "limit")}
+        spec["range_from_last_frame"] = range_from_last_frame
         spec.update({key: data[key] for key in ("dpi", "heatmap", "node_colours", "node_size", "show_nodes",
                                                 "show_mesh_lines", "workers", "legend_size", "show_title",
                                                 "title_size", "show_border", "show_legend", "dislocations",
@@ -710,7 +732,7 @@ class Workspace:
                 spec["frame_memory"] = self.animation_memory[1]
             spec.update(preview=preview, frames=catalog)
             if preview:
-                spec["preview_frame"] = data.get("preview_frame", "first")
+                spec["preview_frame"] = data.get("preview_frame") or self.default_animation_preview(data["campaign"], folder)
             if temporary:
                 indices = frame_schedule(
                     catalog, playback=spec["playback"], fps=spec["fps"],
@@ -726,18 +748,22 @@ class Workspace:
                     return fetched
 
                 if preview:
-                    position = spec["preview_frame"]
-                    if position not in {"first", "middle"}:
-                        raise ValueError("Choose the first or middle animation frame.")
+                    chosen = catalog[preview_frame_index(indices, spec["preview_frame"])]["name"]
                     kind = spec["kind"]
                     limits = {"kind": kind, "tiled": tiled_display(Run.read(folder).config, kind, spec["tiling"]),
-                              "limit": spec["limit"], "lower_limit": spec.get("energy_min", 0.)}
+                              "limit": spec["limit"], "lower_limit": spec.get("energy_min", 0.),
+                              "range_from_last_frame": range_from_last_frame}
                     _, _, scans = display_limit_sources(folder, scheduled, **limits)
-                    if not any(scans):
-                        chosen = catalog[indices[len(indices) // 2 if position == "middle" else 0]]["name"]
-                        folder = download_frames([chosen])
-                        _, _, scans = display_limit_sources(folder, scheduled, **limits)
-                        frames = [name for name in frames if name != chosen] if any(scans) else []
+                    _, scan_min, scan_max, scan_signed = scans
+                    # The first transfer includes the preview, required VTU colour data and the current CSV.
+                    required = (False, scan_min, range_from_last_frame and scan_max, scan_signed)
+                    downloaded = dict.fromkeys([chosen] + [frame["name"] for frame, _ in display_scan_frames(
+                        scheduled, required, range_from_last_frame=range_from_last_frame)])
+                    folder = download_frames(list(downloaded))
+                    _, _, scans = display_limit_sources(folder, scheduled, **limits)
+                    frames = [frame["name"] for frame, _ in display_scan_frames(
+                        scheduled, scans, range_from_last_frame=range_from_last_frame)
+                        if frame["name"] not in downloaded]
                 if frames:
                     folder = download_frames(frames)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", dir=STATE) as options:
@@ -764,6 +790,34 @@ class Workspace:
             if "unexpected keyword argument 'include_archived'" not in str(error):
                 raise
             return self.manager_call(name, "inventory", site=profile, timeout=60, **options)
+
+    def refresh_local_inventory(self, *, site, selection):
+        from MTS_Management.cluster import call, load_sites
+        from MTS_Management.errors import ExpectedError
+
+        profiles = load_sites(ROOT / "MTSManager/sites.toml")
+        if site not in profiles or profiles[site].ssh:
+            raise ExpectedError("Select an enabled local server for this refresh.")
+        if "site" in selection and selection["site"] not in profiles:
+            raise ExpectedError("The selected server is unavailable. Select a server again.")
+        with self.lock:
+            if self.stopping:
+                raise ExpectedError("MTS is shutting down.")
+            if self.task["state"] == "running" or not self.local_inventory_lock.acquire(blocking=False):
+                raise ExpectedError("An operation is already running. Wait for it to finish.")
+        try:
+            for name, profile in profiles.items():
+                if not profile.ssh:
+                    rows = call(profile, "inventory", timeout=60, include_archived=True)
+                    self.inventory_cache(name, rows=rows, site=profile)
+            return self.inventory_overview(**selection)
+        except ExpectedError:
+            raise
+        except Exception:
+            traceback.print_exc()
+            raise
+        finally:
+            self.local_inventory_lock.release()
 
     def archived_downloads(self):
         from MTS_Management.archive import ARCHIVE_MARKER
@@ -1661,6 +1715,8 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length))
             if action == "slurm_program":
                 self.reply(200, self.server.app.slurm_program(data))
+            elif action == "inventory_local":
+                self.reply(200, self.server.app.refresh_local_inventory(**data))
             elif action == "mesh_preview":
                 self.reply(200, self.server.app.mesh_preview(data), "application/vnd.vtk.vtu")
             elif action == "run_template":
@@ -1689,7 +1745,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"requested": True})
             elif action in {"quit", "restart"}:
                 with self.server.app.lock:
-                    if self.server.app.task["state"] == "running":
+                    if self.server.app.task["state"] == "running" or self.server.app.local_inventory_lock.locked():
                         raise ValueError("Wait for the current operation to finish before quitting or restarting MTS.")
                     if self.server.app.stopping:
                         raise ValueError("MTS is already shutting down.")

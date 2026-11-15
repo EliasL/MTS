@@ -9,6 +9,12 @@ let lastState, lastResult, lastWarningId, firstState = true, poller, inventorySn
 let backendHistory = [], clientHistory = [], lastConnectionError = '';
 let pendingOperation, mismatchReported = false, hiddenBackendEntries = new Set();
 let lastInventoryUpdate = '';
+let localMonitorRefreshPending = false;
+const monitorAutoRefresh = $('monitor-auto-refresh');
+try {monitorAutoRefresh.checked = localStorage.getItem('mts-monitor-auto-refresh') !== 'off';} catch {}
+monitorAutoRefresh.onchange = () => {
+  try {localStorage.setItem('mts-monitor-auto-refresh', monitorAutoRefresh.checked ? 'on' : 'off');} catch {}
+};
 const inventoryOpen = new Map();
 let inventorySort = 'date', inventoryAscending = false, inventoryNoticeTimer;
 const inventoryDateFormat = new Intl.DateTimeFormat('de-DE', {day: '2-digit', month: '2-digit', year: 'numeric'});
@@ -22,6 +28,7 @@ let plotPresets = [], loadedPresetId = null, monitorPlot = null, filePlot = null
 let animationPresets = [], loadedAnimationPresetId = null, recoveringWorkspace = true, draftTimer, initialRefresh = false;
 let animationRequest = 0, animationSourceKey = '', animationLatticeKey = '';
 let animationHeatmapKind, animationEnergyRange, lastAnimationScan;
+let animationPreviewFrame = 'middle', animationPreviewOverride = false;
 const opacityEditor = createOpacityEditor($('animate-opacity-chart'), $('animate-remove-opacity-node'));
 let startOptions, campaignBaseSettings, continuationPlan;
 let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
@@ -44,7 +51,7 @@ function fillMonitorSources(campaigns = lastState?.campaigns || inventorySnapsho
     site => new Option(siteLabel(site.label || site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
-const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-middle','animate-button','refresh-jobs','remove-missing','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
+const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-menu-button','animate-button','refresh-jobs','remove-missing','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
 function buttonHint(button) {
   if (button.parentElement.classList.contains('action-hint')) return button.parentElement;
   const hint = document.createElement('span');
@@ -117,8 +124,22 @@ document.addEventListener('click', reportDisabledAction, true);
 document.addEventListener('keydown', event => {
   if (event.key === 'Enter' || event.key === ' ') reportDisabledAction(event);
 }, true);
+document.addEventListener('keydown', event => {
+  const field = event.target;
+  const inputs = 'input:not([type]), input[type="text"], input[type="number"]';
+  if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      !['ArrowUp', 'ArrowDown'].includes(event.key) || !field.matches?.(inputs)) return;
+  const section = field.closest('form, .view');
+  if (!section) return;
+  event.preventDefault();
+  const fields = [...section.querySelectorAll(inputs)].filter(input =>
+    !input.matches(':disabled, [readonly]') && input.getClientRects().length);
+  const index = fields.indexOf(field);
+  if (index >= 0) fields[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
+});
 
 function terminalMessage(title, text, state = 'complete') {
+  if (state === 'running') $('task-result').textContent = '';
   const entry = {id: 'browser-' + crypto.randomUUID(), created_at: Date.now(), title, state,
     logs: [`[${new Date().toLocaleTimeString()}] ${text}`]};
   clientHistory.push(entry); renderTerminal();
@@ -140,9 +161,15 @@ async function api(path, data) {
 }
 function view(name) {
   if (!$(name)?.classList.contains('view')) name = 'overview';
+  const enteringMonitor = name === 'monitor' && !$('monitor').classList.contains('active');
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === name));
   document.querySelectorAll('.sidebar [data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === name));
   try {sessionStorage.setItem('mts-panel', name);} catch {} // Navigation works when storage is blocked.
+  if (name !== 'monitor') localMonitorRefreshPending = false;
+  if (enteringMonitor) {
+    localMonitorRefreshPending = true;
+    refreshLocalMonitor();
+  }
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => view(button.dataset.view)));
 try {view(sessionStorage.getItem('mts-panel') || 'overview');} catch {}
@@ -170,6 +197,37 @@ async function operation(action, data = {}) {
     await refresh();
   } catch (error) {finishMessage(entry, error.message, 'failed');}
   finally {updateActions();}
+}
+async function refreshLocalInventory(site) {
+  const selection = inventorySelection(), selected = $('jobs-site').value, request = inventoryRequest;
+  const entry = terminalMessage('Refresh: LOCAL', 'Reading the local run inventory.', 'running');
+  const started = performance.now();
+  pendingOperation = entry;
+  updateActions();
+  try {
+    const snapshot = await api('inventory_local', {site, selection});
+    if (request === inventoryRequest && selected === $('jobs-site').value) {
+      ++inventoryRequest;
+      showInventory(snapshot, selection);
+    } else {
+      await loadInventory(false);
+    }
+    finishMessage(entry, `Local inventory refreshed in ${((performance.now() - started) / 1000).toFixed(2)} s.`);
+  } catch (error) {
+    $('task-result').textContent = error.message;
+    finishMessage(entry, error.message, 'failed');
+  } finally {updateActions();}
+}
+function refreshLocalMonitor() {
+  if (!localMonitorRefreshPending || firstState || recoveringWorkspace) return;
+  if (!monitorAutoRefresh.checked || !lastState.sites.some(site => site.name === 'local' && !site.remote)) {
+    localMonitorRefreshPending = false;
+    return;
+  }
+  if (!Object.values(lastState.packages).every(Boolean) || lastState.task.state === 'running' ||
+      pendingOperation?.state === 'running') return;
+  localMonitorRefreshPending = false;
+  refreshLocalInventory('local');
 }
 function inventoryAge() {
   const sources = (inventorySnapshot?.sources || []).filter(source => !inventorySnapshot.campaign ||
@@ -216,28 +274,32 @@ async function loadInventory(logSelection = true) {
       if (entry) finishMessage(entry, 'Selection changed; this result was not displayed.');
       return;
     }
-    inventorySnapshot = snapshot;
-    $('archive-campaign').classList.toggle('hidden', !snapshot.expected || snapshot.archived !== snapshot.expected);
-    $('remove-missing').classList.toggle('hidden', !snapshot.rows.some(row => row.missing && row.site));
-    fillMonitorSources(snapshot.campaigns);
-    renderInventory(snapshot.rows);
-    if (!snapshot.rows.length && snapshot.updated_at == null) $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr>';
-    const counts = snapshot.expected == null ? `${snapshot.rows.length} records available.` :
-      `Expected: ${snapshot.expected}. Found: ${snapshot.found}. Missing from available records: ${snapshot.missing}.` +
-      (snapshot.archived ? ` Archived: ${snapshot.archived}.` : '');
-    const unknown = (snapshot.sources || []).filter(source => source.updated_at == null).map(source => source.label);
-    $('inventory-coverage').textContent = counts + (selection.campaign ?
-      ' Membership uses expected configurations and cached records across servers.' : '') +
-      (unknown.length ? ' No remote snapshot: ' + unknown.join(', ') + '.' : '') +
-      (selection.campaign && snapshot.uncached_sites?.length ? ' Servers without inventories: ' + snapshot.uncached_sites.join(', ') + '.' : '');
+    const counts = showInventory(snapshot, selection);
     if (entry) finishMessage(entry, counts + (!snapshot.rows.length ? ' Refresh to update data overview.' : ''));
-    inventoryAge();
     updateActions();
   } catch (error) {
     if (entry) finishMessage(entry, error.message, 'failed'); else message(error.message);
     if (request !== inventoryRequest) return;
     $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Local inventory could not be loaded.</td></tr>';
   }
+}
+function showInventory(snapshot, selection) {
+  inventorySnapshot = snapshot;
+  $('archive-campaign').classList.toggle('hidden', !snapshot.expected || snapshot.archived !== snapshot.expected);
+  $('remove-missing').classList.toggle('hidden', !snapshot.rows.some(row => row.missing && row.site));
+  fillMonitorSources(snapshot.campaigns);
+  renderInventory(snapshot.rows);
+  if (!snapshot.rows.length && snapshot.updated_at == null) $('jobs').innerHTML = '<tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr>';
+  const counts = snapshot.expected == null ? `${snapshot.rows.length} records available.` :
+    `Expected: ${snapshot.expected}. Found: ${snapshot.found}. Missing from available records: ${snapshot.missing}.` +
+    (snapshot.archived ? ` Archived: ${snapshot.archived}.` : '');
+  const unknown = (snapshot.sources || []).filter(source => source.updated_at == null).map(source => source.label);
+  $('inventory-coverage').textContent = counts + (selection.campaign ?
+    ' Membership uses expected configurations and cached records across servers.' : '') +
+    (unknown.length ? ' No remote snapshot: ' + unknown.join(', ') + '.' : '') +
+    (selection.campaign && snapshot.uncached_sites?.length ? ' Servers without inventories: ' + snapshot.uncached_sites.join(', ') + '.' : '');
+  inventoryAge();
+  return counts;
 }
 function updateActions() {
   if (!lastState) {
@@ -285,8 +347,11 @@ function updateActions() {
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
-  for (const id of ['animate-button', 'animate-preview-button', 'animate-preview-middle']) {
+  for (const id of ['animate-button', 'animate-preview-button', 'animate-preview-menu-button']) {
     $(id).disabled ||= !ready || $('animation-settings').hidden;
+  }
+  if ($('animate-preview-menu-button').disabled && $('animate-preview-menu').matches(':popover-open')) {
+    $('animate-preview-menu').hidePopover();
   }
   $('plot-preview-update').disabled = !ready || !plotSchema || previewBusy;
   $('plot-other-seeds').disabled = busy || !plotSchema;
@@ -301,6 +366,8 @@ function updateActions() {
 }
 
 function updateRunActions(saveReason, runReason) {
+  const saveLabel = simulationPresetAction() === 'update' ? 'Update preset' : 'Save preset';
+  $('simulation-save').textContent = saveLabel;
   for (const [id, reason] of [['simulation-save', saveReason], ['run-button', runReason]]) {
     const button = $(id);
     button.disabled = Boolean(reason);
@@ -308,7 +375,7 @@ function updateRunActions(saveReason, runReason) {
   }
   const status = $('run-action-reasons');
   const text = continuationPlan ? runReason : saveReason && saveReason === runReason ? saveReason :
-    [saveReason && 'Save preset — ' + saveReason, runReason && 'Start simulation — ' + runReason]
+    [saveReason && saveLabel + ' — ' + saveReason, runReason && 'Start simulation — ' + runReason]
       .filter(Boolean).join(' ');
   if (status.textContent !== text) status.textContent = text;
   status.hidden = !text;
@@ -757,6 +824,7 @@ async function refresh() {
     const task = state.task, terminalHistory = state.history ?? [];
     const scan = task.animation_scan;
     if (scan?.energy_range && task.id !== lastAnimationScan && task.id !== lastResult &&
+        scan.range_from_last_frame === $('animate-range-from-last-frame').checked &&
         JSON.stringify(scan.animation_selection) === JSON.stringify(animationSelection())) {
       lastAnimationScan = task.id;
       animationEnergyRange = scan.energy_range;
@@ -850,15 +918,24 @@ async function refresh() {
       if (task.result?.configured && sshEditor?.type === 'connection') closeSSHEditor();
       queueWorkspaceDraft();
     }
-    if (task.state === 'running' || !terminalHistory.some(entry => entry.id === task.id)) $('task-result').textContent = '';
+    if (task.state === 'running' || pendingOperation?.state === 'running' ||
+        !terminalHistory.some(entry => entry.id === task.id)) $('task-result').textContent = '';
   } catch (error) {
     if (lastConnectionError !== error.message) message('Connection failed. ' + error.message);
     lastConnectionError = error.message;
   } finally {initialRefresh = false;}
+  refreshLocalMonitor();
 }
 $('install-packages').onclick = () => operation('install');
 $('overview-build').onclick = $('build-simulator').onclick = () => operation('build');
-$('refresh-jobs').onclick = () => operation('inventory', inventorySelection());
+$('refresh-jobs').onclick = () => {
+  const selection = inventorySelection();
+  if (lastState.sites.some(site => site.name === selection.site && !site.remote)) {
+    refreshLocalInventory(selection.site);
+  } else {
+    operation('inventory', selection);
+  }
+};
 $('remove-missing').onclick = () => operation('remove_missing', inventorySelection());
 $('hard-refresh').onclick = () => operation('hard_refresh', {site: $('hard-refresh-site').value});
 $('update-managers').onclick = () => operation('update_managers');
@@ -1298,15 +1375,20 @@ $('simulation-upload').onchange = async event => {
   } catch (error) {message(error.message);}
   finally {event.target.value = '';}
 };
+function simulationPresetAction() {
+  return startOptions?.presets.includes($('simulation-preset-name').value.trim()) ? 'update' : 'save';
+}
+$('simulation-preset-name').oninput = updateActions;
 $('simulation-save').onclick = async () => {
   if (continuationPlan || $('simulation-save').disabled || !$('run-form').reportValidity()) return;
   const name = $('simulation-preset-name').value.trim();
+  const action = simulationPresetAction();
   try {
-    await api('simulation_preset', {action: 'save', name, ...runConfiguration()});
+    await api('simulation_preset', {action, name, ...runConfiguration()});
     await loadStartOptions();
     $('simulation-preset').value = name;
     $('simulation-download').disabled = false;
-    terminalMessage('Simulation preset', 'Saved ' + name + '.conf');
+    terminalMessage('Simulation preset', (action === 'update' ? 'Updated ' : 'Saved ') + name + '.conf');
   } catch (error) {message(error.message);}
 };
 $('simulation-download').onclick = async () => {
@@ -1468,12 +1550,14 @@ async function loadAnimationOptions() {
     $('animate-preview-output').hidden = true;
     animationSourceKey = key;
     animationEnergyRange = null;
+    animationPreviewOverride = false;
   }
   settings.hidden = true; status.textContent = '';
   updateActions();
   try {
     const options = await api('animation_options?' + new URLSearchParams(selection));
     if (request !== animationRequest || !options.boundary) return;
+    if (!animationPreviewOverride) selectAnimationPreview(options.preview_frame);
     const periodic = ['periodic', 'periodicAnchored'].includes(options.boundary);
     if (key !== animationLatticeKey) {
       $('animate-defect-lattice').value = options.square_model ? 'square' : 'triangular';
@@ -1552,7 +1636,7 @@ for (const id of ['animate-show-nodes', 'animate-playback', 'animate-dislocation
   $(id).onchange = updateAnimationControls;
 }
 for (const id of ['animate-energy-min', 'animate-limit']) $(id).oninput = updateOpacityLimits;
-for (const id of ['animate-rate', 'animate-minimum', 'animate-fps', 'animate-playback']) {
+for (const id of ['animate-rate', 'animate-minimum', 'animate-fps', 'animate-playback', 'animate-range-from-last-frame']) {
   $(id).oninput = () => {
     animationEnergyRange = null;
     updateOpacityLimits();
@@ -1571,6 +1655,7 @@ function runAnimation(action, previewFrame) {
     tiling: $('animate-tiling').value, playback: $('animate-playback').value, fps: number('animate-fps'),
     seconds_per_load: $('animate-rate').disabled ? 15 : number('animate-rate'), minimum_seconds: number('animate-minimum'),
     limit: $('animate-colouring').hidden || !$(limit).value ? null : number(limit),
+    range_from_last_frame: $('animate-range-from-last-frame').checked,
     energy_min: $('animate-energy-min').disabled || !$('animate-energy-min').value ? null : number('animate-energy-min'),
     opacity: $('animate-colouring').hidden || $('animate-opacity').disabled ? 100 : number('animate-opacity'),
     opacity_curve: $('animate-opacity-editor').hidden ? null : opacityEditor.points,
@@ -1589,8 +1674,42 @@ function runAnimation(action, previewFrame) {
     node_colours: Object.fromEntries(['Fixed', 'Free', 'Displaced'].map(label =>
       [label, $('animate-node-' + label.toLowerCase()).value]))});
 }
-$('animate-preview-button').onclick = () => runAnimation('animate_preview', 'first');
-$('animate-preview-middle').onclick = () => runAnimation('animate_preview', 'middle');
+const animationPreviewMenu = $('animate-preview-menu');
+const animationPreviewTrigger = $('animate-preview-menu-button');
+function selectAnimationPreview(position) {
+  animationPreviewFrame = ['first', 'middle', 'last'].includes(position) ? position : 'middle';
+  $('animate-preview-button').textContent = 'Preview ' + animationPreviewFrame + ' frame';
+  for (const option of animationPreviewMenu.querySelectorAll('[data-preview-frame]')) {
+    option.setAttribute('aria-pressed', String(option.dataset.previewFrame === animationPreviewFrame));
+  }
+}
+animationPreviewMenu.addEventListener('beforetoggle', event => {
+  animationPreviewTrigger.setAttribute('aria-expanded', String(event.newState === 'open'));
+});
+animationPreviewTrigger.onclick = () => {
+  if (animationPreviewMenu.matches(':popover-open')) {
+    animationPreviewMenu.hidePopover();
+    return;
+  }
+  animationPreviewMenu.showPopover({source: animationPreviewTrigger});
+  const trigger = animationPreviewTrigger.getBoundingClientRect();
+  const menu = animationPreviewMenu.getBoundingClientRect();
+  animationPreviewMenu.style.left = Math.max(4, Math.min(trigger.left,
+    document.documentElement.clientWidth - menu.width - 4)) + 'px';
+  const below = trigger.bottom + 4;
+  animationPreviewMenu.style.top = (below + menu.height <= window.innerHeight
+    ? below : Math.max(4, trigger.top - menu.height - 4)) + 'px';
+  animationPreviewMenu.querySelector('[aria-pressed="true"]').focus({preventScroll: true});
+};
+for (const option of animationPreviewMenu.querySelectorAll('[data-preview-frame]')) {
+  option.onclick = () => {
+    animationPreviewMenu.hidePopover();
+    animationPreviewOverride = true;
+    selectAnimationPreview(option.dataset.previewFrame);
+    runAnimation('animate_preview', animationPreviewFrame);
+  };
+}
+$('animate-preview-button').onclick = () => runAnimation('animate_preview', animationPreviewFrame);
 $('animate-button').onclick = () => runAnimation('animate');
 
 function isMonitorPlot() {
@@ -1936,7 +2055,7 @@ async function requestPlotPreview(manual) {
 function formFields(scope) {
   return [...document.querySelectorAll(scope)].flatMap(root =>
     [...root.querySelectorAll('input[id], select[id], textarea[id]')]).filter(input =>
-    !['file', 'password', 'button', 'submit'].includes(input.type));
+    input !== monitorAutoRefresh && !['file', 'password', 'button', 'submit'].includes(input.type));
 }
 function captureFields(scope) {
   return Object.fromEntries(formFields(scope).map(input => [input.id,
@@ -1966,6 +2085,7 @@ function renderAnimationPresets() {
       const status = $('animation-preset-status');
       try {
         opacityEditor.restore(preset.selection.curve);
+        $('animate-range-from-last-frame').checked = $('animate-range-from-last-frame').defaultChecked;
         const skipped = restoreFields(animationFields, preset.selection.fields);
         animationHeatmapKind = $('animate-kind').value;
         animationEnergyRange = null;
@@ -2195,7 +2315,7 @@ async function recoverWorkspace() {
       $('animate-energy-min').value = $('animate-energy-min').defaultValue;
     }
     opacityEditor.restore(draft.curve);
-    animationEnergyRange = draft.animationEnergyRange;
+    animationEnergyRange = Object.hasOwn(draft.fields, 'animate-range-from-last-frame') ? draft.animationEnergyRange : null;
     lastAnimationScan = draft.lastAnimationScan;
     animationSourceKey = draft.animationSourceKey || '';
     animationLatticeKey = draft.animationLatticeKey || '';

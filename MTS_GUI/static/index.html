@@ -238,6 +238,7 @@
 <div class="field" id="animate-stress-limit-field" hidden><label for="animate-stress-limit">Stress limit (±)</label><input id="animate-stress-limit" type="number" min="0" step="any" placeholder="From data"></div>
 <div class="field" id="animate-energy-min-field"><label for="animate-energy-min">Lower energy limit</label><input id="animate-energy-min" type="number" step="any" value="0" placeholder="From data"></div>
 </div>
+<label class="plot-show-all"><input id="animate-range-from-last-frame" type="checkbox" checked> Range from last frame</label>
 <label id="animate-conditional-field" class="plot-show-all"><input id="animate-conditional-opacity" type="checkbox"> Conditional opacity</label>
 <div id="animate-opacity-field" class="field"><label for="animate-opacity">Opacity (%)</label><input id="animate-opacity" type="number" min="0" max="100" value="100" required></div>
 <div id="animate-opacity-editor" hidden>
@@ -272,7 +273,18 @@
 <div class="field"><label for="animate-workers">Frame workers</label><input id="animate-workers" type="number" min="1" max="8" step="1" placeholder="Automatic"></div>
 </div></fieldset>
 </div>
-<div class="inline-fields wrap"><button id="animate-preview-button" type="button">Preview first frame</button><button id="animate-preview-middle" type="button">Preview middle frame</button><button class="primary" id="animate-button" type="button">Generate MP4</button></div>
+<div class="inline-fields wrap">
+<div class="preview-split" role="group" aria-label="Animation preview">
+<button id="animate-preview-button" type="button">Preview middle frame</button>
+<button id="animate-preview-menu-button" type="button" aria-label="Choose preview frame" aria-controls="animate-preview-menu" aria-expanded="false"><span aria-hidden="true">▾</span></button>
+</div>
+<div id="animate-preview-menu" popover aria-label="Preview frame">
+<button class="small" type="button" data-preview-frame="first" aria-pressed="false">First frame</button>
+<button class="small" type="button" data-preview-frame="middle" aria-pressed="true">Middle frame</button>
+<button class="small" type="button" data-preview-frame="last" aria-pressed="false">Last frame</button>
+</div>
+<button class="primary" id="animate-button" type="button">Generate MP4</button>
+</div>
 <div id="animate-preview-output" hidden><img id="animate-preview-image" alt="Animation frame preview"></div>
 <div id="animate-output" hidden><video id="animate-video" controls playsinline preload="metadata" aria-label="Mesh animation"></video><a id="animate-download" class="button" download="mesh.mp4">Download MP4</a></div>
 <div class="plot-presets"><h2>Animation presets</h2><div class="inline-fields wrap"><input id="animation-preset-name" aria-label="Preset name" placeholder="Preset name" maxlength="120"><button id="animation-preset-new" type="button">Save as new</button><button id="animation-preset-update" type="button" disabled>Update preset</button></div><p id="animation-preset-status" class="muted" role="status"></p><div id="animation-presets-list"></div></div>
@@ -290,6 +302,7 @@
 <div class="setup-item"><h3>MTS2D</h3><button id="build-simulator">Build Release</button></div>
 <div class="setup-item"><div><h3>Compiler tools</h3><p>Optional installation. See the <a href="/InstallationGuide.html" target="_blank" rel="noopener">installation guide</a>.</p><pre id="tools-command">bash setup.sh --local-sim --install-build-tools</pre></div></div></article>
 <details class="card" id="advanced-tools"><summary>Advanced</summary>
+<div class="setup-item"><label><input id="monitor-auto-refresh" type="checkbox" checked> Refresh local inventory when opening Monitor data</label></div>
 <div class="setup-item"><div><h3>Inventory</h3><p>Rebuild the selected server inventories and reread finished simulations. Simulation files are retained.</p><div class="inline-fields"><select id="hard-refresh-site" aria-label="Hard reset server"><option value="local">local</option></select><button id="hard-refresh" class="danger">Hard reset inventory</button></div></div></div>
 <div class="setup-item"><details id="archive-log"><summary>Archive log</summary>
 <p>Restore archived simulations and campaign settings to their original locations.</p>
