@@ -204,8 +204,9 @@ the ratio of the prescribed stretches at the new and old loads.
 For boundary displacement, use compression or tension with
 `boundary = rectangle`. `drivenEdge` selects
 `top`, `bottom`, `left` or `right` on a square mesh. A triangular mesh
-has slanted sides and supports `top` and `bottom`; row spacing is
-\(\sqrt{3}/2\) in mesh length units. The driven edge moves perpendicular
+has staggered sides and supports `top` and `bottom`. Alternate rows are
+offset by half the node spacing, and row spacing is \(\sqrt{3}/2\) in mesh
+length units. The driven edge moves perpendicular
 to itself, inward for compression and outward for tension. Each of the four
 edge settings accepts `free`, `fixed_x`, `fixed_y` or `fixed`. Stationary
 components are combined at corners. The driven edge's normal component is
@@ -235,6 +236,9 @@ The triangular Conti model changes the material reference before reducing
 the metric, using the area-normalized triangular basis. Triangular
 reconnection assigns triangular reference elements. The exported `T` is
 reference-dependent after reconnection and unsuitable for history analysis.
+An odd number of triangular rows gives periodic cells a half-spacing
+horizontal translation in the vertical repeat direction. An even number gives
+a rectangular periodic cell.
 
 Unusual combinations that are mathematically defined are allowed. Step noise
 is available in every loading mode, including without relaxation. For simple
