@@ -117,6 +117,7 @@ details .fields,details textarea{margin-top:12px}
 .mesh-key{width:8px;height:8px;display:inline-block;background:currentColor;border-radius:50%}
 .mesh-free{color:#13796a}.mesh-fixed-x{color:#a05513}.mesh-fixed-y{color:#1556a5}
 .mesh-fixed{color:#363838}.mesh-driven{color:#772cb3}
+.mesh-constrained{border:2px solid #363838}
 .mesh-line-sample{display:inline-block;width:15px;border-top:2px solid #536980}
 .mesh-dashed{border-top-style:dashed;border-color:#772cb3;margin-left:8px}
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 12px;font-size:12px;margin:18px 0}

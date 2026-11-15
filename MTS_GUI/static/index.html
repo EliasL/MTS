@@ -103,7 +103,7 @@
 <button class="small" type="button" id="mesh-reset" disabled>Reset edits</button>
 <button class="small" type="button" id="mesh-download" disabled>Download VTU</button>
 </div>
-<p class="muted mesh-instructions" id="mesh-instructions">Click to remove triangles. Shift-click to restore material. Scroll over the mesh to change the brush radius.</p>
+<p class="muted mesh-instructions" id="mesh-instructions">Click to remove triangles. Shift-click to restore material.</p>
 <div id="mesh-viewport" class="mesh-viewport" hidden>
 <canvas id="mesh-canvas" role="img" aria-label="Initial mesh with loading and boundary conditions" aria-describedby="mesh-instructions mesh-legend"></canvas>
 <div id="mesh-brush" class="mesh-brush" hidden></div>
@@ -114,8 +114,10 @@
 <span><i class="mesh-key mesh-fixed-y"></i>Fixed y</span>
 <span><i class="mesh-key mesh-fixed"></i>Fixed x and y</span>
 <span><i class="mesh-key mesh-driven"></i>Driven</span>
+<span id="mesh-transverse-key" hidden><i class="mesh-key mesh-driven mesh-constrained"></i>Driven with transverse constraint</span>
 <span id="mesh-periodic-key" hidden><i class="mesh-line-sample"></i>Periodic image</span>
 <span id="mesh-loaded-key" hidden><i class="mesh-line-sample mesh-dashed"></i>After +0.1 load</span>
+<span id="mesh-indenter-key" hidden><i class="mesh-line-sample mesh-dashed"></i><span></span></span>
 </div>
 <p id="mesh-status" class="muted" role="status"></p>
 <button class="small" type="button" id="mesh-retry" hidden>Retry preview</button>
@@ -124,6 +126,7 @@
 <div class="form-footer inline-fields wrap">
 <div class="inline-fields wrap fresh-run-only"><label for="simulation-preset-name">Preset name</label><input id="simulation-preset-name" maxlength="80" placeholder="Preset name">
 <button id="simulation-save" type="button" disabled>Save preset</button></div><button class="primary" id="run-button" type="submit" disabled>Start simulation</button>
+<button id="run-conflict-recheck" class="small" type="button" hidden>Check folder again</button>
 </div>
 <p id="run-action-reasons" class="muted" role="status" hidden></p>
 </form>
@@ -340,6 +343,7 @@
 </form>
 </dialog>
 <div id="run-more-menu" popover aria-label="More run actions">
+<button id="run-more-template" class="small" type="button">Use as template</button>
 <button id="run-more-resume" class="small" type="button">Resume</button>
 <button id="run-more-further" class="small" type="button">Load further</button>
 <button id="run-more-archive" class="small" type="button">Archive</button>

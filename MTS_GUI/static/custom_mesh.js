@@ -3,6 +3,7 @@ class CustomMeshEditor {
     this.getConfiguration = getConfiguration;
     this.loadPreview = loadPreview;
     this.onChange = onChange;
+    this.revision = 0;
     const find = id => document.getElementById(id);
     this.section = find('run-custom-mesh');
     this.viewport = find('mesh-viewport');
@@ -14,12 +15,22 @@ class CustomMeshEditor {
     this.legend = find('mesh-legend');
     this.periodicKey = find('mesh-periodic-key');
     this.loadedKey = find('mesh-loaded-key');
+    this.transverseKey = find('mesh-transverse-key');
+    this.indenterKey = find('mesh-indenter-key');
     this.resetButton = find('mesh-reset');
     this.downloadButton = find('mesh-download');
     this.retryButton = find('mesh-retry');
     this.section.addEventListener('toggle', () => this.refresh());
     this.retryButton.onclick = () => { this.requestKey = null; this.refresh(); };
-    this.resetButton.onclick = () => { this.resetEdits(); this.update(); };
+    this.resetButton.onclick = () => {
+      if (this.pendingTemplate) {
+        this.clear();
+        this.refresh();
+      } else if (this.mesh) {
+        this.resetEdits();
+      }
+      this.update();
+    };
     this.downloadButton.onclick = () => {
       const url = URL.createObjectURL(new Blob([this.exportVtu()], {type: 'application/vnd.vtk.vtu'}));
       const link = document.createElement('a');
@@ -32,12 +43,6 @@ class CustomMeshEditor {
       this.radiusValue.value = Number(this.radius.value).toFixed(2);
       if (this.cursor) this.showBrush(this.cursor);
     };
-    this.canvas.addEventListener('wheel', event => {
-      if (!this.transform || !event.deltaY) return;
-      event.preventDefault();
-      this.radius.value = Number(this.radius.value) * (event.deltaY < 0 ? 1.16 : 1 / 1.16);
-      this.radius.oninput();
-    }, {passive: false});
     this.canvas.onpointerdown = event => {
       if (event.button !== 0 || !this.transform) return;
       this.lastStroke = null;
@@ -53,16 +58,26 @@ class CustomMeshEditor {
   }
 
   get modified() {
-    return Boolean(this.mesh && (this.removedCount || this.retriangulated.size));
+    return Boolean(this.pendingTemplate || this.templateVtu ||
+      this.mesh && (this.removedCount || this.retriangulated.size));
   }
 
   clear() {
+    this.revision++;
     clearTimeout(this.timer);
     this.controller?.abort();
     this.mesh = this.requestKey = this.transform = null;
+    this.templateVtu = this.pendingTemplate = null;
     this.error = '';
     this.pending = false;
     this.viewport.hidden = this.legend.hidden = true;
+  }
+
+  loadTemplate(vtu) {
+    this.pendingTemplate = vtu;
+    this.requestKey = null;
+    this.section.open = true;
+    this.refresh();
   }
 
   refresh() {
@@ -92,9 +107,15 @@ class CustomMeshEditor {
         const same = this.mesh && ['points', 'original'].every(field =>
           this.mesh[field].length === next[field].length &&
           this.mesh[field].every((value, index) => next[field][index] === value));
-        const replaced = this.modified && !same;
+        const replaced = this.mesh && this.modified && !same && !this.pendingTemplate;
         this.mesh = next;
         if (!same) this.resetEdits();
+        if (this.pendingTemplate) {
+          this.resetEdits();
+          this.applyTemplate(this.pendingTemplate);
+          this.templateVtu = this.pendingTemplate;
+          this.pendingTemplate = null;
+        }
         this.notice = replaced ? 'Mesh regenerated for the new lattice.' : '';
         this.viewport.hidden = this.legend.hidden = false;
         this.periodicKey.hidden = !next.periodic;
@@ -123,7 +144,9 @@ class CustomMeshEditor {
         loaded.length !== points.length || lattice.length !== points.length || 3 * fixed.length !== points.length) {
       throw new Error('Invalid mesh preview arrays.');
     }
-    const {rows, cols, boundary, deformation, drivenEdge} = settings;
+    const {rows, cols, boundary, drivenEdge} = settings;
+    const indenterSelector = 'FieldData DataArray[Name="indentation_preview"]';
+    const indenter = xml.querySelector(indenterSelector) ? Array.from(array(indenterSelector)) : null;
     const periodic = ['periodic', 'periodicAnchored'].includes(boundary);
     const stride = cols + 1;
     const pointByIndex = new Map();
@@ -161,8 +184,9 @@ class CustomMeshEditor {
       loadedImage = outline(after);
       imageMoved = Math.max(...movement) > 1e-10;
     }
-    return {points, original, lattice, current, loaded, fixed, count, rows, cols, boundary, deformation,
-      drivenEdge, periodic, image, loadedImage, imageMoved, stride, pointByIndex, tile, partners};
+    return {points, original, lattice, current, loaded, fixed, count, rows, cols, boundary,
+      drivenEdge, periodic, image, loadedImage, imageMoved, stride, pointByIndex, tile, partners,
+      firstInTile, indenter};
   }
 
   resetEdits() {
@@ -170,16 +194,51 @@ class CustomMeshEditor {
     this.removed = new Uint8Array(this.mesh.count);
     this.removedCount = 0;
     this.retriangulated = new Set();
+    this.templateVtu = null;
     this.notice = '';
+  }
+
+  applyTemplate(vtu) {
+    const xml = new DOMParser().parseFromString(vtu, 'application/xml');
+    const array = selector => xml.querySelector(selector)?.textContent.trim().split(/\s+/).map(Number);
+    const points = array('Points DataArray');
+    const cells = array('Cells DataArray[Name="connectivity"]');
+    const {lattice, stride, firstInTile, partners} = this.mesh;
+    const mismatch = () => new Error('The saved mesh does not match this lattice. Reset edits to use the generated mesh.');
+    if (!points?.length || points.length % 3 || !cells?.length || cells.length % 3) throw mismatch();
+    const key = (x, y) => `${Math.round(x * 1e8)},${Math.round(y * 1e8)}`;
+    const byPosition = new Map();
+    for (let i = 0; i < this.mesh.points.length; i += 3) {
+      byPosition.set(key(this.mesh.points[i], this.mesh.points[i + 1]), i / 3);
+    }
+    const pointMap = [];
+    for (let i = 0; i < points.length; i += 3) pointMap.push(byPosition.get(key(points[i], points[i + 1])));
+    this.removed.fill(1);
+    this.removedCount = this.mesh.count;
+    for (let i = 0; i < cells.length; i += 3) {
+      const face = cells.slice(i, i + 3).map(index => pointMap[index]);
+      if (face.some(id => id === undefined) || new Set(face).size !== 3) throw mismatch();
+      const tile = Math.min(...face.map(id => lattice[3 * id])) +
+        stride * Math.min(...face.map(id => lattice[3 * id + 1]));
+      const first = firstInTile.get(tile);
+      if (first === undefined || partners[first] < 0) throw mismatch();
+      const second = partners[first];
+      const [a, b, c, d] = this.tileCorners(tile);
+      const usesAD = face.includes(a) && face.includes(d);
+      if (!usesAD && !(face.includes(b) && face.includes(c))) throw mismatch();
+      if (this.removed[first] && this.removed[second]) this.setTile(first, usesAD);
+      const index = [first, second].find(slot =>
+        face.every(id => this.triangles.subarray(3 * slot, 3 * slot + 3).includes(id)));
+      if (index === undefined || !this.removed[index]) throw mismatch();
+      this.removed[index] = 0;
+      this.removedCount--;
+    }
   }
 
   issue() {
     if (!this.modified) return '';
     if (this.pending || this.error) return 'Refresh the custom mesh preview for the current settings.';
     if (this.removedCount === this.mesh.count) return 'Restore at least one mesh triangle.';
-    if (this.getConfiguration()?.settings.reconnectionMethod === 'delaunay') {
-      return 'Use None or Edge flip reconnection for a custom mesh.';
-    }
     const {boundary, drivenEdge, rows, cols, lattice} = this.mesh;
     if (boundary === 'rectangle') {
       const axis = ['left', 'right'].includes(drivenEdge) ? 0 : 1;
@@ -196,11 +255,15 @@ class CustomMeshEditor {
     this.resetButton.disabled = !this.modified;
     this.downloadButton.disabled = !ready || this.removedCount === this.mesh?.count;
     this.retryButton.hidden = !this.error;
+    this.viewport.hidden = this.legend.hidden = !this.mesh || Boolean(this.error);
     this.status.textContent = this.error || (this.pending ? 'Generating mesh preview…' : !ready ? '' :
       [this.notice, `${(this.mesh.count - this.removedCount).toLocaleString()} triangles` +
         (this.modified ? ` · ${this.removedCount.toLocaleString()} removed` : ''), this.issue()].filter(Boolean).join(' · '));
     this.scheduleDraw();
-    if (notify) this.onChange();
+    if (notify) {
+      this.revision++;
+      this.onChange();
+    }
   }
 
   movePointer(event, paint) {
@@ -243,6 +306,7 @@ class CustomMeshEditor {
           (ab <= 0 && bc <= 0 && ca <= 0)) selected.push(i);
     }
     if (!selected.length) return;
+    this.templateVtu = null;
     for (const i of selected) this.removed[i] = Number(!restore);
     this.removedCount += (restore ? -1 : 1) * selected.length;
     if (restore) for (const i of selected) this.retriangulate(i);
@@ -250,16 +314,27 @@ class CustomMeshEditor {
     this.update();
   }
 
+  tileCorners(key) {
+    const {stride, pointByIndex} = this.mesh;
+    return [key, key + 1, key + stride, key + stride + 1].map(index => pointByIndex.get(index));
+  }
+
   retriangulate(i) {
-    const {partners, tile, stride, pointByIndex, original, points} = this.mesh;
+    const {partners, tile, points} = this.mesh;
     const partner = partners[i];
     if (partner < 0 || this.removed[partner]) return;
     const key = tile[i];
-    const [a, b, c, d] = [key, key + 1, key + stride, key + stride + 1].map(index => pointByIndex.get(index));
+    const [a, b, c, d] = this.tileCorners(key);
     const distance = (p, q) => (points[3 * p] - points[3 * q]) ** 2 + (points[3 * p + 1] - points[3 * q + 1]) ** 2;
     // The Delaunay diagonal of the lattice parallelogram is the shorter one.
     // A square has two valid diagonals. Use a stable tie break on restored tiles.
-    const usesAD = distance(a, d) <= distance(b, c) + 1e-10;
+    this.setTile(i, distance(a, d) <= distance(b, c) + 1e-10);
+  }
+
+  setTile(i, usesAD) {
+    const {partners, tile, original} = this.mesh;
+    const partner = partners[i], key = tile[i];
+    const [a, b, c, d] = this.tileCorners(key);
     const first = 3 * Math.min(i, partner), second = 3 * Math.max(i, partner);
     const originalFirst = original.subarray(first, first + 3);
     const originalSecond = original.subarray(second, second + 3);
@@ -276,6 +351,7 @@ class CustomMeshEditor {
   }
 
   exportVtu() {
+    if (this.templateVtu) return this.templateVtu;
     const remap = new Int32Array(this.mesh.fixed.length).fill(-1);
     const points = [], cells = [];
     for (let i = 0; i < this.mesh.count; i++) {
@@ -307,7 +383,7 @@ class CustomMeshEditor {
 
   draw() {
     if (!this.mesh || !this.canvas.clientWidth) return;
-    const {current, loaded, fixed, count, image, loadedImage, imageMoved, deformation,
+    const {current, loaded, fixed, count, image, loadedImage, imageMoved, indenter,
       periodic, lattice, cols, rows, stride, pointByIndex} = this.mesh;
     const width = this.canvas.clientWidth, height = this.canvas.clientHeight;
     const ratio = window.devicePixelRatio || 1;
@@ -350,6 +426,7 @@ class CustomMeshEditor {
     };
     const colors = ['#13796a', '#a05513', '#1556a5', '#363838', '#772cb3'];
     const driven = [];
+    let transverseConstraint = false;
     for (let i = 0; i < active.length; i++) {
       if (!active[i]) continue;
       const node = periodic ? pointByIndex.get(lattice[3 * i] % cols + stride * (lattice[3 * i + 1] % rows)) : i;
@@ -360,15 +437,46 @@ class CustomMeshEditor {
       ctx.fillStyle = colors[moving ? 4 : fixed[i]];
       ctx.beginPath();
       const size = moving ? 3.2 : fixed[i] ? 2.6 : Math.max(0.65, Math.min(1.65, scale / 3));
-      ctx.arc(...vertex(i), size, 0, 2 * Math.PI);
+      const position = vertex(i);
+      ctx.arc(...position, size, 0, 2 * Math.PI);
       ctx.fill();
+      const transverse = (fixed[i] & 1 && Math.abs(dx) <= 1e-10) ||
+        (fixed[i] & 2 && Math.abs(dy) <= 1e-10);
+      if (moving && transverse) {
+        transverseConstraint = true;
+        ctx.strokeStyle = colors[3];
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
     const spacing = Math.max(1, Math.ceil(driven.length / 8));
     for (let i = 0; i < driven.length; i += spacing) {
       const [id, dx, dy] = driven[i];
       arrow(vertex(id), dx, dy, 16);
     }
-    if (deformation === 'nanoindentation') arrow(screen((minX + maxX) / 2, maxY + 22 / scale), 0, -1, 18);
+    this.transverseKey.hidden = !transverseConstraint;
+    this.indenterKey.hidden = !indenter;
+    if (indenter) {
+      const [x, radius, depth, window] = indenter;
+      let surface = -Infinity;
+      for (let i = 0; i < active.length; i++) {
+        if (active[i] && fixed[i] !== 3 && Math.abs(current[3 * i] - x) <= window) {
+          surface = Math.max(surface, current[3 * i + 1]);
+        }
+      }
+      this.indenterKey.querySelector('span').textContent =
+        `Final indenter · radius ${radius} · depth ${depth}`;
+      if (Number.isFinite(surface)) {
+        ctx.strokeStyle = colors[4];
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.arc(...screen(x, surface + radius - depth), radius * scale, 0, 2 * Math.PI);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        arrow(screen(x, surface + Math.min(0.5 * radius, 18 / scale)), 0, -1, 15);
+      }
+    }
     const outline = (polygon, color, dash) => {
       if (!polygon.length) return;
       ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.setLineDash(dash);

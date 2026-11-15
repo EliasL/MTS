@@ -414,6 +414,36 @@ class Workspace:
             raise ExpectedError("Select one stopped run on its execution site.")
         return rows[0]
 
+    def run_template(self, data):
+        from MTS_Management.errors import ExpectedError
+        from MTS_Management.run_template import read_template
+
+        rows = self.selected_inventory_runs(data)
+        if len(rows) != 1:
+            raise ExpectedError("Select one simulation to use as a template.")
+        row = rows[0]
+        selection = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
+        if row["site"] in {None, "local"}:
+            result = read_template(row["folder"], selection)
+        else:
+            try:
+                result = self.manager_call(row["site"], "run_template", selection=selection, timeout=60)
+            except RuntimeError as error:
+                if "Unknown remote operation: run_template" not in str(error):
+                    raise
+                raise ExpectedError(f"Update the manager on {site_label(row['site'])} in Setup and tools.") from error
+        return result | {"site": row["site"] or row.get("origin_site") or "local"}
+
+    def run_conflict(self, data):
+        from MTS_Management.cluster import call, load_sites
+        from MTS_Management.config import Config
+
+        site = load_sites(ROOT / "MTSManager/sites.toml")[data["site"]]
+        config = simulation_setup.simulation_config(data)
+        if checksum := data.get("initial_mesh_sha256"):
+            config = Config(**(config.as_dict() | {"initialMeshSha256": checksum}))
+        return call(site, "run_conflict", settings=config.as_dict(), label=data.get("label") or None, timeout=15)
+
     def remove_missing_runs(self, scope):
         from MTS_Management.cluster import load_sites
         from MTS_Management.errors import ExpectedError
@@ -1396,11 +1426,8 @@ class Workspace:
             mesh = data.get("initial_mesh")
             if "initial_mesh" in data:
                 from MTS_Management.config import Config
-                from MTS_Management.errors import ExpectedError
                 from MTS_Management.initial_mesh import mesh_checksum
 
-                if config["reconnectionMethod"] == "delaunay":
-                    raise ExpectedError("Use None or Edge flip reconnection for a custom initial mesh.")
                 config = Config(**(config.as_dict() | {"initialMeshSha256": mesh_checksum(mesh)}))
                 temporary = tempfile.TemporaryDirectory(prefix="mts-custom-mesh-")
             with temporary as directory:
@@ -1428,8 +1455,17 @@ class Workspace:
             command = ["campaign", path, "--site", site]
             if site == "local":
                 command += ["--mode", "foreground", "--workers", "1"]
-            self.manager(*command)
-            return {"campaign": name}
+            result = self.manager(*command)
+            skipped = (len(result["skipped"]) if isinstance(result, dict) else
+                       sum(bool(run.get("skipped")) for run in result))
+            conflicts = result["conflicts"] if isinstance(result, dict) else (
+                run for run in result if run.get("conflict"))
+            errors = {run["label"]: run["conflict"] for run in conflicts}
+            if skipped:
+                self.log(f"Skipped {skipped} completed {'run' if skipped == 1 else 'runs'}.")
+            for label, detail in errors.items():
+                self.log(f"{label} — {detail}")
+            return {"campaign": name, "skipped": skipped, "errors": errors}
         if action == "plot_monitor":
             return self.open_run_plot(data)
         if action == "animate":
@@ -1627,6 +1663,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.slurm_program(data))
             elif action == "mesh_preview":
                 self.reply(200, self.server.app.mesh_preview(data), "application/vnd.vtk.vtu")
+            elif action == "run_template":
+                self.reply(200, self.server.app.run_template(data))
+            elif action == "run_conflict":
+                self.reply(200, self.server.app.run_conflict(data))
             elif action == "plot_preview":
                 self.reply(200, self.server.app.plot_preview(data))
             elif action == "plot_presets":

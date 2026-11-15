@@ -223,8 +223,10 @@ optional affine guess interpolates each increment across that span using
 only free components. The minimizers, residual and tangent use the same free
 components. Saved rectangle configurations include the edge settings in their
 identity. The execution site needs a build supporting that configuration.
-Rectangle samples support edge-flip reconnection. Delaunay reconnection uses
-periodic images.
+Open and cut samples support constrained Delaunay reconnection. It preserves
+outer boundaries and holes by changing only interior diagonals. Complete
+periodic samples can use Delaunay triangulation of periodic images. Delaunay
+element slots do not record the edge-flip transport correspondence.
 
 Nanoindentation uses `boundary = fixedBottom` and quasistatic relaxation.
 A circular indenter is centred above the relaxed top surface. Its radius
@@ -372,6 +374,10 @@ If the base preset writes mesh snapshots, the campaign can disable them for
 all its runs. This choice becomes part of each saved run configuration.
 Saving a preset or a campaign does not submit a run.
 
+**More → Use as template** in Monitor data loads the selected run's effective
+settings and verified custom initial VTU into Start simulations for a fresh
+run.
+
 **Custom mesh** requests a VTU preview from MTS2D on the selected execution
 site. The browser can remove triangles and restore material with local
 triangulation on the original lattice. An edited individual run submits its
@@ -503,8 +509,10 @@ Preparation runs on the execution host:
 3. Resolves the output root and acquires the preparation lock.
 4. Calculates the original configuration hash and consults the run index.
    It rejects a conflicting truncated hash or inconsistent manifest.
-5. Creates the run folder, `config.conf` and `manifest.json` if absent. For an
-   existing run it verifies the saved settings and executable association.
+5. Creates the run folder, `config.conf` and `manifest.json` if absent. An
+   existing folder blocks a fresh individual run. A user can remove that
+   folder manually before starting again. Continuations verify the recorded
+   settings and executable association.
    When supplied, the custom initial VTU is verified and staged with these files.
 6. Creates the attempt directory and records the exact invocation, environment,
    resources and submission script. Continuation attempts reuse the saved
@@ -784,6 +792,9 @@ MTS2D checkpoint resume.
 A campaign is not one scheduler transaction. If a later submission fails, earlier
 accepted jobs remain queued and their receipts remain available. Metadata edits
 preserve configuration hashes and the commands of accepted attempts.
+Campaign submission skips scientifically completed configurations already
+present at the execution site. It reports other folder conflicts per
+configuration and continues with the remaining members.
 
 ## 14. Monitoring and inventory
 

@@ -62,7 +62,7 @@ Plot the vertical indenter reaction force against load to obtain a force–depth
 curve.
 
 Select `contiTriangular` for a triangular lattice. Boundary displacement
-supports top or bottom loading on its slanted-sided sample. After triangular
+supports top or bottom loading on its staggered sample. After triangular
 reconnection, the exported `T` field is unsuitable for deformation history.
 Set **VTU files per unit load** in **Additional settings** to control regular
 mesh snapshots. The initial and final states and detected events can add files.
@@ -71,11 +71,18 @@ Open **Custom mesh** below **Additional settings** to preview the mesh generated
 by MTS2D on the selected execution site. The legend shows the free, constrained
 and driven nodes. The periodic image outline shows the current cell and the cell
 after applying 0.1 load. Click to remove triangles, Shift-click to restore material
-with local lattice triangulation, and scroll over the mesh to adjust the brush
-radius. Boundary conditions remain on surviving nodes of the original edges.
-Select **None** or **Edge flip** reconnection for an edited mesh. Download
+with local lattice triangulation. Use the brush-radius slider to change its
+size. Boundary conditions remain on surviving nodes of the original edges.
+Delaunay reconnection preserves the boundary of an edited mesh. The
+nanoindentation preview overlays the indenter at the final configured depth,
+measured from the undeformed surface. Download
 `initialMesh.vtu` to keep a separate copy. Starting an edited run saves the file
 in its run folder. The preview supports up to 200,000 triangles.
+
+In **Monitor data**, select **More → Use as template** to load a run's settings
+and custom initial mesh into **Start simulations**. This prepares a fresh
+configuration. Manually remove an existing run folder before starting again
+with the same settings on that site. Campaigns skip completed members.
 
 Sequential slip drives selected boundary regions of an open sample. Choose a
 midpoint sequence or enter a custom sequence such as

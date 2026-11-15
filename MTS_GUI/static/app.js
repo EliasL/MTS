@@ -276,9 +276,12 @@ function updateActions() {
   const runSite = $('run-site').value;
   const currentBuildReason = runSite === 'local' && !lastState.local_current_configuration
     ? 'Rebuild MTS2D from the Overview to use the current configuration.' : '';
-  updateRunActions(continuationPlan ? 'Presets are unavailable while continuing a run.' : configurationReason, $('run-button').parentElement.title ||
-    configurationReason || continuationIssue() || siteReason(runSite) || currentBuildReason ||
-    (!continuationPlan && customMesh.issue()));
+  const runReason = configurationReason || continuationIssue() || siteReason(runSite) || currentBuildReason ||
+    (!continuationPlan && customMesh.issue());
+  const conflict = checkRunFolder(runReason);
+  $('run-conflict-recheck').hidden = !conflict;
+  updateRunActions(continuationPlan ? 'Presets are unavailable while continuing a run.' : configurationReason,
+    $('run-button').parentElement.title || runReason || conflict);
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
@@ -518,6 +521,28 @@ function openRunMenu(anchor, rows) {
     if (sameAnchor) return;
   }
   const resume = $('run-more-resume'), further = $('run-more-further'), archive = $('run-more-archive');
+  const template = $('run-more-template');
+  template.dataset.unavailable = String(rows.length !== 1);
+  template.dataset.disabledReason = rows.length !== 1 ? 'Select one simulation.' : '';
+  template.onclick = async () => {
+    runMoreMenu.hidePopover();
+    try {
+      const result = await api('run_template', selectedRuns(rows));
+      if (!startOptions) await loadStartOptions();
+      setContinuation(null);
+      $('simulation-preset').value = '';
+      $('simulation-preset-name').value = '';
+      $('simulation-download').disabled = true;
+      $('run-site').value = [...$('run-site').options].some(option => option.value === result.site)
+        ? result.site : 'local';
+      $('run-label').value = result.label;
+      view('start');
+      showPreset(result.settings);
+      if (result.initial_mesh) customMesh.loadTemplate(result.initial_mesh);
+      $('run-form').scrollIntoView({block: 'start'});
+      queueWorkspaceDraft();
+    } catch (error) { message(error.message); }
+  };
   const stoppable = ['finished', 'failed', 'stopped'];
   const furtherUnavailable = rows.length !== 1 || !rows[0].site || !stoppable.includes(rows[0].status.state);
   const archiveUnavailable = rows.some(row => ![...stoppable, 'local copy'].includes(row.status.state));
@@ -541,6 +566,7 @@ function openRunMenu(anchor, rows) {
   runMoreMenu.style.left = left + 'px';
   runMoreMenu.style.top = top + 'px';
   if (canResume && !resume.disabled) resume.focus({preventScroll: true});
+  else if (!template.disabled) template.focus({preventScroll: true});
   else if (!further.disabled) further.focus({preventScroll: true});
   else if (!archive.disabled) archive.focus({preventScroll: true});
 }
@@ -813,7 +839,10 @@ async function refresh() {
         await fillPlotSources(state.campaigns || [], follow ? monitorPlot : null);
         if (!previous) view('plot');
       }
-      if (task.result?.config_hash) $('task-result').textContent = 'Submitted.';
+      if (task.result?.config_hash) {
+        $('task-result').textContent = 'Submitted.';
+        runFolderKey = null;
+      }
       if (task.result?.continuation_plan) await showContinuation(task.result.continuation_plan);
       if (task.result?.slurm_plan || task.result?.slurm_result) renderSlurmResult(task.result);
       if (task.result?.inspected_host) showSSHInspection(task.result);
@@ -871,8 +900,46 @@ const customMesh = new CustomMeshEditor(
   },
   updateActions,
 );
+let runFolderKey, runFolderConflict = '', runFolderTimer;
+function checkRunFolder(runReason) {
+  if (!startOptions || continuationPlan || !$('start').classList.contains('active') ||
+      runReason || !/^([A-Za-z0-9])[A-Za-z0-9_.-]{0,119}$/.test($('run-label').value)) {
+    if (runFolderKey) {
+      clearTimeout(runFolderTimer);
+      runFolderKey = null;
+      runFolderConflict = '';
+    }
+    return '';
+  }
+  const data = {...runConfiguration(), label: $('run-label').value, site: $('run-site').value};
+  const edited = customMesh.modified;
+  const key = JSON.stringify([data, edited ? customMesh.revision : 0]);
+  if (key === runFolderKey) return runFolderConflict;
+  clearTimeout(runFolderTimer);
+  runFolderKey = key;
+  runFolderConflict = '';
+  runFolderTimer = setTimeout(async () => {
+    try {
+      if (edited) {
+        const mesh = new TextEncoder().encode(customMesh.exportVtu());
+        const digest = await crypto.subtle.digest('SHA-256', mesh);
+        data.initial_mesh_sha256 = Array.from(new Uint8Array(digest), byte =>
+          byte.toString(16).padStart(2, '0')).join('');
+      }
+      if (runFolderKey !== key) return;
+      const result = await api('run_conflict', data);
+      if (runFolderKey !== key) return;
+      runFolderConflict = result.conflict;
+      updateActions();
+    } catch {
+      // The execution host checks again during run preparation.
+    }
+  }, 500);
+  return '';
+}
+$('run-conflict-recheck').onclick = () => {runFolderKey = null; updateActions();};
 for (const event of ['input', 'change']) $('run-form').addEventListener(event, ({target}) => {
-  if (target.id.startsWith('run-')) customMesh.refresh();
+  if (target.id.startsWith('run-')) updateActions();
 });
 
 const runFields = {
@@ -904,7 +971,6 @@ function indentationIssue() {
   if (!indentationExperiment()) return '';
   if (!Object.hasOwn(startOptions.defaults, 'indenterRadius')) return 'Update MTSManager to use nanoindentation.';
   if ($('run-indenter-radius').valueAsNumber <= 0) return 'Enter a positive indenter radius.';
-  if ($('run-reconnection').value === 'delaunay') return 'Choose Edge flip or None for nanoindentation.';
   if ($('run-increment').valueAsNumber <= 0) return 'Enter a positive depth increment.';
   const spacing = $('run-energy-function').value === 'contiTriangular' ? Math.sqrt(3) / 2 : 1;
   const height = ($('run-rows').valueAsNumber - 1) * spacing;
@@ -936,7 +1002,6 @@ function continuationIssue() {
 function rectangleIssue() {
   if (!boundaryDisplacement()) return '';
   if (!Object.hasOwn(startOptions.defaults, 'drivenEdge')) return 'Update MTSManager to use boundary displacement.';
-  if ($('run-reconnection').value === 'delaunay') return 'Choose Edge flip or None for rectangle boundaries.';
   const vertical = verticalDrivenEdge();
   const driven = $('run-driven-edge').value;
   if (!['fixed', vertical ? 'fixed_y' : 'fixed_x'].includes($('run-edge-' + driven).value)) {
