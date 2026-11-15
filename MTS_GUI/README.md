@@ -32,6 +32,11 @@ remain independent of the GUI process.
 Start simulations configures and launches runs. Monitor data displays records
 for a server or a campaign. Plot exports campaign response curves and scalar comparisons.
 
+Overview shows the local simulator build status. Select **Build Release** to
+install a local build or **Rebuild Release** to compile the checked-out source.
+The status is **Outdated** when the installed build records a different source
+revision or configuration schema.
+
 Drop one file anywhere in the workspace. A `.conf` file fills the individual
 simulation form for review. A `.csv` file opens in Plot, where its numeric
 columns can be used as axes. A `.pvd` or `.vtu` file from an MTS run opens
@@ -42,9 +47,15 @@ file in its data folders, enter its path in the Open data file dialog.
 
 Choose an experiment. Simple shear applies a shear transformation. Affine
 compression and tension use engineering strain along one axis and hold the
-transverse span fixed. Boundary displacement with fixed or sliding clamps
-is available as a preview. Sequential slip drives selected boundary regions of
-an open sample. Choose a midpoint sequence or enter a custom sequence such as
+transverse span fixed. For boundary displacement, select the driven edge and
+the stationary components of each edge of a rectangular square-lattice
+sample. Displacement is prescribed perpendicular to the driven edge, in mesh
+length units. For vertical compression with a sliding top and fixed base,
+drive Top, set Top to Free and Bottom to Fixed in x and y, and leave Left and
+Right free. Build MTS2D at the execution site before running this protocol.
+
+Sequential slip drives selected boundary regions of an open sample. Choose a
+midpoint sequence or enter a custom sequence such as
 `1.5,2.5,2.5` for three full slips. Additional settings contains the loading
 mode and controls for switching and repeating directions.
 
@@ -366,7 +377,8 @@ entry, including collapsed entries. Subprocess output appears as it arrives. The
 which the desktop launcher redirects to `.mts/server.log`. To follow this output
 in a terminal, run `tail -f .mts/server.log` from the MTS root.
 
-Data-source selections and browser errors appear as terminal entries. Browser
+Data-source selections, browser errors and attempts to use disabled actions
+appear as terminal entries. Browser
 entries survive page reloads in the same tab when session storage is available;
 delete them individually, clear the terminal, or quit MTS to remove them.
 An inventory without a saved snapshot displays “Refresh to update data overview.”

@@ -196,6 +196,25 @@ Affine compression and tension use one axial direction, periodic or fixed
 boundaries, and nonnegative engineering strain. Their incremental stretch is
 the ratio of the prescribed stretches at the new and old loads.
 
+For boundary displacement, use compression or tension with
+`boundary = rectangle` on a square-lattice mesh. `drivenEdge` selects
+`top`, `bottom`, `left` or `right`. The driven edge moves perpendicular
+to itself, inward for compression and outward for tension. Each of the four
+edge settings accepts `free`, `fixed_x`, `fixed_y` or `fixed`. Stationary
+components are combined at corners. The driven edge's normal component is
+prescribed regardless of its own edge setting. A stationary constraint on an
+adjacent edge that conflicts with that motion raises an error.
+
+The driving edge determines the axis. The start, increment and additional
+load are distances in mesh length units. For compression their endpoint
+must be below the undeformed span perpendicular to the driven edge. The
+optional affine guess interpolates each increment across that span using
+only free components. The minimizers, residual and tangent use the same free
+components. Saved rectangle configurations include the edge settings in their
+identity. The execution site needs a build supporting that configuration.
+Rectangle samples support edge-flip reconnection. Delaunay reconnection uses
+periodic images.
+
 Unusual combinations that are mathematically defined are allowed. Step noise
 is available in every loading mode, including without relaxation. For simple
 shear, disabling affine prediction
@@ -411,6 +430,10 @@ copies. Local archival storage uses the same retention layout and matching-recor
 reuse as local simulation builds. A later build affects the working executable;
 attempts continue to refer to their selected retained paths.
 
+The Overview and Setup panels report an outdated local build when its
+manifest records a different checked-out source revision or configuration
+schema. The Overview can run the same explicit release build as Setup.
+
 ### 6.2 Update MTS on servers
 
 The GUI's **Update MTS on servers** action transfers the manager package,
@@ -596,7 +619,8 @@ Checkpoint loading:
 
 1. Deserializes physical state and resolved settings.
 2. Checks mesh dimensions and boundary topology against the configuration.
-3. Preserves saved constraints and reference geometry.
+3. Preserves saved constraints and reference geometry. Rectangle checkpoints
+   store component constraints and require the same loading geometry on resume.
 4. Reevaluates scientific completion.
 5. Recovers the existing CSV schema and checks column compatibility.
 6. Backs up output according to the configured policy, removes CSV rows beyond

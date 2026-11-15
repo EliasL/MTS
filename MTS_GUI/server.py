@@ -31,6 +31,36 @@ def site_label(name):
     return str(name).upper()
 
 
+def local_build_status(site_paths):
+    from MTS_Management import provenance
+    from MTS_Management.files import read_json
+
+    executable = Path(site_paths["executable"])
+    manifest = executable.parent / "build-manifest.json"
+    if not executable.is_file() or not manifest.is_file():
+        return "missing", False
+    try:
+        record = read_json(manifest)
+    except (OSError, ValueError):
+        return "missing", False
+    if not isinstance(record, dict) or not record.get("revision"):
+        return "missing", False
+
+    source = Path(site_paths["source"])
+    try:
+        if (source / ".git").exists():
+            revision = provenance.command(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+        else:
+            revision = read_json(source / "SOURCE.json")["revision"]
+    except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError):
+        revision = None
+    supports_rectangle = getattr(provenance, "supports_rectangle_boundary", None)
+    rectangle = bool(supports_rectangle and supports_rectangle(record))
+    outdated = (revision and record["revision"] != revision) or (supports_rectangle and not rectangle)
+    return ("outdated" if outdated else "installed"), rectangle
+
+
 class Workspace:
     def __init__(self):
         self.token = secrets.token_urlsafe(32)
@@ -1018,7 +1048,8 @@ class Workspace:
         site_file = ROOT / "MTSManager/sites.toml"
         sites = []
         servers = []
-        local_build = False
+        build_status = "missing"
+        local_rectangle_build = False
         if packages["MTSManager"] and site_file.exists():
             from MTS_Management.cluster import load_sites, paths
             profiles = load_sites(site_file)
@@ -1032,8 +1063,7 @@ class Workspace:
                                     "profiles": [p.name for p in profiles.values() if (p.ssh or "local") == host]})
                     seen.add(host)
             if "local" in profiles and not profiles["local"].ssh:
-                executable = Path(paths(profiles["local"])["executable"])
-                local_build = executable.is_file() and (executable.parent / "build-manifest.json").is_file()
+                build_status, local_rectangle_build = local_build_status(paths(profiles["local"]))
         with self.lock:
             task = dict(self.task, logs=list(self.task["logs"]))
             history = [{k: list(v) if k == "logs" else v for k, v in entry.items() if k != "result"}
@@ -1041,7 +1071,8 @@ class Workspace:
         return {"workspace": str(ROOT), "python": sys.version.split()[0],
                 "components": {name: (ROOT / name / ("CMakeLists.txt" if name == "MTS2D"
                                                     else "pyproject.toml")).exists() for name in COMPONENTS},
-                "packages": packages, "local_build": local_build,
+                "packages": packages, "local_build": build_status != "missing",
+                "local_build_status": build_status, "local_rectangle_build": local_rectangle_build,
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "campaigns": sorted(self.campaign_definitions()) if packages["MTSManager"] else [],

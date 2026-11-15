@@ -22,6 +22,29 @@ from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_local_build_status_distinguishes_outdated_from_missing(self):
+        from MTS_GUI.server import local_build_status
+        from MTS_Management.config import DEFAULTS
+        from MTS_Management.files import digest, write_json
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            executable = root / "MTS2D"
+            source = root / "source"
+            source.mkdir()
+            paths = {"source": source, "executable": executable}
+            write_json(source / "SOURCE.json", {"revision": "current"})
+            self.assertEqual(local_build_status(paths), ("missing", False))
+            executable.touch()
+            manifest = root / "build-manifest.json"
+            record = {"revision": "previous", "configuration_keys_sha256": digest(sorted(DEFAULTS))}
+            write_json(manifest, record)
+            self.assertEqual(local_build_status(paths), ("outdated", True))
+            write_json(manifest, record | {"revision": "current"})
+            self.assertEqual(local_build_status(paths), ("installed", True))
+            write_json(manifest, {"revision": "current", "configuration_keys_sha256": "obsolete"})
+            self.assertEqual(local_build_status(paths), ("outdated", False))
+
     def test_download_receipt_identifies_remote_folder_without_attempt_files(self):
         import shlex
         from MTS_Management.cluster import Site
@@ -90,6 +113,26 @@ directions = -1.1,2.1
                 {(c["seed"], float(f"{c['epsR']:.12g}"), (c["directions"], c["totalLoad"])) for c, _ in runs},
                 set(product([3, 4, 5], [1e-7, 1e-6, 1e-5], [("-1.1,2.1", 2), ("-1.1,2.1,2.5", 3)])),
             )
+
+    def test_rectangle_preset_keeps_driven_edge_and_constraints(self):
+        from MTS_GUI.simulation_setup import preset
+
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            imported = preset(folder, {"action": "import", "text": """deformation = compression
+boundary = rectangle
+drivenEdge = top
+top = fixed_x
+bottom = fixed
+rows = 30
+cols = 10
+totalLoad = 3
+"""})
+            saved = preset(folder, {"action": "save", "name": "Compression", "settings": imported["settings"]})
+            loaded = preset(folder, {"action": "load", "name": "Compression"})
+            self.assertEqual(loaded, saved)
+            self.assertEqual((loaded["settings"]["drivenEdge"], loaded["settings"]["top"],
+                              loaded["settings"]["bottom"]), ("top", "fixed_x", "fixed"))
 
     def test_plot_presets_require_explicit_update_and_persist_independent_copies(self):
         with tempfile.TemporaryDirectory() as temporary, \

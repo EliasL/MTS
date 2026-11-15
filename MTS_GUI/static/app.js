@@ -44,12 +44,80 @@ function fillMonitorSources(campaigns = lastState?.campaigns || inventorySnapsho
     site => new Option(siteLabel(site.label || site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
-const actionButtons = ['install-packages','build-simulator','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-middle','animate-button','refresh-jobs','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
-for (const id of actionButtons) {
-  const button = $(id), hint = document.createElement('span');
+const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-middle','animate-button','refresh-jobs','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
+function buttonHint(button) {
+  if (button.parentElement.classList.contains('action-hint')) return button.parentElement;
+  const hint = document.createElement('span');
   hint.className = 'action-hint';
   button.before(hint); hint.append(button);
+  return hint;
 }
+for (const id of [...actionButtons, 'simulation-save']) buttonHint($(id));
+
+const disabledReasons = {
+  'run-button': 'Wait for MTS to load the simulation controls.',
+  'simulation-save': 'Wait for MTS to load the simulation settings.',
+  'simulation-download': 'Save or select a preset first.',
+  'campaign-run': 'Select a saved campaign first.',
+  'campaign-save': 'Select a base preset first.',
+  'plot-button': 'Complete the plot configuration first.',
+  'plot-preview-update': 'Select valid plot settings and wait for any active preview to finish.',
+  'plot-other-seeds': 'Choose a simulation before selecting other seeds.',
+  'plot-preset-new': 'Configure a plot from the Plot page first.',
+  'plot-preset-update': 'Load a plot preset and configure a plot first.',
+  'animation-preset-update': 'Load an animation preset first.',
+  'animate-remove-opacity-node': 'Keep at least one point in the opacity curve.',
+  'slurm-generate': 'Load the Slurm controls first.',
+  'slurm-review': 'Load the Slurm controls first.',
+  'slurm-execute': 'Review the matching jobs first.',
+  'update-managers': 'Configure an enabled remote execution site first.',
+};
+function disabledActionReason(button) {
+  return button.parentElement.title || button.dataset.disabledReason ||
+    disabledReasons[button.id] || button.title || 'This action is currently unavailable.';
+}
+function actionLabel(button) {
+  return button.getAttribute('aria-label') || button.textContent.trim() || 'Action';
+}
+function syncDisabledButton(button) {
+  if (!button.isConnected) return;
+  if (button.matches(':disabled')) {
+    const hint = buttonHint(button);
+    hint.tabIndex = 0;
+    hint.setAttribute('role', 'button');
+    hint.setAttribute('aria-disabled', 'true');
+    hint.setAttribute('aria-label', actionLabel(button) + '. ' + disabledActionReason(button));
+  } else if (button.parentElement.classList.contains('action-hint')) {
+    const hint = button.parentElement;
+    for (const attribute of ['tabindex', 'role', 'aria-disabled', 'aria-label']) hint.removeAttribute(attribute);
+  }
+}
+function syncButtonsIn(element) {
+  if (!(element instanceof Element)) return;
+  if (element.matches('button')) syncDisabledButton(element);
+  for (const button of element.querySelectorAll('button')) syncDisabledButton(button);
+}
+new MutationObserver(records => {
+  for (const record of records) {
+    if (record.type === 'attributes') syncButtonsIn(record.target);
+    else for (const element of record.addedNodes) syncButtonsIn(element);
+  }
+}).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'title']});
+syncButtonsIn(document.body);
+
+function reportDisabledAction(event) {
+  const hint = event.target.closest('.action-hint');
+  const button = hint?.querySelector(':scope > button:disabled');
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat) terminalMessage(actionLabel(button), disabledActionReason(button), 'failed');
+}
+document.addEventListener('click', reportDisabledAction, true);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Enter' || event.key === ' ') reportDisabledAction(event);
+}, true);
+
 function terminalMessage(title, text, state = 'complete') {
   const entry = {id: 'browser-' + crypto.randomUUID(), created_at: Date.now(), title, state,
     logs: [`[${new Date().toLocaleTimeString()}] ${text}`]};
@@ -170,24 +238,35 @@ async function loadInventory(logSelection = true) {
   }
 }
 function updateActions() {
-  if (!lastState) return;
+  if (!lastState) {
+    updateRunActions('Connecting to MTS.', 'Connecting to MTS.');
+    return;
+  }
   const busy = lastState.task.state === 'running' || pendingOperation?.state === 'running', ready = Object.values(lastState.packages).every(Boolean);
+  const busyReason = busy ? 'An operation is running. Wait for ' +
+    (lastState.task.command || lastState.task.title || pendingOperation?.title || 'it') + ' to finish.' : '';
   for (const button of [...actionButtons.map($), ...document.querySelectorAll('.table-actions button:not(.folder-location), #ssh-list button, #ssh-editor button')]) {
-    if (!button.parentElement.classList.contains('action-hint')) {
-      const hint = document.createElement('span'); hint.className = 'action-hint';
-      button.before(hint); hint.append(button);
-    }
     button.disabled = busy || button.dataset.disabledConnection === 'true' || button.dataset.unavailable === 'true';
-    button.parentElement.title = busy ? 'Already running: ' + (lastState.task.command || lastState.task.title) : button.dataset.disabledReason || '';
+    buttonHint(button).title = busyReason || button.dataset.disabledReason || '';
   }
-  $('build-simulator').disabled ||= !ready;
-  for (const [button, site] of [['run-button', 'run-site'], ['campaign-run', 'campaign-site']]) {
-    const needsBuild = $(site).value === 'local' && !lastState.local_build;
-    $(button).disabled ||= !ready || !$(site).value || needsBuild;
-    if (!busy && needsBuild) $(button).parentElement.title = 'Build MTS2D in Setup and tools.';
+  const installReason = ready ? '' : 'Install the required packages in Setup and tools.';
+  for (const id of ['build-simulator', 'overview-build']) {
+    $(id).disabled ||= !ready;
+    $(id).parentElement.title = busyReason || installReason;
   }
-  $('run-button').disabled ||= clampPreview();
-  $('simulation-save').disabled = !startOptions || clampPreview();
+  const siteReason = site => installReason ||
+    (!site ? 'Choose an execution site.' :
+      site === 'local' && !lastState.local_build ? 'Build MTS2D from the Overview.' : '');
+  const campaignSiteReason = siteReason($('campaign-site').value);
+  $('campaign-run').disabled ||= Boolean(campaignSiteReason);
+  if (!busy && campaignSiteReason) $('campaign-run').parentElement.title = campaignSiteReason;
+  const setupReason = !startOptions ? 'Simulation settings are unavailable. Check MTSManager in Setup and tools.' : '';
+  const configurationReason = setupReason || rectangleIssue();
+  const runSite = $('run-site').value;
+  const rectangleBuildReason = boundaryDisplacement() && runSite === 'local' && !lastState.local_rectangle_build
+    ? 'Rebuild MTS2D from the Overview to use boundary displacement.' : '';
+  updateRunActions(configurationReason, $('run-button').parentElement.title ||
+    configurationReason || siteReason(runSite) || rectangleBuildReason);
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
@@ -204,6 +283,20 @@ function updateActions() {
   $('refresh-jobs').disabled ||= !ready;
   $('hard-refresh').disabled ||= !ready;
   $('update-managers').disabled ||= !ready || !lastState.sites.some(site => site.remote);
+}
+
+function updateRunActions(saveReason, runReason) {
+  for (const [id, reason] of [['simulation-save', saveReason], ['run-button', runReason]]) {
+    const button = $(id);
+    button.disabled = Boolean(reason);
+    button.parentElement.title = reason;
+  }
+  const status = $('run-action-reasons');
+  const text = saveReason && saveReason === runReason ? saveReason :
+    [saveReason && 'Save preset — ' + saveReason, runReason && 'Run simulation — ' + runReason]
+      .filter(Boolean).join(' ');
+  if (status.textContent !== text) status.textContent = text;
+  status.hidden = !text;
 }
 function renderTerminal(history = backendHistory) {
   try {sessionStorage.setItem('mts-terminal-history', JSON.stringify({token: accessToken, entries: clientHistory}));} catch {}
@@ -474,9 +567,17 @@ async function refresh() {
     const ready = Object.values(state.packages).every(Boolean);
     $('ready-badge').textContent = ready ? 'Installed' : 'Installation required';
     $('ready-badge').className = 'badge' + (ready ? ' ready' : '');
-    const entries = [...Object.entries(state.packages), ['Local simulator', state.local_build]];
-    const list = entries.map(([name, ok]) => `<div class="readiness-row"><span>${escape(name)}</span><span class="badge ${ok ? 'ready' : ''}">${ok ? 'Installed' : 'Not installed'}</span></div>`).join('');
-    $('readiness-list').innerHTML = list; $('setup-readiness').innerHTML = list;
+    const buildStatus = state.local_build_status || (state.local_build ? 'installed' : 'missing');
+    const [buildLabel, buildStyle] = ({installed: ['Installed', 'ready'], outdated: ['Outdated', 'outdated'],
+      missing: ['Not installed', '']})[buildStatus];
+    const packageRows = Object.entries(state.packages).map(([name, ok]) =>
+      `<div class="readiness-row"><span>${escape(name)}</span><span class="badge ${ok ? 'ready' : ''}">${ok ? 'Installed' : 'Not installed'}</span></div>`).join('');
+    $('readiness-list').innerHTML = packageRows;
+    $('setup-readiness').innerHTML = packageRows +
+      `<div class="readiness-row"><span>Local simulator</span><span class="badge ${buildStyle}">${buildLabel}</span></div>`;
+    $('overview-build-status').textContent = buildLabel;
+    $('overview-build-status').className = 'badge ' + buildStyle;
+    $('overview-build').textContent = buildStatus === 'missing' ? 'Build Release' : 'Rebuild Release';
     if (state.interface_version === 4 && state.packages.MTSManager && !startOptions) await loadStartOptions();
     if (firstState || JSON.stringify(state.sites) !== JSON.stringify(previousSites) || JSON.stringify(state.campaigns) !== JSON.stringify(previousCampaigns)) {
       if (!firstState && startOptions && JSON.stringify(state.campaigns) !== JSON.stringify(previousCampaigns)) await loadStartOptions();
@@ -596,7 +697,7 @@ async function refresh() {
   } finally {initialRefresh = false;}
 }
 $('install-packages').onclick = () => operation('install');
-$('build-simulator').onclick = () => operation('build');
+$('overview-build').onclick = $('build-simulator').onclick = () => operation('build');
 $('refresh-jobs').onclick = () => operation('inventory', inventorySelection());
 $('hard-refresh').onclick = () => operation('hard_refresh', {site: $('hard-refresh-site').value});
 $('update-managers').onclick = () => operation('update_managers');
@@ -634,11 +735,43 @@ const runFields = {
   writeMeshVTUs: 'write-vtus', logDuringMinimization: 'log-minimization',
   minimizer: 'minimizer', energyFunction: 'energy-function', initialGuessNoise: 'initial-noise',
 };
+const rectangleEdges = ['top', 'bottom', 'left', 'right'];
+const edgeChoices = [
+  ['free', 'Free'], ['fixed_x', 'Fixed in x'], ['fixed_y', 'Fixed in y'], ['fixed', 'Fixed in x and y'],
+];
+const hasRunField = key => Object.hasOwn(runFields, key) || key === 'drivenEdge' || rectangleEdges.includes(key);
+for (const edge of rectangleEdges) {
+  const initial = edge === 'bottom' ? 'fixed' : 'free';
+  $('run-edge-' + edge).replaceChildren(...edgeChoices.map(([value, label]) =>
+    new Option(label, value, value === initial, value === initial)));
+}
 function axialExperiment() {
   return ['compression', 'tension'].includes($('run-deformation').value);
 }
-function clampPreview() {
+function boundaryDisplacement() {
   return axialExperiment() && $('run-axial-method').value === 'displacement';
+}
+function verticalDrivenEdge() {
+  return ['top', 'bottom'].includes($('run-driven-edge').value);
+}
+function rectangleIssue() {
+  if (!boundaryDisplacement()) return '';
+  if (!Object.hasOwn(startOptions.defaults, 'drivenEdge')) return 'Update MTSManager to use boundary displacement.';
+  if ($('run-energy-function').value !== 'contiSquare') return 'Choose the square-lattice energy function (contiSquare).';
+  if ($('run-reconnection').value === 'delaunay') return 'Choose Edge flip or None for rectangle boundaries.';
+  const vertical = verticalDrivenEdge();
+  for (const edge of vertical ? ['left', 'right'] : ['top', 'bottom']) {
+    if (['fixed', vertical ? 'fixed_y' : 'fixed_x'].includes($('run-edge-' + edge).value)) {
+      return 'The ' + edge + ' edge fixes the driven component at a shared corner.';
+    }
+  }
+  if ($('run-increment').valueAsNumber <= 0) return 'Enter a positive displacement increment.';
+  const end = $('run-start-load').valueAsNumber + $('run-load').valueAsNumber;
+  const span = $(vertical ? 'run-rows' : 'run-cols').valueAsNumber - 1;
+  if ($('run-deformation').value === 'compression' && end >= span) {
+    return 'Final compression displacement must be less than ' + span + ' mesh length units.';
+  }
+  return '';
 }
 function setDirectionChoices(value) {
   $('run-directions').value = value;
@@ -661,13 +794,13 @@ function renderExperiment() {
   const deformation = $('run-deformation').value;
   const slip = deformation === 'sequentialSlip', axial = axialExperiment();
   const midpoint = deformation === 'directDisplacement';
-  const displacement = clampPreview();
-  const editSequence = slip || $('run-direction-choice').value === 'custom';
+  const displacement = boundaryDisplacement();
+  const editSequence = slip || (!displacement && $('run-direction-choice').value === 'custom');
   const schedule = !slip && !axial;
   $('run-boundary-field').hidden = slip || displacement;
   $('run-axial-method-field').hidden = !axial;
-  $('run-sliding-field').hidden = !displacement;
-  $('run-direction-choice-field').hidden = slip;
+  $('run-edge-settings').hidden = !displacement;
+  $('run-direction-choice-field').hidden = slip || displacement;
   $('run-directions-field').hidden = $('run-directions').disabled = !editSequence;
   $('run-custom-directions-label').textContent = slip ? 'Slip sequence' : 'Custom sequence';
   $('run-midpoint-option').hidden = $('run-midpoint-help').hidden = !midpoint;
@@ -688,27 +821,31 @@ function renderExperiment() {
     'Amount applied after initialization. Add it to the initial value to get the final value.';
   $('run-directions-label').textContent = axial ? 'Loading axis' : 'Direction';
   $('run-slip-help').classList.toggle('hidden', !slip);
-  $('run-clamp-preview').classList.toggle('hidden', !displacement);
-  $('run-clamp-motion').textContent = $('run-deformation').value === 'compression' ? 'Toward the opposite edge' : 'Away from the opposite edge';
-  $('run-clamp-driven').textContent = $('run-sliding').checked ? 'Free' : 'Fixed';
-  $('run-clamp-opposite').textContent = $('run-sliding').checked ? 'Free with one point pinned' : 'Fixed';
+  const axis = verticalDrivenEdge() ? 'y' : 'x';
+  const motion = deformation === 'compression' ? 'toward' : 'away from';
+  $('run-edge-description').textContent = 'Displacement is prescribed in ' + axis + ' on the driven edge, ' +
+    motion + ' the opposite edge. The driven component takes precedence over its edge setting. ' +
+    'Values are in mesh length units.';
   updateSlipTotal();
   updateEndLoad();
   updateActions();
 }
 function updateEndLoad() {
   const initial = $('run-start-load').valueAsNumber, additional = $('run-load').valueAsNumber;
-  const end = initial + additional, axial = axialExperiment() && !clampPreview();
+  const end = initial + additional, axial = axialExperiment() && !boundaryDisplacement();
   const compression = $('run-deformation').value === 'compression';
   const value = axial ? 1 + (compression ? -end : end) : end;
   $('run-load').setCustomValidity(axial && compression && end >= 1 ?
     'Final compression strain must be less than 1.' : '');
-  $('run-end-load').hidden = !Number.isFinite(end) || clampPreview() ||
+  $('run-end-load').hidden = !Number.isFinite(end) || boundaryDisplacement() ||
     (!axial && (!initial || $('run-deformation').value === 'sequentialSlip'));
   $('run-end-load').textContent = (axial ? 'Final axial stretch ' : 'Final load ') + Number(value.toPrecision(12));
 }
-$('run-start-load').oninput = $('run-load').oninput = updateEndLoad;
-$('run-axial-method').onchange = $('run-sliding').onchange = renderExperiment;
+$('run-start-load').oninput = $('run-load').oninput = () => {updateEndLoad(); updateActions();};
+for (const id of ['increment', 'rows', 'cols']) $('run-' + id).oninput = updateActions;
+$('run-energy-function').onchange = $('run-reconnection').onchange = updateActions;
+$('run-axial-method').onchange = $('run-driven-edge').onchange = renderExperiment;
+for (const edge of rectangleEdges) $('run-edge-' + edge).onchange = updateActions;
 $('run-directions').oninput = () => {
   if ($('run-deformation').value !== 'sequentialSlip' && $('run-directions').value.includes(',')) $('run-advanced').open = true;
   renderExperiment();
@@ -740,18 +877,29 @@ function runConfiguration() {
     Object.assign(settings, {boundary: 'anchored', startLoad: 0, segmentLoad: 1, repeat: false});
   } else if (axialExperiment()) {
     Object.assign(settings, {segmentLoad: 0, repeat: false});
+    if (boundaryDisplacement()) {
+      Object.assign(settings, {boundary: 'rectangle', drivenEdge: $('run-driven-edge').value,
+        directions: startOptions.defaults.directions});
+      for (const edge of rectangleEdges) settings[edge] = $('run-edge-' + edge).value;
+    }
   }
   return {settings, overrides: $('run-extra').value};
 }
 function showPreset(settings) {
-  $('run-axial-method').value = 'affine';
+  const rectangle = settings.boundary === 'rectangle';
+  $('run-axial-method').value = rectangle ? 'displacement' : 'affine';
   for (const [key, id] of Object.entries(runFields)) {
     const input = $('run-' + id);
     if (input.type === 'checkbox') input.checked = settings[key];
+    else if (key === 'boundary' && rectangle) input.value = 'fixed';
     else input.value = settings[key];
   }
+  if (rectangle) {
+    $('run-driven-edge').value = settings.drivenEdge;
+    for (const edge of rectangleEdges) $('run-edge-' + edge).value = settings[edge];
+  }
   $('run-extra').value = Object.entries(settings)
-    .filter(([key, value]) => !(key in runFields) && value !== startOptions.defaults[key])
+    .filter(([key, value]) => !hasRunField(key) && value !== startOptions.defaults[key])
     .map(([key, value]) => key + ' = ' + value).join('\n');
   setDirectionChoices(settings.directions);
   $('run-advanced').open = settings.loading !== 'relaxation' ||
@@ -761,7 +909,7 @@ function showPreset(settings) {
 async function loadStartOptions() {
   startOptions = await api('start_options');
   $('run-extra-help').textContent = Object.keys(startOptions.defaults)
-    .filter(key => !Object.hasOwn(runFields, key)).sort().join(', ');
+    .filter(key => !hasRunField(key)).sort().join(', ');
   for (const [id, names, placeholder] of [
     ['simulation-preset', startOptions.presets, 'New configuration'],
     ['campaign-base', startOptions.presets, 'Choose a saved preset'],
@@ -817,7 +965,7 @@ $('simulation-upload').onchange = async event => {
   finally {event.target.value = '';}
 };
 $('simulation-save').onclick = async () => {
-  if (clampPreview() || !$('run-form').reportValidity()) return;
+  if ($('simulation-save').disabled || !$('run-form').reportValidity()) return;
   const name = $('simulation-preset-name').value.trim();
   try {
     await api('simulation_preset', {action: 'save', name, ...runConfiguration()});
@@ -1899,7 +2047,10 @@ $('restart').onclick = async () => {
     await api('restart', {});
     restarting = true;
     clearInterval(poller);
-    for (const id of actionButtons) $(id).disabled = true;
+    for (const id of actionButtons) {
+      $(id).disabled = true;
+      $(id).parentElement.title = 'Wait for MTS to restart.';
+    }
     entry = terminalMessage('Restart MTS', 'Restarting MTS…', 'running');
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
