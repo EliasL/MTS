@@ -118,7 +118,7 @@ def campaign_definition(preset_folder, data):
     if write_vtus is not None:
         if type(write_vtus) is not bool:
             raise ValueError("Choose whether the campaign inherits, enables or disables mesh VTU writing.")
-        base = Config(**(base.as_dict() | {"writeMeshVTUs": write_vtus}))
+        base = Config(**(base.effective_dict() | {"writeMeshVTUs": write_vtus}))
     parameters = DEFAULTS | {"L": 1}
     axes = {}
     size = 1

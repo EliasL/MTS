@@ -50,7 +50,7 @@ transverse span fixed. For boundary displacement, select the driven edge and
 the stationary components of each edge of a rectangular square-lattice
 sample. Displacement is prescribed perpendicular to the driven edge, in mesh
 length units. For vertical compression with a sliding top and fixed base,
-drive Top, set Top to Free and Bottom to Fixed in x and y, and leave Left and
+drive Top, select **Drive Y** for Top and **Fixed in x and y** for Bottom, and leave Left and
 Right free. Build MTS2D at the execution site before running this protocol.
 
 Nanoindentation presses a circular indenter into the centre of the relaxed

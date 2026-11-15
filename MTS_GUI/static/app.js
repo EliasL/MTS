@@ -938,6 +938,10 @@ function rectangleIssue() {
   if (!Object.hasOwn(startOptions.defaults, 'drivenEdge')) return 'Update MTSManager to use boundary displacement.';
   if ($('run-reconnection').value === 'delaunay') return 'Choose Edge flip or None for rectangle boundaries.';
   const vertical = verticalDrivenEdge();
+  const driven = $('run-driven-edge').value;
+  if (!['fixed', vertical ? 'fixed_y' : 'fixed_x'].includes($('run-edge-' + driven).value)) {
+    return 'Choose a constraint that includes the driven axis.';
+  }
   const triangular = $('run-energy-function').value === 'contiTriangular';
   if (triangular && !vertical) return 'Choose the top or bottom driven edge for a triangular sample.';
   for (const edge of vertical ? ['left', 'right'] : ['top', 'bottom']) {
@@ -1011,9 +1015,25 @@ function renderExperiment() {
   $('run-directions-label').textContent = axial ? 'Loading axis' : 'Direction';
   $('run-slip-help').classList.toggle('hidden', !slip);
   const axis = verticalDrivenEdge() ? 'y' : 'x';
+  const transverse = axis === 'y' ? 'x' : 'y';
+  const driven = $('run-driven-edge').value;
+  const normal = 'fixed_' + axis;
+  for (const edge of rectangleEdges) {
+    const select = $('run-edge-' + edge);
+    const active = displacement && edge === driven;
+    for (const option of select.options) {
+      option.disabled = active && ![normal, 'fixed'].includes(option.value);
+      option.textContent = active && option.value === normal ? 'Drive ' + axis.toUpperCase() :
+        active && option.value === 'fixed' ? 'Drive ' + axis.toUpperCase() + ', fix ' + transverse.toUpperCase() :
+        edgeChoices.find(([key]) => key === option.value)[1];
+    }
+    if (active && ![normal, 'fixed'].includes(select.value)) {
+      select.value = select.value === 'fixed_' + transverse ? 'fixed' : normal;
+    }
+  }
   const motion = deformation === 'compression' ? 'toward' : 'away from';
   $('run-edge-description').textContent = 'Displacement is prescribed in ' + axis + ' on the driven edge, ' +
-    motion + ' the opposite edge. The driven component takes precedence over its edge setting. ' +
+    motion + ' the opposite edge. Choose whether to fix ' + transverse + '. Adjacent constraints also apply at corners. ' +
     'Values are in mesh length units.';
   updateSlipTotal();
   updateEndLoad();

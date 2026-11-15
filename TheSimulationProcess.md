@@ -207,11 +207,14 @@ For boundary displacement, use compression or tension with
 has staggered sides and supports `top` and `bottom`. Alternate rows are
 offset by half the node spacing, and row spacing is \(\sqrt{3}/2\) in mesh
 length units. The driven edge moves perpendicular
-to itself, inward for compression and outward for tension. Each of the four
-edge settings accepts `free`, `fixed_x`, `fixed_y` or `fixed`. Stationary
-components are combined at corners. The driven edge's normal component is
-prescribed regardless of its own edge setting. A stationary constraint on an
-adjacent edge that conflicts with that motion raises an error.
+to itself, inward for compression and outward for tension. Non-driven edges
+accept `free`, `fixed_x`, `fixed_y` or `fixed`. For a new
+run the driven edge requires its normal constraint (`fixed_y` for top or
+bottom, `fixed_x` for left or right) or `fixed` to hold the transverse
+component stationary. Stationary components are combined at corners. A
+stationary constraint on an adjacent edge that conflicts with that motion
+raises an error. Older checkpoints retain the effective constraints of their
+saved edge settings.
 
 The driving edge determines the axis. The start, increment and additional
 load are distances in mesh length units. For compression their endpoint

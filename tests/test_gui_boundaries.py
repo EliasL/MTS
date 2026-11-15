@@ -125,7 +125,7 @@ directions = -1.1,2.1
             imported = preset(folder, {"action": "import", "text": """deformation = compression
 boundary = rectangle
 drivenEdge = top
-top = fixed_x
+top = fixed_y
 bottom = fixed
 rows = 30
 cols = 10
@@ -135,7 +135,14 @@ totalLoad = 3
             loaded = preset(folder, {"action": "load", "name": "Compression"})
             self.assertEqual(loaded, saved)
             self.assertEqual((loaded["settings"]["drivenEdge"], loaded["settings"]["top"],
-                              loaded["settings"]["bottom"]), ("top", "fixed_x", "fixed"))
+                              loaded["settings"]["bottom"]), ("top", "fixed_y", "fixed"))
+            from MTS_Management.config import Config
+            from MTS_Management.errors import ExpectedError
+
+            with self.assertRaisesRegex(ExpectedError, "Set top to fixed_y or fixed"):
+                Config(**(imported["settings"] | {"top": "free"}))
+            legacy = Config.saved(imported["settings"] | {"top": "fixed_x"})
+            self.assertEqual((legacy["top"], legacy.as_dict()["top"]), ("fixed", "fixed_x"))
 
     def test_plot_presets_require_explicit_update_and_persist_independent_copies(self):
         with tempfile.TemporaryDirectory() as temporary, \
