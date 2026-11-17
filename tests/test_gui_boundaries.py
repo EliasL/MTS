@@ -221,32 +221,28 @@ totalLoad = 3
             self.assertEqual(saved[first_id]["selection"]["y"], "avg_sigma12")
             self.assertEqual(saved[second["saved_id"]]["selection"], selection | {"xscale": "log"})
 
-    def test_dropped_csv_resolves_by_content_and_plots_the_original_file(self):
-        from MTS_Management.files import file_digest
+    def test_folder_plot_reads_csv_without_requiring_run_metadata(self):
         from MTS_Plotting.campaign_plot import prepared_plot
 
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            one, two = [root / folder / "measurements.csv" for folder in ("first", "second")]
-            for path, value in ((one, 8), (two, 3)):
-                path.parent.mkdir()
-                path.write_text(f"time,value,tag\n2,{value},a\n0,5,b\n")
-            drop = {"name": two.name, "size": two.stat().st_size, "sha256": file_digest(two)}
+            folder = Path(temporary).resolve() / "run's output"
+            folder.mkdir()
+            csv = folder / "macroData.csv"
+            csv.write_text("time,value,tag\n2,3,a\n0,5,b\n")
             workspace = Workspace()
-            with patch.object(workspace, "plot_data_roots", return_value=[root]):
-                selected = workspace.open_data_file(drop)
-                spec = {"campaign": selected["plot_selection"], "data": selected["path"], "x": "time", "y": "value"}
-                schema, result = prepared_plot(*workspace.plot_inputs(spec))
-                self.assertEqual(schema["data"], str(two))
-                self.assertEqual(set(schema["quantities"]), {"time", "value"})
-                item, = result["series"]
-                self.assertEqual((item["x"], item["mean"]), ([2, 0], [3, 5]))
+            selected = workspace.open_simulation_folder({"path": str(folder), "action": "plot"})
+            for quote in ("'", '"'):
+                with self.subTest(quote=quote):
+                    quoted = workspace.open_simulation_folder({"path": f" {quote}{folder}{quote} ", "action": "plot"})
+                    self.assertEqual(quoted["path"], str(csv))
+            spec = {"campaign": selected["plot_selection"], "data": selected["path"], "x": "time", "y": "value"}
+            schema, result = prepared_plot(*workspace.plot_inputs(spec))
+            self.assertEqual(schema["data"], str(csv))
+            self.assertEqual(set(schema["quantities"]), {"time", "value"})
+            item, = result["series"]
+            self.assertEqual((item["x"], item["mean"]), ([2, 0], [3, 5]))
 
-                one.write_bytes(two.read_bytes())
-                self.assertEqual(workspace.open_data_file(drop), {"paths": [str(one), str(two)]})
-                self.assertEqual(workspace.open_data_file({"path": str(two)}), selected)
-
-    def test_dropped_mesh_files_select_their_full_run(self):
+    def test_folder_animation_selects_full_run(self):
         from MTS_Management.config import Config
         from MTS_Management.data import mesh_snapshots
 
@@ -257,19 +253,16 @@ totalLoad = 3
             mesh.parent.mkdir(parents=True)
             mesh.touch()
             mesh.with_name("example_load=0_nrM=0_.1.vtu").touch()
-            collection = folder / "data.pvd"
-            collection.touch()
             config.write(folder / "config.conf")
             (folder / "manifest.json").write_text(json.dumps({
                 "settings": config.as_dict(), "config_hash": config.config_hash, "executable_sha256": "fixture"}))
             workspace = Workspace()
-            for path in (mesh, collection):
-                selected = workspace.open_data_file({"path": str(path)})
-                spec = {"campaign": selected["plot_selection"], "data": selected["path"]}
-                run = workspace.animation_source(spec)
-                self.assertEqual(run, folder)
-                self.assertEqual([frame["step"] for frame in mesh_snapshots(run)], [1, 2])
-                self.assertEqual(workspace.plot_options(**spec)["data"], str(path))
+            selected = workspace.open_simulation_folder({"path": str(folder), "action": "animate"})
+            spec = {"campaign": selected["plot_selection"], "data": selected["path"]}
+            run = workspace.animation_source(spec)
+            self.assertEqual(run, folder)
+            self.assertEqual([frame["step"] for frame in mesh_snapshots(run)], [1, 2])
+            self.assertEqual(workspace.plot_options(**spec)["data"], str(folder))
 
     def test_restart_recovers_monitor_source_and_reports_invalid_state(self):
         with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.STATE", Path(temporary)):

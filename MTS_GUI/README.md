@@ -36,11 +36,14 @@ Overview shows the local simulator build status. **Build Release** appears
 when a local build is missing. **Rebuild Release** appears when the installed
 build records a different source revision or configuration schema.
 
-Drop one file anywhere in the workspace. A `.conf` file fills the individual
-simulation form for review. A `.csv` file opens in Plot, where its numeric
-columns can be used as axes. A `.pvd` or `.vtu` file from an MTS run opens
-the run's full saved sequence in Animate. If MTS cannot identify the original
-file in its data folders, enter its path in the Open data file dialog.
+Use **Open simulation folder** and enter its path, or choose **Browse** to use
+the desktop folder picker. On Linux, Browse requires Zenity or KDialog. MTS
+reads the selected files in place.
+
+- **Plot** uses the numeric columns in `macroData.csv`.
+- **Load settings** reads `config.conf` into the individual simulation form.
+- **Animate** uses the native VTU sequence in `data/` and the run metadata
+  in `config.conf` and `manifest.json`.
 
 ## Start simulations
 
@@ -436,8 +439,8 @@ internally; inventory reports a simulation count. Each operation has an expandab
 completed entries collapse when a later message is added. Switching panels
 preserves the running operation's expanded view. Clear terminal removes completed
 entries and preserves running entries and their live output. Entries remain
-available until deleted, cleared or the backend is stopped. The terminal follows new output automatically. Copy all copies every retained
-entry, including collapsed entries. Subprocess output appears as it arrives. The same timestamped messages are written to backend stdout,
+available until deleted, cleared or the backend is stopped. The terminal follows new output automatically. Use the copy icon on an expanded entry or Copy all
+for every retained entry, including collapsed entries. Subprocess output appears as it arrives. The same timestamped messages are written to backend stdout,
 which the desktop launcher redirects to `.mts/server.log`. To follow this output
 in a terminal, run `tail -f .mts/server.log` from the MTS root.
 

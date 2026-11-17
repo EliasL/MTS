@@ -446,7 +446,7 @@ function renderTerminal(history = backendHistory) {
       for (const previous of container.children) if (previous.dataset.state !== 'running') previous.open = false;
       node = document.createElement('details'); node.dataset.id = entry.id;
       node.innerHTML = `<summary><span></span>
-        <button type="button" class="copy-message" aria-label="Copy terminal message" title="Copy terminal message">⧉</button>
+        <button type="button" class="copy-message" aria-label="Copy terminal message" title="Copy terminal message"></button>
         <button type="button" class="remove-message" aria-label="Delete terminal message" title="Delete terminal message">×</button>
         </summary><pre></pre>`;
       const copyButton = node.querySelector('.copy-message');
@@ -455,11 +455,11 @@ function renderTerminal(history = backendHistory) {
         event.preventDefault(); event.stopPropagation();
         try {
           await navigator.clipboard.writeText(node.querySelector('pre').textContent);
-          copyButton.textContent = '✓';
+          copyButton.classList.add('copied');
           copyButton.title = 'Copied';
           clearTimeout(copyFeedbackTimer);
           copyFeedbackTimer = setTimeout(() => {
-            copyButton.textContent = '⧉';
+            copyButton.classList.remove('copied');
             copyButton.title = 'Copy terminal message';
           }, 1500);
         } catch (error) {message('Clipboard access failed: ' + error.message);}
@@ -1364,13 +1364,17 @@ $('simulation-preset').onchange = async () => {
 };
 async function importSimulation(file) {
   if (continuationPlan) throw new Error('Cancel continue loading before importing a configuration.');
+  const result = await api('simulation_preset', {action: 'import', text: await file.text()});
+  await applyImportedSimulation(result, file.name);
+}
+async function applyImportedSimulation({settings, label}, filename) {
+  if (continuationPlan) throw new Error('Cancel continue loading before importing a configuration.');
   if (!startOptions) await loadStartOptions();
-  const {settings, label} = await api('simulation_preset', {action: 'import', text: await file.text()});
   setContinuation(null);
   $('simulation-preset').value = '';
   $('simulation-download').disabled = true;
   $('run-label').value = label;
-  $('simulation-preset-name').value = label || file.name.replace(/\.conf$/i, '');
+  $('simulation-preset-name').value = label || filename.replace(/\.conf$/i, '');
   showPreset(settings);
   view('start');
   $('run-form').scrollIntoView({block: 'start'});
@@ -1753,70 +1757,47 @@ async function selectDataFile(selection) {
   $('plot').scrollIntoView({block: 'start'});
   queueWorkspaceDraft();
 }
-function askForDataPath(name = '', paths = []) {
-  $('data-file-help').textContent = name ?
-    `Choose or paste the full path to ${name}. The browser supplies the file contents and name.` :
-    'Paste the full path to a CSV, PVD or VTU file.';
-  $('data-file-matches').replaceChildren(...paths.map(path => new Option(path, path)));
-  $('data-file-path').value = paths.length === 1 ? paths[0] : '';
-  $('data-file-status').textContent = '';
-  if (!$('data-file-dialog').open) $('data-file-dialog').showModal();
-}
-$('open-data-path').onclick = () => askForDataPath();
-$('data-file-cancel').onclick = () => $('data-file-dialog').close();
-$('data-file-form').onsubmit = async event => {
-  event.preventDefault();
-  try {
-    const selection = await api('open_data_file', {path: $('data-file-path').value.trim()});
-    await selectDataFile(selection);
-    $('data-file-dialog').close();
-  } catch (error) {$('data-file-status').textContent = error.message;}
+const folderDialog = $('simulation-folder-dialog');
+const folderPath = $('simulation-folder-path');
+const folderStatus = $('simulation-folder-status');
+let openingFolder = false;
+
+$('open-data').onclick = () => {
+  folderStatus.textContent = '';
+  if (!folderDialog.open) folderDialog.showModal();
 };
-let fileDragDepth = 0, openingDrop = false;
-const hasDraggedFiles = event => event.dataTransfer?.types.includes('Files');
-document.addEventListener('dragenter', event => {
-  if (!hasDraggedFiles(event)) return;
+$('simulation-folder-cancel').onclick = () => folderDialog.close();
+
+async function withFolderDialog(open) {
+  if (openingFolder) return;
+  openingFolder = true;
+  folderStatus.textContent = '';
+  try {await open();}
+  catch (error) {
+    folderStatus.textContent = error.message;
+    message(error.message);
+  } finally {openingFolder = false;}
+}
+
+$('pick-simulation-folder').onclick = () => withFolderDialog(async () => {
+  folderStatus.textContent = 'Choose a folder in the desktop dialog.';
+  const result = await api('pick_simulation_folder', {});
+  if (result.path) folderPath.value = result.path;
+  folderStatus.textContent = '';
+  folderPath.focus();
+});
+
+$('simulation-folder-form').onsubmit = event => {
   event.preventDefault();
-  ++fileDragDepth;
-  $('file-drop').hidden = false;
-});
-document.addEventListener('dragover', event => {
-  if (!hasDraggedFiles(event)) return;
-  event.preventDefault();
-  event.dataTransfer.dropEffect = 'copy';
-});
-document.addEventListener('dragleave', () => {
-  if (fileDragDepth && !--fileDragDepth) $('file-drop').hidden = true;
-});
-document.addEventListener('drop', async event => {
-  if (!hasDraggedFiles(event)) return;
-  event.preventDefault();
-  fileDragDepth = 0;
-  $('file-drop').hidden = true;
-  if (openingDrop) return;
-  openingDrop = true;
-  try {
-    const files = event.dataTransfer.files;
-    if (files.length !== 1) throw new Error('Drop one configuration or data file at a time.');
-    const file = files[0];
-    if (/\.conf$/i.test(file.name)) {
-      await importSimulation(file);
-    } else if (/\.(csv|pvd|vtu)$/i.test(file.name)) {
-      let sha256;
-      if (crypto.subtle && file.size <= 64 * 1024 ** 2) {
-        let bytes;
-        try {bytes = await file.arrayBuffer();}
-        catch {askForDataPath(file.name); return;}
-        const digest = await crypto.subtle.digest('SHA-256', bytes);
-        sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-      }
-      const selection = await api('open_data_file', {name: file.name, size: file.size, sha256});
-      if (selection.paths) askForDataPath(file.name, selection.paths);
-      else await selectDataFile(selection);
-    } else throw new Error('Drop a .conf, .csv, .pvd or .vtu file.');
-  } catch (error) {message(error.message);}
-  finally {openingDrop = false;}
-});
+  withFolderDialog(async () => {
+    const action = event.submitter?.value || 'plot';
+    const result = await api('open_simulation_folder', {path: folderPath.value.trim(), action});
+    if (action === 'settings') await applyImportedSimulation(result, 'config.conf');
+    else await selectDataFile(result);
+    folderDialog.close();
+  });
+};
+
 $('plot-other-seeds').onchange = event => {
   const include = event.target.checked;
   event.target.checked = monitorPlot.include_seeds;
@@ -1855,7 +1836,7 @@ async function loadPlotOptions(resetSource, saved = null, keepAxes = false) {
   $('plot-warning').textContent = 'Reading local data columns…';
   try {
     const query = new URLSearchParams({campaign: $('plot-campaign').value});
-    if (!resetSource && $('plot-data').value.trim()) query.set('data', $('plot-data').value.trim());
+    if ((file || !resetSource) && $('plot-data').value.trim()) query.set('data', $('plot-data').value.trim());
     const schema = await api('plot_options?' + query);
     if (request !== plotRequest) return;
     plotSchema = schema; $('plot-data').value = schema.data;
@@ -2007,7 +1988,7 @@ function schedulePlotCheck() {
   plotValid = false; updateActions();
   $('plot-preview-image').parentElement.classList.add('is-stale');
   if (!plotSchema || $('plot-panel').hidden) return;
-  if (isMonitorPlot() && !plotSchema.available) {
+  if ((isMonitorPlot() || isFilePlot()) && !plotSchema.available) {
     $('plot-warning').textContent = 'No macro data is available for this selection. Select the runs again after output is available.';
     return;
   }

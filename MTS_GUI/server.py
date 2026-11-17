@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1089,57 +1090,74 @@ class Workspace:
     @staticmethod
     def local_data_file(value, extensions):
         path = Path(value or "").expanduser()
-        if path.is_absolute():
-            path = path.resolve()
         if not path.is_absolute() or path.suffix.lower() not in extensions or not path.is_file():
-            raise ValueError("Enter the full path of an existing CSV, PVD or VTU file.")
-        return path
+            raise ValueError(f"File unavailable at {value!r}. Enter its full path.")
+        return path.resolve()
 
     def mesh_file_run(self, value):
-        path = self.local_data_file(value, {".pvd", ".vtu"})
-        for folder in (path.parent, path.parent.parent):
-            if (folder / "manifest.json").is_file() and (folder / "config.conf").is_file():
-                return folder
-        raise ValueError("Open a mesh file from an MTS run folder containing config.conf and manifest.json.")
-
-    def open_data_file(self, data):
-        from MTS_Management.data import mesh_snapshots
-        from MTS_Management.files import file_digest
-        from MTS_Plotting.runs import Run
-
-        extensions = {".csv", ".pvd", ".vtu"}
-        if "path" in data:
-            path = self.local_data_file(data["path"], extensions)
+        path = Path(value or "").expanduser()
+        if path.is_absolute() and path.is_dir():
+            folders = (path.resolve(),)
         else:
-            name, size, checksum = data["name"], data["size"], data.get("sha256")
-            if Path(name).name != name or Path(name).suffix.lower() not in extensions or type(size) is not int or size < 0:
-                raise ValueError("Drop a CSV, PVD or VTU file.")
-            roots = {Path(root).resolve() for root in self.plot_data_roots()}
-            roots |= {root.with_name(root.name + "-archive") for root in roots if root.name}
-            matches = set()
-            for root in roots:
-                if not root.is_dir():
-                    continue
-                for folder in (root, *root.iterdir()):
-                    if not folder.is_dir():
-                        continue
-                    for candidate in (folder / name, folder / "data" / name):
-                        if candidate.is_file() and candidate.stat().st_size == size:
-                            target = candidate.resolve()
-                            if target.suffix.lower() in extensions:
-                                matches.add(target)
-            if checksum:
-                matches = {candidate for candidate in matches if file_digest(candidate) == checksum}
-            if not checksum or len(matches) != 1:
-                return {"paths": sorted(map(str, matches))}
-            path, = matches
-        selection = "@csv" if path.suffix.lower() == ".csv" else "@mesh"
-        if selection == "@mesh":
-            folder = self.mesh_file_run(str(path))
+            path = self.local_data_file(value, {".pvd", ".vtu"})
+            folders = (path.parent, path.parent.parent)
+        for folder in folders:
+            if all((folder / name).is_file() for name in ("config.conf", "manifest.json")):
+                return folder
+        missing = [name for name in ("config.conf", "manifest.json") if not (folders[-1] / name).is_file()]
+        raise ValueError(f"Animation requires a managed run. Missing {', '.join(missing)} for {value!r}.")
+
+    def open_simulation_folder(self, data):
+        value, action = data["path"], data["action"]
+        path = value.strip()
+        if len(path) >= 2 and path[0] in {"'", '"'} and path[-1] == path[0]:
+            path = path[1:-1]
+        folder = Path(path).expanduser()
+        if not folder.is_absolute() or not folder.is_dir():
+            raise ValueError(f"Folder unavailable at {value!r}. Choose or enter the full path to a simulation folder.")
+        folder = folder.resolve()
+        if action == "plot":
+            csv = folder / "macroData.csv"
+            if not csv.is_file():
+                raise ValueError(f"Plot requires macroData.csv in {str(folder)!r}.")
+            return {"plot_selection": "@csv", "plot_name": folder.name, "path": str(csv)}
+        if action == "settings":
+            config = folder / "config.conf"
+            if not config.is_file():
+                raise ValueError(f"Load settings requires config.conf in {str(folder)!r}.")
+            try:
+                return simulation_setup.preset(STATE / "simulation-presets",
+                                               {"action": "import", "text": config.read_text()})
+            except ValueError as error:
+                raise ValueError(f"Could not load {str(config)!r}. {error}") from error
+        if action == "animate":
+            from MTS_Management.data import mesh_snapshots
+            from MTS_Plotting.runs import Run
+
+            self.mesh_file_run(str(folder))
             Run.read(folder)
             if not mesh_snapshots(folder):
-                raise ValueError("This run has no saved mesh snapshots.")
-        return {"plot_selection": selection, "plot_name": path.name, "path": str(path)}
+                raise ValueError(f"Animate requires native VTU snapshots in {str(folder / 'data')!r}.")
+            return {"plot_selection": "@mesh", "plot_name": folder.name, "path": str(folder)}
+        raise ValueError(f"Unknown folder action {action!r}.")
+
+    @staticmethod
+    def pick_simulation_folder():
+        if sys.platform == "darwin":
+            command = ["/usr/bin/osascript", "-e",
+                       'POSIX path of (choose folder with prompt "Choose an MTS simulation folder")']
+        elif zenity := shutil.which("zenity"):
+            command = [zenity, "--file-selection", "--directory", "--title=Choose an MTS simulation folder"]
+        elif kdialog := shutil.which("kdialog"):
+            command = [kdialog, "--getexistingdirectory", str(Path.home()), "--title", "Choose an MTS simulation folder"]
+        else:
+            raise ValueError("Enter the folder path directly or install Zenity or KDialog to browse.")
+        result = subprocess.run(command, text=True, capture_output=True)
+        if not result.returncode:
+            return {"path": result.stdout.removesuffix("\n")}
+        if "(-128)" in result.stderr or result.returncode == 1 and not result.stderr:
+            return {"path": None}
+        raise RuntimeError(f"Could not open the folder picker. Paste the folder path. {result.stderr.strip()}")
 
     def plot_options(self, campaign, data=None):
         from MTS_Plotting.campaign_plot import describe
@@ -1744,8 +1762,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.presets(data, kind="animation"))
             elif action == "simulation_preset":
                 self.reply(200, simulation_setup.preset(STATE / "simulation-presets", data))
-            elif action == "open_data_file":
-                self.reply(200, self.server.app.open_data_file(data))
+            elif action == "open_simulation_folder":
+                self.reply(200, self.server.app.open_simulation_folder(data))
+            elif action == "pick_simulation_folder":
+                self.reply(200, self.server.app.pick_simulation_folder())
             elif action == "save_campaign":
                 self.reply(200, self.server.app.save_campaign(data))
             elif action == "open_run_folder":

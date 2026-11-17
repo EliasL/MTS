@@ -5,7 +5,7 @@
 <aside class="sidebar"><a class="wordmark" href="/">MTS</a><small>Mesoscopic Tensorial Simulation</small>
 <nav aria-label="Workspace"><button class="active" data-view="overview">Overview</button><button data-view="start">Start simulations</button><button data-view="monitor">Monitor data</button><button data-view="plot">Plot</button><button data-view="ssh">SSH connections</button><button data-view="setup">Setup and tools</button></nav>
 </aside>
-<main class="workspace"><header class="topbar"><span class="path" id="workspace-path">Connecting…</span><div class="actions"><button id="open-data-path" class="small">Open data file</button><a href="/InstallationGuide.html" target="_blank" rel="noopener">Installation guide</a><button id="restart" class="small">Restart MTS</button><button id="quit" class="small">Quit MTS</button></div></header>
+<main class="workspace"><header class="topbar"><span class="path" id="workspace-path">Connecting…</span><div class="actions"><button id="open-data" class="small">Open simulation folder</button><a href="/InstallationGuide.html" target="_blank" rel="noopener">Installation guide</a><button id="restart" class="small">Restart MTS</button><button id="quit" class="small">Quit MTS</button></div></header>
 <div class="workspace-layout"><div class="content"><section class="view active" id="overview"><div class="intro"><h1>Overview</h1><span class="badge" id="ready-badge">Checking installation</span></div>
 <div class="grid three"><article class="card start-card"><h2>Start simulations</h2><button class="primary" data-view="start">Configure</button></article><article class="card start-card"><h2>Monitor data</h2><button data-view="monitor">View</button></article><article class="card start-card"><h2>Plot</h2><button data-view="plot">Plot</button></article></div>
 <article class="card readiness"><div class="section-row"><h2>Installation status</h2><button class="small" data-view="setup">Setup</button></div><div id="readiness-list"></div>
@@ -167,7 +167,7 @@
 <button id="animate-tab" type="button" role="tab" aria-selected="false" aria-controls="animate-panel" tabindex="-1">Animate</button>
 </div></div><form class="card" id="plot-form"><div class="fields">
 <div class="field"><label for="plot-campaign">Selection</label><select id="plot-campaign" required></select></div>
-<div class="field"><label for="plot-data">Local data</label><input id="plot-data" list="data-folders" placeholder="/path/to/downloaded/runs" required><datalist id="data-folders"></datalist><small>Choose a run collection or drop a data file.</small></div>
+<div class="field"><label for="plot-data">Local data</label><input id="plot-data" list="data-folders" placeholder="/path/to/downloaded/runs" required><datalist id="data-folders"></datalist><small>Choose a collection or open a simulation folder.</small></div>
 <div class="field" id="plot-seed-field"><label for="plot-seed">Seeds</label><select id="plot-seed"></select></div>
 </div><label id="plot-other-seeds-field" class="plot-show-all hidden"><input id="plot-other-seeds" type="checkbox"> Include other seeds</label>
 <div id="plot-panel" role="tabpanel" aria-labelledby="plot-tab"><label class="plot-show-all"><input id="plot-show-all" type="checkbox"> Show all options</label><p id="plot-properties" class="muted"></p><div class="fields groups">
@@ -348,15 +348,21 @@
 <div class="inline-fields wrap"><button value="cancel" autofocus>Cancel</button><button class="primary" value="archive">Archive</button></div>
 </form>
 </dialog>
-<div id="file-drop" hidden>Drop a configuration, CSV or mesh file</div>
-<dialog id="data-file-dialog" aria-labelledby="data-file-title">
-<h2 id="data-file-title">Open data file</h2>
-<p id="data-file-help"></p>
-<form id="data-file-form">
-<label class="field">File path<input id="data-file-path" list="data-file-matches" placeholder="/path/to/file.csv" required autofocus></label>
-<datalist id="data-file-matches"></datalist>
-<p id="data-file-status" role="status"></p>
-<div class="inline-fields wrap"><button id="data-file-cancel" type="button">Cancel</button><button class="primary">Open</button></div>
+<dialog id="simulation-folder-dialog" aria-labelledby="simulation-folder-title">
+<h2 id="simulation-folder-title">Open simulation folder</h2>
+<form id="simulation-folder-form">
+<label class="field" for="simulation-folder-path">Folder path</label>
+<div class="folder-path">
+<input id="simulation-folder-path" placeholder="/path/to/simulation" required autofocus>
+<button id="pick-simulation-folder" type="button">Browse…</button>
+</div>
+<p id="simulation-folder-status" role="status"></p>
+<div class="inline-fields wrap">
+<button class="primary" value="plot">Plot</button>
+<button value="settings">Load settings</button>
+<button value="animate">Animate</button>
+<button id="simulation-folder-cancel" type="button">Close</button>
+</div>
 </form>
 </dialog>
 <div id="run-more-menu" popover aria-label="More run actions">
