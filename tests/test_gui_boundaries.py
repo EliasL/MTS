@@ -16,12 +16,73 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
 
-from MTS_GUI.install import synchronize_components
+from MTS_GUI.install import run, synchronize_components
 from MTS_GUI.__main__ import check_server_lock
 from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_animation_abort_stops_encoder_and_discards_only_the_current_export(self):
+        encoder = """
+import signal, sys, time
+from pathlib import Path
+
+def stop(*_):
+    Path(sys.argv[1]).write_text('stopped')
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, stop)
+print('Encoder ready', file=sys.stderr, flush=True)
+time.sleep(10)
+"""
+        renderer = """
+import subprocess, sys
+from pathlib import Path
+
+partial = Path(sys.argv[1]).with_suffix('.partial.mp4')
+partial.parent.mkdir()
+partial.write_bytes(b'incomplete')
+subprocess.run([sys.executable, '-c', sys.argv[2], sys.argv[3]], check=True)
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            source = state / "run"
+            (source / "data").mkdir(parents=True)
+            (source / "manifest.json").write_text("{}")
+            (source / "data" / "mesh_load=0_nrM=0_.0.vtu").touch()
+            previous = state / "videos" / "previous" / "mesh.mp4"
+            previous.parent.mkdir(parents=True)
+            previous.write_bytes(b'previous video')
+            stopped = state / "encoder-stopped"
+            ready = threading.Event()
+
+            def render(command, log, **options):
+                def progress(line):
+                    if line == "Encoder ready":
+                        ready.set()
+                    if not line.startswith("$ "):
+                        log(line)
+
+                return run([sys.executable, "-c", renderer, command[-2], encoder, str(stopped)], progress, **options)
+
+            settings = dict(campaign="Example", data=str(source), kind="energy", matrix="T", tiling="cell",
+                            playback="saved", fps=1, seconds_per_load=1, minimum_seconds=1, limit=None)
+            workspace = Workspace()
+            with patch("MTS_GUI.server.STATE", state), patch.object(workspace, "animation_source", return_value=source), \
+                    patch("MTS_GUI.server.run", side_effect=render):
+                task_id = workspace.start("Generate animation", lambda: workspace.render_animation(settings),
+                                          cancellable=True, action="animate")
+                self.assertTrue(ready.wait(5), workspace.task["logs"])
+                workspace.abort(task_id)
+                deadline = time.monotonic() + 4
+                while workspace.task["state"] == "running" and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(workspace.task["state"], "aborted", workspace.task["logs"])
+            self.assertEqual(stopped.read_text(), "stopped")
+            self.assertEqual(list((state / "videos").glob("*/*.mp4")), [previous])
+            self.assertEqual(previous.read_bytes(), b'previous video')
+            self.assertEqual(list(state.glob("animation-*")), [])
+
     def test_local_build_status_distinguishes_outdated_from_missing(self):
         from MTS_GUI.server import local_build_status
         from MTS_Management.config import DEFAULTS

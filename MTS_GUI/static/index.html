@@ -264,6 +264,10 @@
 <label id="animate-border-field" class="plot-show-all"><input id="animate-show-border" type="checkbox" checked> Mesh bounding box</label>
 <label id="animate-show-legend-field" class="plot-show-all"><input id="animate-show-legend" type="checkbox" checked> Show legend</label>
 <div id="animate-legend-field" class="inline-fields wrap"><label for="animate-legend-size">Legend size (% of default)</label><input id="animate-legend-size" type="number" min="1" step="any" value="100" required></div>
+<div id="animate-colourbar-fields" class="fields" hidden>
+<div class="field"><label for="animate-colourbar-position">Colour bar position</label><select id="animate-colourbar-position"><option value="auto">Auto (16:9)</option><option value="right">Right</option><option value="bottom">Below</option></select></div>
+<div class="field"><label for="animate-colourbar-size">Colour bar size (%)</label><input id="animate-colourbar-size" type="number" min="1" max="100" step="any" value="45" required></div>
+</div>
 </fieldset>
 <fieldset class="settings-group"><legend>Playback and encoding</legend><div class="fields">
 <div class="field"><label for="animate-playback">Playback</label><select id="animate-playback"><option value="load">Load rate</option><option value="saved">Uniform saved states</option></select></div>

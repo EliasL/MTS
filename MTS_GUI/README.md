@@ -350,8 +350,11 @@ Use Nodes and Mesh lines to overlay the mesh or show its geometry with the
 field set to None. Node colours and size are available when Nodes is enabled.
 The default node diameter is about three sevenths of the reference spacing.
 Show legend controls the node key and colour bars. Legend size adjusts their
-text. Displaced denotes a constrained node that has moved from
-its reference position. Videos use 200 dpi by default, with 100 and 300 dpi
+text. In Appearance, Auto places the colour bar to the right or below the mesh,
+whichever brings the cropped frame closer to 16:9. The default bar length is
+45% of the available length. These settings apply to previews and MP4 exports.
+Displaced denotes a constrained node that has moved from its reference
+position. Videos use 200 dpi by default, with 100 and 300 dpi
 available. The preview and MP4 are cropped to the plot, its labels, and its
 legend. The optional frame header
 reports load, total and mean element energy, mean shear stress, plastic
@@ -385,7 +388,9 @@ MP4 export requires FFmpeg with H.264 encoding. MTS uses FFmpeg from the
 system path or the executable listed in `.mts/ffmpeg-path`. For a remote
 run selected in Monitor data, the current server manager provides the mesh
 snapshot catalogue and MTS retrieves the snapshots used in the movie.
-Rendered frames go directly to the encoder. Previews use the same fixed display
+Rendered frames go directly to the encoder. Use **Abort** in the Terminal to stop
+a preview or export and discard its temporary files. MTS saves the output after
+rendering finishes. Previews use the same fixed display
 limits as the video. By default, automatic colour limits come from the last
 saved mesh. Clear **Range from last frame** to use the frames scheduled for the
 animation. Matching macro CSV rows supply mesh bounds and, when using the full
@@ -420,11 +425,10 @@ The generated terminal command reviews by default; adding `--apply` explicitly
 executes the selected action. The control program is sent through the configured
 SSH transport without replacing installed manager packages or worker commands.
 
-Abort interrupts inventory and log reads, preserving unfinished cached snapshots
-and skipping remaining profiles. It does not stop simulation jobs. The local SSH
-process is terminated; remote Python readers also have a time limit, but may
-continue until that limit after disconnection. File-changing and submission
-operations cannot be interrupted through Abort.
+Abort is available for inventory and log reads and for animation rendering.
+Aborting a read terminates the local SSH process and skips the remaining
+profiles. Remote Python readers may continue until their time limit after
+disconnection.
 
 The Terminal panel reports operation arguments, manager calls or subprocess
 commands, elapsed time and failure diagnostics. Manager JSON responses are used

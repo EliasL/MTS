@@ -1,6 +1,8 @@
 """Setup operations shared by the command-line bootstrap and the browser."""
 
 import argparse
+from concurrent.futures import CancelledError
+from contextlib import ExitStack
 import hashlib
 import html
 import importlib
@@ -14,6 +16,7 @@ import shutil
 import site
 import subprocess
 import sys
+import tempfile
 import threading
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,27 +24,42 @@ STATE = ROOT / ".mts"
 COMPONENTS = ("MTS2D", "MTSManager", "MTSPlot")
 
 
-def run(command, log=print, *, env=None, json_result=False):
+def run(command, log=print, *, env=None, json_result=False, cancel=None):
     if json_result:
         from MTS_Management.errors import EXPECTED_ERROR_EXIT, EXPECTED_ERROR_FORMAT, ExpectedError
 
         env = (os.environ if env is None else env) | {EXPECTED_ERROR_FORMAT: "json"}
+    if cancel is not None:
+        from MTS_Management.processes import wait_cancellable
+
+        if cancel.is_set():
+            raise CancelledError("Operation aborted.")
     log("$ " + shlex.join(map(str, command)))
     def forward(stream):
         for line in stream:
             log(line.rstrip())
-    with subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE if json_result else subprocess.STDOUT,
-                          text=True, bufsize=1) as process:
-        output = None
-        if json_result:
-            worker = threading.Thread(target=forward, args=(process.stderr,))
+    with ExitStack() as stack:
+        capture = stack.enter_context(tempfile.TemporaryFile(mode="w+")) if json_result else None
+        process = stack.enter_context(subprocess.Popen(
+            command, cwd=ROOT, env=env, stdout=capture if json_result else subprocess.PIPE,
+            stderr=subprocess.PIPE if json_result else subprocess.STDOUT,
+            start_new_session=cancel is not None, text=True, bufsize=1))
+        stream = process.stderr if json_result else process.stdout
+        if json_result or cancel is not None:
+            worker = threading.Thread(target=forward, args=(stream,))
             worker.start()
-            output = process.stdout.read()
-            worker.join()
+            try:
+                code = (process.wait() if cancel is None else
+                        wait_cancellable(process, cancel, output_reader=worker))
+            finally:
+                worker.join()
         else:
-            forward(process.stdout)
-        code = process.wait()
+            forward(stream)
+            code = process.wait()
+        output = None
+        if capture is not None:
+            capture.seek(0)
+            output = capture.read()
         if code:
             if json_result and code == EXPECTED_ERROR_EXIT and output:
                 try:

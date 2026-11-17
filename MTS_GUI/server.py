@@ -93,7 +93,7 @@ class Workspace:
             self.task["logs"] = (self.task["logs"] + [line])[-1500:]
         print(line, flush=True)
 
-    def start(self, title, function, *, cancellable=False):
+    def start(self, title, function, *, cancellable=False, action=None):
         with self.lock:
             if self.stopping:
                 raise ValueError("MTS is shutting down.")
@@ -101,7 +101,7 @@ class Workspace:
                 raise ValueError("An operation is already running. Wait for it to finish.")
             self.task = {"id": secrets.token_hex(8), "state": "running", "title": title,
                          "created_at": time.time() * 1000, "logs": [], "result": None,
-                         "cancellable": cancellable}
+                         "cancellable": cancellable, "action": action}
             self.cancel.clear()
             self.history.append(self.task)
             task_id = self.task["id"]
@@ -145,13 +145,14 @@ class Workspace:
         if self.cancel.is_set():
             raise CancelledError("Operation aborted. Unfinished updates retain their previous cached data.")
 
-    def abort(self):
+    def abort(self, task_id=None):
         with self.lock:
+            if task_id is not None and (self.task.get("id") != task_id or self.task["state"] != "running"):
+                raise ValueError("The selected operation has already ended.")
             if self.task["state"] != "running" or not self.task.get("cancellable"):
                 raise ValueError("This operation cannot be safely interrupted.")
-            self.cancel.set()
             self.task["cancel_requested"] = True
-        self.log("Abort requested; stopping the current read and skipping remaining servers.")
+            self.cancel.set()
 
     def manager(self, *args):
         return run([sys.executable, "-m", "MTS_Management", "--sites",
@@ -665,7 +666,7 @@ class Workspace:
         from MTS_Management.errors import ExpectedError
         from MTS_Management.files import file_digest
         from MTS_Plotting.mesh_movie import (
-            COLOUR_LIMITS_PROGRESS, display_limit_sources, display_scan_frames, encoder_path, frame_schedule,
+            COLOUR_LIMITS_PROGRESS, display_limit_sources, display_scan_frames, frame_schedule,
             preview_frame_index, tiled_display,
         )
         from MTS_Plotting.runs import Run
@@ -685,11 +686,12 @@ class Workspace:
             self.log(line)
 
         override = STATE / "ffmpeg-path"
-        encoder = None if preview else encoder_path(override.read_text().strip() if override.is_file() else None)
+        encoder = override.read_text().strip() if not preview and override.is_file() else None
         spec = {k: data[k] for k in ("kind", "matrix", "tiling", "playback", "fps", "seconds_per_load", "minimum_seconds", "limit")}
         spec["range_from_last_frame"] = range_from_last_frame
         spec.update({key: data[key] for key in ("dpi", "heatmap", "node_colours", "node_size", "show_nodes",
                                                 "show_mesh_lines", "workers", "legend_size", "show_title",
+                                                "colourbar_position", "colourbar_size",
                                                 "title_size", "show_border", "show_legend", "dislocations",
                                                 "dislocation_lattice", "dislocation_method",
                                                 "dislocation_bond_tolerance", "dislocation_scale",
@@ -703,9 +705,11 @@ class Workspace:
         output = (STATE / "previews" / f"animation-{secrets.token_hex(8)}.png" if preview else
                   STATE / "videos" / secrets.token_hex(8) / "mesh.mp4")
         identity = file_digest(folder / "manifest.json")
-        download = tempfile.TemporaryDirectory(dir=STATE, prefix="animation-") if source and source["site"] else nullcontext()
-        with download as temporary:
-            if temporary:
+        remote = bool(source and source["site"])
+        with tempfile.TemporaryDirectory(dir=STATE, prefix="animation-") as temporary:
+            staging = Path(temporary)
+            staged_output = staging / "rendered" / output.name
+            if remote:
                 site = load_sites(ROOT / "MTSManager/sites.toml").get(source["site"])
                 if site is None:
                     raise ExpectedError("The server profile is unavailable. Select the simulation again.")
@@ -725,7 +729,7 @@ class Workspace:
             if not catalog:
                 raise ExpectedError("No mesh snapshots are available. Choose a run with saved mesh output.")
             first = catalog[0]["name"]
-            if temporary:
+            if remote:
                 first_revision = None
             else:
                 info = (folder / "data" / first).stat()
@@ -736,7 +740,7 @@ class Workspace:
             spec.update(preview=preview, frames=catalog)
             if preview:
                 spec["preview_frame"] = data.get("preview_frame") or self.default_animation_preview(data["campaign"], folder)
-            if temporary:
+            if remote:
                 indices = frame_schedule(
                     catalog, playback=spec["playback"], fps=spec["fps"],
                     seconds_per_load=spec["seconds_per_load"], minimum_seconds=spec["minimum_seconds"])
@@ -746,8 +750,8 @@ class Workspace:
 
                 def download_frames(names):
                     self.log(f"Downloading {len(names)} mesh states from {site_label(site.name)}.")
-                    fetched, = fetch_many(site, identities, temporary, expected_manifests=identities,
-                                          retain_binaries=False, mesh_frames=names)
+                    fetched, = fetch_many(site, identities, staging / "snapshots", expected_manifests=identities,
+                                          retain_binaries=False, mesh_frames=names, cancel=self.cancel)
                     return fetched
 
                 if preview:
@@ -769,14 +773,20 @@ class Workspace:
                         if frame["name"] not in downloaded]
                 if frames:
                     folder = download_frames(frames)
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", dir=STATE) as options:
-                json.dump(spec, options)
-                options.flush()
-                env = os.environ | {"MPLBACKEND": "Agg"}
-                if encoder:
-                    env["MTS_FFMPEG"] = encoder
-                result = run([sys.executable, "-m", "MTS_Plotting.mesh_movie", str(folder), str(output), options.name],
-                             log_animation, json_result=True, env=env)
+            options = staging / "options.json"
+            options.write_text(json.dumps(spec))
+            env = os.environ | {"MPLBACKEND": "Agg"}
+            if encoder:
+                env["MTS_FFMPEG"] = encoder
+            result = run([sys.executable, "-m", "MTS_Plotting.mesh_movie", str(folder), str(staged_output), str(options)],
+                         log_animation, json_result=True, env=env, cancel=self.cancel)
+            staged, published = (staged_output, output) if preview else (staged_output.parent, output.parent)
+            with self.lock:
+                if self.cancel.is_set():
+                    raise CancelledError("Animation aborted.")
+                published.parent.mkdir(parents=True, exist_ok=True)
+                staged.replace(published)
+                self.task["cancellable"] = False
         if preview:
             if spec["preview_frame"] == "first":
                 self.animation_memory = (memory_key, result["frame_memory"])
@@ -1744,7 +1754,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.app.clear_terminal(data.get("id"))
                 self.reply(200, {"cleared": True})
             elif action == "abort":
-                self.server.app.abort()
+                self.server.app.abort(data.get("task_id"))
                 self.reply(200, {"requested": True})
             elif action in {"quit", "restart"}:
                 with self.server.app.lock:
@@ -1760,9 +1770,11 @@ class Handler(BaseHTTPRequestHandler):
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 title = {"plot_monitor": "Prepare plot data", "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
                          "restore_archive": "Restore", "continuation_plan": "Load further",
-                         "run": "Start simulation", "remove_missing": "Remove all missing"}.get(action, action.capitalize())
+                         "run": "Start simulation", "remove_missing": "Remove all missing",
+                         "animate": "Generate animation", "animate_preview": "Preview animation"}.get(action, action.capitalize())
                 task_id = self.server.app.start(title, lambda: self.server.app.operation(action, data),
-                                                cancellable=action in {"inventory", "hard_refresh", "logs"})
+                                                cancellable=action in {"inventory", "hard_refresh", "logs", "animate", "animate_preview"},
+                                                action=action)
                 self.reply(202, {"started": action, "task_id": task_id})
             else:
                 self.reply(404, {"error": "Unknown operation"})

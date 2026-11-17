@@ -185,7 +185,8 @@ async function operation(action, data = {}) {
   }
   const labels = {plot_monitor: 'Prepare plot data', archive_monitor: 'Archive',
     archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further',
-    run: 'Start simulation', resume: 'Resume', remove_missing: 'Remove all missing'};
+    run: 'Start simulation', resume: 'Resume', remove_missing: 'Remove all missing',
+    animate: 'Generate animation', animate_preview: 'Preview animation'};
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
     labels[action] || action, command, 'running');
   pendingOperation = entry;
@@ -844,9 +845,12 @@ async function refresh() {
     $('task-badge').textContent = task.state;
     $('task-badge').className = 'badge ' + (task.state === 'complete' ? 'ready' : task.state);
     renderTerminal(terminalHistory);
+    const animation = ['animate', 'animate_preview'].includes(task.action);
     $('abort').classList.toggle('hidden', task.state !== 'running');
     $('abort').disabled = !task.cancellable || task.cancel_requested;
-    $('abort').title = task.cancellable ? 'Abort this read; keep cached data and running simulations.' :
+    $('abort').textContent = task.cancel_requested ? 'Aborting…' : 'Abort';
+    $('abort').title = animation ? (task.cancellable ? 'Abort animation rendering and discard temporary files.' :
+      'Saving the completed animation output.') : task.cancellable ? 'Abort this read; keep cached data and running simulations.' :
       'This operation changes files or submits jobs and cannot be safely interrupted.';
     const revision = `${task.id}:${task.inventory_revision}`;
     if (task.inventory_revision && revision !== lastInventoryUpdate) {
@@ -862,9 +866,10 @@ async function refresh() {
       }
     }
     if (['complete', 'partial', 'aborted'].includes(task.state) && lastResult !== task.id) {
-      lastResult = task.id; $('task-result').textContent = task.state === 'aborted' ? 'Operation aborted.' :
+      lastResult = task.id; $('task-result').textContent = task.state === 'aborted' ?
+        (animation ? 'Animation aborted.' : 'Operation aborted.') :
         task.state === 'partial' ? 'Some server operations failed; see terminal.' : 'Operation completed.';
-      if (task.state === 'aborted') await loadInventory(false);
+      if (task.state === 'aborted' && !animation) await loadInventory(false);
       if (task.result?.missing_removed != null) {
         await loadInventory(false);
         if (task.state === 'complete') $('task-result').textContent = `Removed ${task.result.missing_removed} missing run records.`;
@@ -945,7 +950,11 @@ $('jobs-site').onchange = () => {
 };
 $('archive-campaign').onclick = () => operation('archive_campaign', inventorySelection());
 $('abort').onclick = async () => {
-  try {await api('abort', {}); $('abort').disabled = true; await refresh();} catch (error) {message(error.message);}
+  try {
+    await api('abort', {task_id: lastState.task.id});
+    $('abort').disabled = true;
+    await refresh();
+  } catch (error) {message(error.message);}
 };
 async function clearTerminal() {
   try {
@@ -1643,6 +1652,8 @@ function updateAnimationControls() {
   $('animate-show-legend-field').hidden = !coloured && $('animate-node-controls').hidden;
   $('animate-legend-size').disabled = $('animate-legend-field').hidden =
     $('animate-show-legend-field').hidden || !$('animate-show-legend').checked;
+  $('animate-colourbar-position').disabled = $('animate-colourbar-size').disabled =
+    $('animate-colourbar-fields').hidden = !coloured || !$('animate-show-legend').checked;
   $('animate-rate-field').hidden = $('animate-rate').disabled = $('animate-playback').value !== 'load';
   updateAnimationLimits();
 }
@@ -1660,8 +1671,9 @@ for (const id of ['animate-energy-min', 'animate-limit', 'animate-rate', 'animat
 }
 function runAnimation(action, previewFrame) {
   const fields = ['animate-fps', 'animate-rate', 'animate-minimum', 'animate-workers', 'animate-node-size',
-    'animate-legend-size', 'animate-title-size', 'animate-defect-scale', 'animate-defect-thickness', 'animate-defect-tolerance',
-    'animate-limit', 'animate-stress-limit', 'animate-energy-min', 'animate-opacity'];
+    'animate-legend-size', 'animate-colourbar-size', 'animate-title-size', 'animate-defect-scale',
+    'animate-defect-thickness', 'animate-defect-tolerance', 'animate-limit', 'animate-stress-limit',
+    'animate-energy-min', 'animate-opacity'];
   if (fields.some(id => !$(id).reportValidity())) return;
   const number = id => $(id).valueAsNumber;
   const kind = $('animate-kind').value;
@@ -1684,6 +1696,8 @@ function runAnimation(action, previewFrame) {
     show_nodes: $('animate-show-nodes').checked, show_mesh_lines: $('animate-show-lines').checked,
     node_size: $('animate-node-size').disabled ? 100 : number('animate-node-size'),
     legend_size: $('animate-legend-size').disabled ? 100 : number('animate-legend-size'),
+    colourbar_position: $('animate-colourbar-position').disabled ? undefined : $('animate-colourbar-position').value,
+    colourbar_size: $('animate-colourbar-size').disabled ? undefined : number('animate-colourbar-size'),
     node_colours: Object.fromEntries(['Fixed', 'Free', 'Displaced'].map(label =>
       [label, $('animate-node-' + label.toLowerCase()).value]))});
 }
@@ -2099,7 +2113,11 @@ function renderAnimationPresets() {
       try {
         opacityEditor.restore(preset.selection.curve);
         $('animate-range-from-last-frame').checked = $('animate-range-from-last-frame').defaultChecked;
-        const skipped = restoreFields(animationFields, preset.selection.fields);
+        const skipped = restoreFields(animationFields, {
+          'animate-colourbar-position': 'auto',
+          'animate-colourbar-size': $('animate-colourbar-size').defaultValue,
+          ...preset.selection.fields,
+        });
         animationHeatmapKind = $('animate-kind').value;
         animationRangeScan = null;
         updateAnimationControls();
