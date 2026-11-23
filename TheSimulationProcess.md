@@ -473,6 +473,9 @@ attempts continue to refer to their selected retained paths.
 The Overview and Setup panels report an outdated local build when its
 manifest records a different checked-out source revision or configuration
 schema. The Overview can run the same explicit release build as Setup.
+Local GUI builds select up to five parallel jobs using the available CPUs
+and memory. Builds reuse the configured build directory and its unchanged
+objects and libraries. Apple Clang on ARM uses portable Release flags.
 
 ### 6.2 Update MTS on servers
 

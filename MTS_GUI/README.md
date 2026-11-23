@@ -35,6 +35,8 @@ for a server or a campaign. Plot exports campaign response curves and scalar com
 Overview shows the local simulator build status. **Build Release** appears
 when a local build is missing. **Rebuild Release** appears when the installed
 build records a different source revision or configuration schema.
+Local builds reuse unchanged objects and libraries. The GUI selects up to
+five parallel build jobs based on available CPU and memory.
 
 Use **Open simulation folder** and enter its path, or choose **Browse** to use
 the desktop folder picker. On Linux, Browse requires Zenity or KDialog. MTS

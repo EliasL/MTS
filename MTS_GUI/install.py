@@ -194,6 +194,8 @@ def install_build_tools():
 
 
 def build_simulator(log):
+    from MTS_Plotting.render_capacity import available_memory
+
     env = os.environ.copy()
     mac = platform.system() == "Darwin"
     if mac:
@@ -208,8 +210,13 @@ def build_simulator(log):
             env["CMAKE_PREFIX_PATH"] = prefix + os.pathsep + env.get("CMAKE_PREFIX_PATH", "")
             env["CPATH"] = prefix + "/include" + os.pathsep + env.get("CPATH", "")
             env["LIBRARY_PATH"] = prefix + "/lib" + os.pathsep + env.get("LIBRARY_PATH", "")
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    gibibyte = 1024 ** 3
+    memory = available_memory()
+    memory_jobs = (memory - gibibyte) // gibibyte if memory else 2
+    jobs = max(1, min(5, cpus - 1, memory_jobs))
     run([sys.executable, "-m", "MTS_Management", "--sites", str(ROOT / "MTSManager/sites.toml"),
-         "build", "--site", "local"], log, env=env, json_result=True)
+         "build", "--site", "local", "--jobs", str(jobs)], log, env=env, json_result=True)
 
 
 if __name__ == "__main__":
