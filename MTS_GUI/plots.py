@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+from stat import S_ISREG
 import subprocess
 import sys
 import tempfile
@@ -157,7 +158,7 @@ class Plots:
         return source["path"], source["path"], spec | {"run_manifests": source["manifests"]}
 
     def animation_source(self, data):
-        from MTS_Management.campaign import campaign_entries, campaign_identity
+        from MTS_Management.campaign import campaign_identity
         from MTS_Management.errors import ExpectedError
         from MTS_Management.files import file_digest
         from MTS_Plotting.campaign_plot import matching_folders
@@ -177,14 +178,11 @@ class Plots:
             return source
         if root:
             seed = data.get("seed", "all")
-            if seed == "all":
-                _, expected = campaign_identity(source)
-            elif type(seed) is int:
-                _, entries = campaign_entries(source, allow_legacy_vtu=True)
-                expected = {config.config_hash for config, _ in entries if config["seed"] == seed}
-            else:
+            if seed != "all" and type(seed) is not int:
                 raise ValueError("Select a saved seed or all seeds.")
-            folders = matching_folders(Path(root).expanduser().resolve(), expected)
+            _, expected = campaign_identity(source)
+            folders = matching_folders(Path(root).expanduser().resolve(), expected,
+                                       campaign=name, seed=seed if seed != "all" else None)
             if len(folders) == 1:
                 return folders[0]
         return None
@@ -359,6 +357,139 @@ class Plots:
         sources += list((self.root / "MTSManager/.state/retrieved").glob("*"))
         return sources
 
+    def campaign_downloads(self, campaign):
+        from MTS_Management.files import digest
+
+        return self.state / "campaign-downloads" / digest(campaign)[:20]
+
+    def campaign_csv_sources(self, campaign):
+        """Use the local snapshots to identify remote CSVs for the saved campaign."""
+        from MTS_Management.campaign import campaign_member
+        from MTS_Management.cluster import load_sites
+        from MTS_Management.errors import ExpectedError
+
+        expected = self.workspace.monitor.campaign_definitions().get(campaign)
+        if expected is None:
+            raise ExpectedError("Select a registered campaign.")
+        profiles = load_sites(self.root / "MTSManager/sites.toml")
+        sources = {}
+        for name, site in profiles.items():
+            if not site.ssh:
+                continue
+            for row in self.workspace.monitor.inventory_cache(name, site=site)["rows"]:
+                identity = row["config_hash"]
+                if (campaign_member(row, campaign, expected) and not row.get("archived") and not row.get("missing")
+                        and row["progress"].get("csv_modified") is not None):
+                    sources.setdefault(identity, []).append((name, row))
+        return profiles, sources
+
+    @staticmethod
+    def campaign_csv_source(destination, sources):
+        from MTS_Management.errors import ExpectedError
+        from MTS_Management.files import file_digest
+
+        if len({row["manifest_sha256"] for _, row in sources}) > 1:
+            matching = []
+            for name, row in sources:
+                manifest = destination / Path(row["folder"]).name / "manifest.json"
+                if manifest.is_file() and file_digest(manifest) == row["manifest_sha256"]:
+                    matching.append((name, row))
+            if len({row["manifest_sha256"] for _, row in matching}) != 1:
+                identity = sources[0][1]["config_hash"]
+                raise ExpectedError(f"Multiple remote runs match {identity[:20]}. Choose a local collection "
+                                    "that contains the intended run, or use Plot for that run in Monitor data.")
+            sources = matching
+        return max(sources, key=lambda item: item[1]["progress"]["csv_modified"])
+
+    @staticmethod
+    def campaign_csv_current(folder, row):
+        from MTS_Management.files import file_digest
+
+        try:
+            stat = (folder / "macroData.csv").stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        observed = row["progress"]
+        modified = observed["csv_modified"]
+        # Some rsync versions preserve whole seconds only. Use size to detect
+        # appends within that second when the inventory includes it.
+        if not S_ISREG(stat.st_mode) or int(stat.st_mtime) < int(modified):
+            return False
+        if int(stat.st_mtime) == int(modified) and (
+                (stat.st_mtime_ns % 1_000_000_000 != 0 and stat.st_mtime < modified)
+                or stat.st_size < observed.get("csv_size", 0)):
+            return False
+        manifest = folder / "manifest.json"
+        return (manifest.is_file() and file_digest(manifest) == row["manifest_sha256"]
+                and (not row.get("termination") or (folder / "termination.json").is_file()))
+
+    def campaign_csv_outdated(self, campaign, data):
+        from MTS_Management.errors import ExpectedError
+
+        destination = Path(data).expanduser().resolve() if data else self.campaign_downloads(campaign)
+        _, sources = self.campaign_csv_sources(campaign)
+        single_run = (destination / "manifest.json").is_file()
+        try:
+            for group in sources.values():
+                _, row = self.campaign_csv_source(destination, group)
+                folder = destination if single_run else destination / Path(row["folder"]).name
+                if not self.campaign_csv_current(folder, row):
+                    return True
+        except ExpectedError:
+            return True
+        return False
+
+    def refresh_campaign_csvs(self, data):
+        from MTS_Management.cluster import fetch_many, paths
+        from MTS_Management.errors import ExpectedError
+        from MTS_Management.files import digest, read_json
+
+        campaign, requested_data = data["campaign"], data.get("data")
+        profiles, sources = self.campaign_csv_sources(campaign)
+        destination = Path(requested_data).expanduser().resolve() if requested_data else self.campaign_downloads(campaign)
+        if (destination.is_file() or (destination / "manifest.json").exists()
+                or any(destination.is_relative_to(Path(paths(site)["output_root"]))
+                       for site in profiles.values() if not site.ssh)):
+            destination = self.campaign_downloads(campaign)
+        batches = {}
+        for identity, group in sources.items():
+            name, row = self.campaign_csv_source(destination, group)
+            if not self.campaign_csv_current(destination / Path(row["folder"]).name, row):
+                batches.setdefault(name, {})[identity] = row
+        selected = {identity: row for rows in batches.values() for identity, row in rows.items()}
+        if selected:
+            for manifest in destination.glob("*/manifest.json"):
+                row = selected.get(read_json(manifest)["config_hash"])
+                if row is not None and manifest.parent.name != Path(row["folder"]).name:
+                    raise ExpectedError(f"Another run of the same configuration is in {manifest.parent}. "
+                                        "Choose a separate local collection for the download.")
+        for row in selected.values():
+            folder = destination / Path(row["folder"]).name
+            if folder.is_symlink() or any((folder / name).is_symlink() for name in
+                                          ("config.conf", "manifest.json", "macroData.csv", "termination.json")):
+                raise ExpectedError(f"{folder} contains a symbolic link. Choose a separate local collection.")
+
+        errors, downloaded = {}, 0
+        for name, rows in batches.items():
+            self.workspace.check_cancelled()
+            label = site_label(name)
+            self.workspace.log(f"{label}: Downloading campaign data for {len(rows):,} simulations.")
+            manifests = {identity: row["manifest_sha256"] for identity, row in rows.items()}
+            receipt = self.state / "campaign-retrievals" / (digest([str(destination), name]) + ".json")
+            try:
+                fetched = fetch_many(profiles[name], manifests, destination, expected_manifests=manifests,
+                                     retain_binaries=False, cancel=self.workspace.cancel, inventory_timeout=300,
+                                     receipt_path=receipt, force_transfer=True)
+            except (ConnectionError, subprocess.SubprocessError, ExpectedError) as error:
+                errors[name] = str(error)
+                self.workspace.log(f"{label}: {error}")
+            else:
+                downloaded += len(fetched)
+        if errors and not downloaded:
+            raise ExpectedError("Campaign data could not be downloaded. See the terminal for details.")
+        return {"campaign_csv_refresh": {"campaign": campaign, "requested_data": requested_data,
+                                         "data": str(destination), "downloaded": downloaded}, "errors": errors}
+
     @staticmethod
     def local_data_file(value, extensions):
         path = Path(value or "").expanduser()
@@ -438,7 +569,12 @@ class Plots:
         if "run_manifests" in spec or campaign == "@csv":
             schema = describe(source, [], root, run_manifests=spec.get("run_manifests"))
             return schema | {"data": str(Path(data).expanduser().resolve())} if campaign == "@mesh" else schema
-        return describe(source, self.plot_data_roots(), root)
+        sources = self.plot_data_roots()
+        managed = self.campaign_downloads(campaign)
+        if managed.is_dir():
+            sources.append(managed)
+            root = root or managed
+        return describe(source, sources, root)
 
     def plot_presets(self, data=None):
         return self.presets(data, kind="plot")

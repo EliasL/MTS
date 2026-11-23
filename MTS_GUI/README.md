@@ -36,10 +36,18 @@ with identical settings.
 
 ## Monitor and retrieve results
 
-**Monitor data** shows cached records by site or campaign. **Refresh** updates
-the selected scope. **Hard reset inventory** rereads the run folders and
-rebuilds the inventory. Scheduler state and scientific completion are displayed
-from separate records.
+**Monitor data** shows cached records by site or campaign. For a remote site,
+**Refresh** retrieves a newer completed inventory or requests a scan and
+reports an estimated wait. Click **Refresh** again to check progress or
+retrieve the result. **Last update** shows when the displayed inventory was
+generated. **Hard reset inventory** rereads finished simulations and rebuilds
+the full run index. Scheduler state and scientific completion are displayed from
+separate records.
+
+**Runtime** and **ETR** show the last recorded simulation runtime and estimated
+time remaining. Click a column heading to sort within the displayed groups.
+Right-click a heading or choose **Columns** to show or hide columns. Drag a
+heading to change its position. The browser saves column preferences.
 
 Select a simulation to plot its local macro data. For a remote simulation, MTS
 retrieves the macro table and run metadata. Compatible runs that differ only by
@@ -61,6 +69,11 @@ folder browsing requires Zenity or KDialog. A full path can be entered directly.
 ## Plot and animate
 
 Select a campaign and local data collection, or select a run in Monitor data.
+For campaigns, a red **Refresh** button indicates missing or outdated CSVs
+relative to the latest saved Monitor inventory. Click it to download those
+files and reload the plot options. When no collection is selected, MTS
+creates one for the campaign.
+
 Plot a saved response column against load for a curve, or select a varied
 campaign parameter on X for scalar comparisons. Assign other varied parameters
 to colour or gradient, or hold them fixed. A scalar response can use the first,

@@ -29,11 +29,14 @@ focused work. Repeat `--suite` to select several. `--build-dir` selects a differ
 configured simulator build and sets `MTS_TEST_BINARY` for executable integration
 tests. `--timeout` controls the time allowed per build or suite.
 
-The GitHub Actions smoke workflow builds MTS2D with Eigen from the pinned
-component revisions on Linux and macOS. It checks CLI submission, campaign
-skip decisions, inventory and plotted data. To run that check with a local
-executable, set `MTS_TEST_BINARY` and run
-`python -m unittest discover -s tests -p test_workspace_smoke.py`.
+The workspace smoke test checks CLI submission, campaign skip decisions,
+inventory and plotted data on an isolated local site. From the workspace root,
+select a built simulator to run it directly:
+
+```sh
+MTS_TEST_BINARY="$PWD/MTS2D/build/release/MTS2D" \
+  .venv/bin/python -m unittest discover -s tests -p test_workspace_smoke.py
+```
 
 Run only the suites affected by a change, followed by broader verification when
 the change crosses component boundaries. Repeat checks after a relevant change

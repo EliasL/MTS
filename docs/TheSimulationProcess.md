@@ -271,10 +271,22 @@ and analysis. Missing required information remains an error. The
 `missing_settings` entries described below fill absent parameters; an explicitly
 saved simulation value takes precedence.
 
-Read-only consumers can also interpret native configurations that record
-`nrVTUFrames`. The recorded frame count remains part of the identity. The
-current default rate supplies the missing setting for reader validation.
-New submissions use current settings.
+The recorded-settings reader temporarily supports native configurations that
+record `nrVTUFrames`. For a positive load span, it estimates the regular
+snapshot rate as the larger of 100 and the recorded frame count divided by
+`totalLoad`. Disabled mesh output yields a rate of zero. A zero load span
+uses the absolute threshold of 100 when output is enabled. Explicit campaign
+metadata for the rate takes precedence. The estimate represents the old load
+thresholds. Exact frame times depend on accepted steps and event-triggered
+saves. Use recorded VTU loads for frame timing.
+
+The original field remains part of the saved hash and manifest checks.
+Plotting, inventory, analysis and Slurm settings filters use the effective
+rate. New submissions use current settings.
+
+| Temporary adapter | Implementation and readers | Retirement condition |
+| --- | --- | --- |
+| Saved `nrVTUFrames` | [config.py](../MTSManager/MTS_Management/config.py) accepts the field in `Config.read_saved` and interprets it in `Config.from_saved_settings`. [run_records.py](../MTSManager/MTS_Management/run_records.py) supplies verified runs to inventory, analysis and Slurm control. [campaign.py](../MTSManager/MTS_Management/campaign.py) supplies recorded campaign definitions through `saved_campaign_entries`. The [monitor](../MTS_GUI/monitor.py) reads cached configurations, and [simulation_setup.py](../MTS_GUI/simulation_setup.py) uses the same adapter to load saved presets as current settings. | Retire after pre-rate run folders, cached configurations, campaign definitions and presets leave use. |
 
 Neither interpretation nor inventory refresh rewrites `config.conf`. MTS2D also
 preserves this identity-bearing file when resolving omitted parameters. Resolved
@@ -283,10 +295,10 @@ configuration changes generally, rather than to one particular parameter.
 
 ### 3.3 The three campaign files
 
-The campaign folder contains three JSON files. `simulations.json` describes
-which simulations belong to the campaign, `resources.json` describes how they
-are submitted, and `metadata.json` provides supplemental descriptions and paths
-to retained binaries.
+The campaign folder contains three JSON files. `simulations.json` records
+resolved run configurations, `resources.json` describes how they are
+submitted, and `metadata.json` provides the saved sweep recipe, supplemental
+descriptions and paths to retained binaries.
 
 **`simulations.json`** contains the campaign name and labelled configurations:
 
@@ -328,7 +340,21 @@ partition and account. Benchmark plans can additionally record expected run
 counts, diagnostic labels, source revision and a simulation-definition checksum.
 That checksum covers simulation definitions, not editable metadata.
 
-**`metadata.json`** contains campaign-wide descriptions and binary references:
+**`metadata.json`** contains campaign-wide descriptions and binary references.
+The optional `sweep` record stores the base settings, sampling modes and axis
+values used by the editor. Older definitions can list designated extra runs in
+`sweep.extra_labels` to keep them visible as campaign members and outside the
+editor's job plan. For older definitions without a recipe, the editor can infer
+sweep values from the recorded runs.
+
+An individual submission can select an existing campaign. The run manifest
+records that association. Campaign monitoring, retrieval and plotting include
+runs by recorded campaign name or by configuration identity in the definition.
+The sweep recipe and resolved definition remain the source for regenerating
+planned jobs. Refresh a server's full inventory to discover campaign runs
+submitted outside the desktop.
+
+For example:
 
 ```json
 {
@@ -373,11 +399,26 @@ working directories, environment setup and scheduler settings.
 The Start simulations panel can launch individual configurations and save
 reusable presets as native `.conf` files. Import validates settings and
 resolves defaults for a new configuration. It does not reuse a run's identity.
-The campaign editor expands parameter sweeps from one saved preset, validates
-every combination and registers the definition under `MTSManager/campaigns/gui/`.
+The campaign editor expands parameter sweeps from a saved preset or the
+individual settings of a loaded campaign, validates every combination and
+registers the definition under `MTSManager/campaigns/gui/`.
 If the base preset writes mesh snapshots, the campaign can disable them for
 all its runs. This choice becomes part of each saved run configuration.
 Saving a preset or a campaign does not submit a run.
+
+Choose a campaign under **Saved campaigns** in the **Saved preset** menu.
+This fills the individual form from a representative saved run and restores
+the campaign's execution profile when available. The editor
+restores saved sweep values as linear or logarithmic sampling when it
+reproduces every value exactly. Custom values use commas, with quotes around
+slip sequences. For a campaign with an incomplete or constrained grid,
+editing sweep values selects from the original run list.
+The campaign size reports the resulting job count. A diagnostic run
+designated in the resource plan stays in the saved run list without adding a
+logging sweep when the regular runs share the same logging settings.
+Changes from the individual form apply to each selected run. Saving under a
+new name uses the current settings schema and carries over per-size resource
+requests.
 
 **More → Use as template** in Monitor data loads the selected run's effective
 settings and verified custom initial VTU into Start simulations for a fresh
@@ -493,8 +534,8 @@ The GUI's **Update MTS on servers** action transfers the manager package,
 campaign directories and MTS2D source to their configured locations on each
 cluster. It compares manager code, simulator source and campaign definitions
 before transfer and skips current profiles. Within an outdated installation,
-unchanged components are skipped independently. Matching source records avoid
-source archive creation, upload and installation. Enabled SSH destinations update
+unchanged components are skipped independently. Matching source records skip
+the source update. Enabled SSH destinations update
 concurrently using threads; profiles on the same destination update together
 and share source uploads for the same workspace. It verifies transfers and
 reports errors per server. Both individual and bulk updates refresh the GUI's
@@ -506,10 +547,12 @@ hosts. If build inputs have uncommitted changes, the GUI reports the required
 Git steps in a dialog and a highlighted terminal entry. The same guidance
 appears when a local build is blocked by uncommitted inputs.
 
-Source installation verifies archive paths, file lists and source identity,
-copies the managed build inputs, removes obsolete listed inputs and verifies
-the installed snapshot. Compilation remains a separate operation. Prepared
-configuration files, scientific output and retained binary paths remain available
+Rsync transfers the recorded build inputs directly to a staging directory.
+The installed source serves as the basis for incremental transfers. The manager
+verifies the staged file list and source checksum before updating the managed
+snapshot. Installation preserves unchanged files and their timestamps, removes
+obsolete listed inputs and verifies the result. Compilation remains a separate
+operation. Prepared configuration files, scientific output and retained binary paths remain available
 to submitted jobs.
 
 ## 7. Preparing a run before queueing
@@ -744,9 +787,14 @@ summary and scheduler exit code provide different evidence: the summary describe
 scientific stopping, while the exit code also reflects failures during final
 output. Monitoring displays both where available.
 
-Numerical algorithms, solver fallbacks and detailed sampling definitions are
-outside this lifecycle description. Numerical errors and diagnostic recovery
-remain inside MTS2D and are visible through its output and exit status.
+After an eligible L-BFGS loading step fails, MTS2D restores the pre-step state
+for each retry. It tries correction counts from 3 through 25 in order of
+distance from the configured count, trying the higher count first at equal
+distances. It skips the original count and values above the number of free
+degrees of freedom. The first successful retry supplies the accepted state.
+MTS2D restores the configured correction count and removes failed diagnostic
+rows for the step before writing the accepted row. If the retries are exhausted,
+MTS2D replays the failure with the original settings and exits with diagnostics.
 
 ## 12. Logs, history and cancellation
 
@@ -778,6 +826,9 @@ indexed configuration identities and saved attempt scheduler IDs. System size L
 requires equal row and column counts. Running jobs are excluded from hold,
 release and cancellation; cancellation also uses Slurm's pending-state filter.
 
+The execution profile determines which output root is searched. The MAGI and
+MAGI-PILOT profiles share an SSH connection and have separate output roots.
+Use the Campaign criterion to filter by campaign within the selected profile.
 Generate program constructs commands locally. Review matching jobs contacts the
 selected enabled Slurm profiles without applying changes. Run reviewed action
 is limited to those job IDs, rechecks their live state and reevaluates the rule.
@@ -813,9 +864,13 @@ configuration and continues with the remaining members.
 ## 14. Monitoring and inventory
 
 The GUI reads local cached inventories, campaign definitions and downloaded
-copies. Refresh contacts remote managers to update the selected server records.
-An unavailable server leaves its previous snapshot available with its recorded
-update time. Campaign views show both discovered and missing members.
+copies. For each remote profile, **Refresh** downloads a newer completed
+snapshot when one is available. If the desktop already has the latest
+snapshot, or the site has yet to produce one, **Refresh** requests a background
+scan. Click **Refresh** again to check its progress or download the completed
+snapshot. **Last update** shows when the displayed snapshot was generated.
+An unavailable server or a failed scan leaves the previous snapshot visible.
+Campaign views show both discovered and missing members.
 Server records are grouped as Running, Queued and Completed, in that order.
 Campaign views group records by site with the same status subgroups. Completed
 includes failed and stopped attempts, whose outcome remains explicit. Missing
@@ -838,8 +893,14 @@ Plot displays the selected run's data path. Include other seeds selects sibling
 runs with identical saved settings except seed and matching executable
 checksums. The execution host discovers remote siblings from their manifests.
 The desktop retrieves macro CSV and run metadata for the selected runs.
-Refresh allows 60 seconds per site request and makes at most three attempts for
-timeouts or connection failures. Invalid data fails without retrying.
+Each output root has one background inventory worker. Its scan continues after
+the SSH request closes. Inventory rows and archive records are published
+together after the scan succeeds. The request reports the indexed simulation
+count and any cached storage estimates. Initial wait estimates scale with the
+indexed count. Later estimates use the last successful scan of the selection
+when it used the same refresh mode. Remote requests allow 60 seconds for
+transport and make at most three attempts for timeouts or connection failures.
+Site profiles are contacted independently.
 
 Campaign refresh checks enabled site profiles using the campaign's saved
 configuration hashes. It works without an existing server snapshot and sends one
@@ -861,7 +922,10 @@ from the queue is not automatically declared successful; accounting and output
 provide the remaining evidence.
 
 CSV inspection reads a bounded tail, ignores a partial row still being written
-and rejects malformed complete rows. Load-budget progress and sampling-target
+and rejects malformed complete rows. Runtime and estimated time remaining
+come from the latest complete row. The inventory retains the recorded duration
+strings for display and parses seconds for sorting. Unavailable durations leave
+empty entries. Load-budget progress and sampling-target
 completion are displayed distinctly. Finished records are cached, with lifecycle
 and metadata changes invalidating derived data. Hard refresh rereads records
 without deleting output. Storage estimates use bounded sampling rather than
@@ -899,6 +963,13 @@ summary, as well as the initial VTU for custom meshes. Full retrieval
 additionally includes the run tree and attempt logs.
 Corresponding campaign files are available locally so supplemental settings and
 binary paths can be interpreted without contacting the cluster.
+
+Campaign plotting compares local CSV metadata with the saved Monitor inventory.
+The comparison uses recorded modification times and byte counts when present.
+The Plot tab's **Refresh** explicitly downloads missing and outdated campaign
+tables in batches by execution profile. Runs without an observed macro table
+are excluded. The plot uses the selected collection, or a managed download
+collection when the selection is empty or points to a native output location.
 
 Binary archival copies use the local retained-binary archive described in
 section 2.3. Copying scientific output does not itself schedule or execute a run.

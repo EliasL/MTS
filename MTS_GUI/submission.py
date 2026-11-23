@@ -11,7 +11,7 @@ def start_run(site_file, config, data, log):
     sites = load_sites(site_file)
     site = replace(sites[name], mode="detached") if name == "local" else sites[name]
     return submit_run(site, config, state_dir=submission_state_dir(site_file, sites),
-                      campaign="GUI", label=data.get("label") or None,
+                      campaign=data.get("campaign") or "GUI", label=data.get("label") or None,
                       initial_mesh=data.get("initial_mesh"), log=log)
 
 

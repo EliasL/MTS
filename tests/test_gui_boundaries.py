@@ -3,6 +3,7 @@
 import json
 from contextlib import redirect_stdout
 from io import StringIO
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -172,14 +173,101 @@ directions = -1.1,2.1
                     {"parameter": "directions", "mode": "custom", "values": "-1.1,2.1\n-1.1,2.1,2.5"},
                 ]})
                 name, runs = campaign_entries(workspace.monitor.campaign_path("Sweep"))
+                loaded = workspace.load_campaign(name)
+                self.assertFalse(loaded["preserve_runs"])
+                modes = {axis["parameter"]: axis["mode"] for axis in loaded["axes"]}
+                self.assertEqual(modes, {"seed": "linear", "epsR": "log", "directions": "custom"})
+                metadata = json.loads(workspace.monitor.campaign_path(name).with_name("metadata.json").read_text())
+                self.assertEqual(metadata["sweep"]["axes"], loaded["axes"])
+                self.assertEqual(workspace.campaign_size({"axes": loaded["axes"]}), {"jobs": 18})
+                workspace.save_campaign({"name": "SweepCopy", "source_campaign": name,
+                                         "base": {"settings": loaded["settings"]}, "axes": loaded["axes"]})
+                _, copied = campaign_entries(workspace.monitor.campaign_path("SweepCopy"))
             self.assertEqual(name, "Sweep")
             self.assertEqual(len(runs), 18)
+            self.assertEqual({c.config_hash for c, _ in copied}, {c.config_hash for c, _ in runs})
             self.assertTrue(preset(presets, {"action": "load", "name": "Base"})["settings"]["writeMeshVTUs"])
             self.assertFalse(any(config["writeMeshVTUs"] for config, _ in runs))
             self.assertEqual(
                 {(c["seed"], float(f"{c['epsR']:.12g}"), (c["directions"], c["totalLoad"])) for c, _ in runs},
                 set(product([3, 4, 5], [1e-7, 1e-6, 1e-5], [("-1.1,2.1", 2), ("-1.1,2.1,2.5", 3)])),
             )
+
+    def test_load_campaign_preserves_sparse_members_when_editing_checkpoint_settings(self):
+        from MTS_Management.campaign import campaign_entries
+        from MTS_Management.config import Config
+        from MTS_Management.files import read_json, write_json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "MTSManager/campaigns/benchmark/simulations.json"
+            members = [(Config(rows=50, cols=50, nrThreads=2, writeDumps=False,
+                               logDuringMinimization=True), "Diagnostic"),
+                       (Config(rows=50, cols=50, nrThreads=2, writeDumps=False), "Baseline"),
+                       (Config(rows=100, cols=100, nrThreads=1, writeDumps=False), "L100")]
+            definition = {"name": "Benchmark", "runs": [
+                {"label": label, "settings": config.as_dict()} for config, label in members]}
+            resources = {"site": "magi", "resources": {"100": {"time": "3-00:00:00"}},
+                         "diagnostic_label": "Diagnostic"}
+            write_json(source, definition)
+            write_json(source.with_name("resources.json"), resources | {"campaign_sha256": "original"})
+            with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", root / ".mts"):
+                workspace = Workspace()
+                self.assertIn("Benchmark", workspace.start_options()["campaign_sources"])
+                loaded = workspace.load_campaign("Benchmark")
+                self.assertTrue(loaded["preserve_runs"])
+                self.assertEqual((loaded["label"], loaded["site"]), ("Baseline", "magi"))
+                self.assertEqual({axis["parameter"] for axis in loaded["axes"]}, {"L", "nrThreads"})
+                selection = {"source_campaign": loaded["name"], "preserve_runs": True}
+                self.assertEqual(workspace.campaign_size(selection | {"axes": loaded["axes"]}), {"jobs": 2})
+                workspace.save_campaign({"name": "Recovery", "source_campaign": loaded["name"], "site": loaded["site"],
+                                         "axes": loaded["axes"], "preserve_runs": True, "base": {
+                                             "settings": loaded["settings"] | {"writeDumps": True, "checkpointInterval": 50}}})
+                target = workspace.monitor.campaign_path("Recovery")
+                _, copied = campaign_entries(target)
+                filtered_axes = [{"parameter": "L", "mode": "custom", "values": "100"},
+                                 {"parameter": "nrThreads", "mode": "custom", "values": "1,2"}]
+                self.assertEqual(workspace.campaign_size(selection | {"axes": filtered_axes}), {"jobs": 1})
+                self.assertEqual(workspace.campaign_size(selection | {"axes": [
+                    filtered_axes[0], {"parameter": "nrThreads", "mode": "custom", "values": "2"}]}), {"jobs": 0})
+                workspace.save_campaign({"name": "L100Only", "source_campaign": loaded["name"], "preserve_runs": True,
+                                         "base": {"settings": loaded["settings"]}, "axes": filtered_axes})
+                _, filtered = campaign_entries(workspace.monitor.campaign_path("L100Only"))
+                reopened = workspace.load_campaign("L100Only")
+                self.assertEqual(workspace.campaign_size({"source_campaign": reopened["name"], "preserve_runs": True,
+                                                         "axes": reopened["axes"]}), {"jobs": 1})
+            self.assertEqual([(config.as_dict(), label) for config, label in copied], [
+                (config.as_dict() | {"writeDumps": True, "checkpointInterval": 50}, label)
+                for config, label in members[1:]])
+            self.assertEqual([(config.config_hash, label) for config, label in filtered],
+                             [(members[-1][0].config_hash, "L100")])
+            self.assertEqual(read_json(target.with_name("resources.json")),
+                             {"site": resources["site"], "resources": resources["resources"]})
+            self.assertEqual(read_json(source), definition)
+
+    def test_legacy_preset_load_returns_current_settings_and_downloadable_configuration(self):
+        from MTS_GUI.simulation_setup import preset
+        from MTS_Management.config import Config
+        from MTS_Management.files import digest
+
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            settings = Config(totalLoad=2, writeMeshVTUs=True).as_dict()
+            settings.pop("vtuFilesPerUnitLoad")
+            settings["nrVTUFrames"] = 500
+            identity = digest({"format": "mtscripts-config-v1", "settings": settings})
+            path = folder / "Legacy.conf"
+            text = f"name = Legacy[{identity[:20]}]\n" + "\n".join(
+                f"{key} = {value}" for key, value in settings.items())
+            path.write_text(text)
+
+            with self.assertRaisesRegex(ValueError, "Unknown setting: nrVTUFrames"):
+                Config.read(path)
+            loaded = preset(folder, {"action": "load", "name": "Legacy"})
+            self.assertEqual(loaded["settings"]["vtuFilesPerUnitLoad"], 250)
+            self.assertEqual(preset(folder, {"action": "import", "text": loaded["text"]})["settings"],
+                             loaded["settings"])
+            self.assertEqual(path.read_text(), text)
 
     def test_rectangle_preset_keeps_driven_edge_and_constraints(self):
         from MTS_GUI.simulation_setup import preset
@@ -274,13 +362,16 @@ totalLoad = 3
 
         with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.ROOT", Path(temporary)):
             root = Path(temporary)
-            settings = Config().as_dict()
+            settings = Config(totalLoad=2.0).as_dict()
             settings.pop("vtuFilesPerUnitLoad")
-            settings["nrVTUFrames"] = 100
+            settings["nrVTUFrames"] = 500
             identity = digest({"format": "mtscripts-config-v1", "settings": settings})
             campaign = root / "MTSManager/campaigns/recorded/simulations.json"
             campaign.parent.mkdir(parents=True)
-            campaign.write_text(json.dumps({"name": "Recorded", "runs": [{"label": "Saved", "settings": settings}]}))
+            campaign.write_text(json.dumps({"name": "Recorded", "runs": [
+                {"label": "Saved", "settings": settings},
+                {"label": "LowerRate", "settings": settings | {"nrVTUFrames": 50}},
+            ]}))
             data = root / "output"
             folder = data / f"Saved[{identity[:20]}]"
             folder.mkdir(parents=True)
@@ -294,10 +385,95 @@ totalLoad = 3
             with patch.object(workspace.plots, "plot_data_roots", return_value=[data]):
                 schema = workspace.plots.plot_options("Recorded", str(data))
             self.assertEqual(schema["available"], 1)
-            spec = {"campaign": "Recorded", "data": str(data), "x": "load", "y": "avg_energy"}
+            self.assertEqual(schema["parameters"], {"vtuFilesPerUnitLoad": [100.0, 250.0]})
+            spec = {"campaign": "Recorded", "data": str(data), "x": "load", "y": "avg_energy",
+                    "fixed": {"vtuFilesPerUnitLoad": 250.0}}
             _, plot = prepared_plot(*workspace.plots.plot_inputs(spec))
             series, = plot["series"]
             self.assertEqual((series["x"], series["mean"]), ([0, 1], [0.5, 2.5]))
+
+    def test_campaign_csv_refresh_uses_cached_inventory_and_downloads_only_missing_or_older_runs(self):
+        from MTS_Management.cluster import Site
+        from MTS_Management.config import Config
+        from MTS_Management.files import file_digest, write_json
+
+        sites = {name: Site(name=name, ssh=name) for name in ("magi", "pilot")}
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(StringIO()), \
+                patch("MTS_GUI.server.ROOT", Path(temporary)), \
+                patch("MTS_GUI.server.STATE", Path(temporary) / ".mts"), \
+                patch("MTS_Management.cluster.load_sites", return_value=sites):
+            root = Path(temporary)
+            workspace = Workspace()
+            configs = [Config(seed=seed) for seed in range(5)]
+            write_json(root / "MTSManager/campaigns/benchmark/simulations.json", {
+                "name": "Benchmark", "runs": [{"label": "Run", "settings": cfg.as_dict()} for cfg in configs[:4]]})
+            data = root / "downloaded"
+            rows = {site: [] for site in sites}
+            remote_paths = {}
+            for config, name in zip(configs, ("magi", "pilot", "magi", "magi", "pilot"), strict=True):
+                folder = root / name / config.folder_name("Run")
+                folder.mkdir(parents=True)
+                config.write(folder / "config.conf", "Run")
+                manifest = folder / "manifest.json"
+                write_json(manifest, {"config_hash": config.config_hash, "settings": config.as_dict()})
+                progress = {}
+                if config["seed"] != 3:
+                    csv = folder / "macroData.csv"
+                    csv.write_text("load,avg_energy\n0,1\n1,2\n")
+                    os.utime(csv, (100.5, 100.5))
+                    progress = {"csv_modified": 100.5, "csv_size": csv.stat().st_size}
+                rows[name].append({"config_hash": config.config_hash, "folder": str(folder),
+                                   "manifest_sha256": file_digest(manifest), "progress": progress})
+                if config["seed"] == 4:
+                    rows[name][-1]["campaign"] = "Benchmark"
+                remote_paths[config.config_hash] = folder
+            for name, saved in rows.items():
+                workspace.monitor.inventory_cache(name, rows=saved, site=sites[name])
+            for config in (configs[0], configs[2]):
+                folder = remote_paths[config.config_hash]
+                shutil.copytree(folder, data / folder.name)
+            old = data / remote_paths[configs[0].config_hash].name / "macroData.csv"
+            old.write_text("load,avg_energy\n0,1\n")
+            os.utime(old, (100, 100))
+
+            downloads = {}
+
+            def fetch(site, manifests, destination, **options):
+                downloads[site.name] = set(manifests)
+                return [shutil.copytree(remote_paths[h], destination / remote_paths[h].name,
+                                        dirs_exist_ok=True) for h in manifests]
+
+            with patch("MTS_Management.cluster.fetch_many", side_effect=fetch), \
+                    patch("MTS_Management.cluster.call", side_effect=AssertionError("Unexpected remote query")):
+                self.assertTrue(workspace.plots.campaign_csv_outdated("Benchmark", str(data)))
+                self.assertFalse(downloads)
+                result = workspace.operation("plot_csv_refresh", {"campaign": "Benchmark", "data": str(data)})
+                self.assertFalse(workspace.plots.campaign_csv_outdated("Benchmark", str(data)))
+            self.assertEqual(downloads, {"magi": {configs[0].config_hash},
+                                         "pilot": {configs[1].config_hash, configs[4].config_hash}})
+            self.assertEqual(result["campaign_csv_refresh"]["downloaded"], 3)
+            self.assertEqual(old.read_text(), "load,avg_energy\n0,1\n1,2\n")
+
+    def test_campaign_refresh_discovers_attached_run_from_submission_receipt(self):
+        from MTS_Management.cluster import Site
+        from MTS_Management.config import Config
+        from MTS_Management.files import write_json
+        from MTS_Management.journal import Journal
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            planned, extra = Config(seed=1), Config(seed=2)
+            manager = root / "MTSManager"
+            write_json(manager / "campaigns/benchmark/simulations.json", {"name": "Benchmark", "runs": [
+                {"label": "Planned", "settings": planned.as_dict()}]})
+            Journal(manager / ".state").append("submission_accepted", site="fixture", campaign="Benchmark",
+                                               config_hash=extra.config_hash)
+            site = Site(name="fixture", ssh="fixture")
+            with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", root / ".mts"), \
+                    patch("MTS_Management.cluster.load_sites", return_value={"fixture": site}):
+                overview = Workspace().monitor.inventory_overview(campaign="Benchmark")
+            self.assertEqual(set(overview["config_hashes"]), {planned.config_hash, extra.config_hash})
+            self.assertEqual(overview["expected"], 1)
 
     def test_restart_recovers_monitor_source_and_reports_invalid_state(self):
         with tempfile.TemporaryDirectory() as temporary, patch("MTS_GUI.server.STATE", Path(temporary)):
@@ -391,41 +567,51 @@ totalLoad = 3
 
     def test_inventory_cache_is_local_persistent_and_isolated_by_site_configuration(self):
         from MTS_Management.cluster import Site
+        from MTS_Management.errors import ExpectedError
         sites = {name: Site(name=name, ssh=name) for name in ("first", "second")}
         rows = [{"config_hash": "example", "folder": "/work/output/example", "status": {"state": "running"}}]
+        initial = {"state": "ready", "snapshot": {"rows": rows, "updated_at": 100, "revision": "first"}}
         with tempfile.TemporaryDirectory() as temporary, redirect_stdout(StringIO()), \
                 patch("MTS_GUI.server.STATE", Path(temporary)), \
                 patch("MTS_GUI.server.ROOT", Path(temporary)), \
                 patch("MTS_Management.cluster.load_sites", return_value=sites), \
-                patch("MTS_Management.cluster.call", return_value=rows) as remote:
+                patch("MTS_Management.cluster.call", return_value=initial) as remote:
             workspace = Workspace()
             self.assertIsNone(workspace.monitor.inventory_cache("first")["updated_at"])
             remote.assert_not_called()
             workspace.operation("inventory", {"site": "first"})
             snapshot = workspace.monitor.inventory_cache("first")
+            self.assertEqual(snapshot["updated_at"], 100)
             self.assertEqual(Workspace().monitor.inventory_cache("first"), snapshot)
             sites["first"].manager_directory = "~/new-manager-version"
             self.assertEqual(workspace.monitor.inventory_cache("first"), snapshot)
             self.assertIsNone(workspace.monitor.inventory_cache("second")["updated_at"])
             remote.assert_called_once()
             with patch("MTS_Management.cluster.call", side_effect=TimeoutError("unreachable")):
-                with self.assertRaises(TimeoutError):
+                with self.assertRaisesRegex(ExpectedError, "Check the SSH connection"):
                     workspace.operation("inventory", {"site": "first"})
+            with patch("MTS_Management.cluster.call", return_value={"state": "started",
+                       "workload": {"simulations": 2001}, "remaining_seconds": 110}):
+                result = workspace.operation("inventory", {"site": "first"})
+                self.assertIn("2 minutes", result["inventory_messages"][0])
+                self.assertFalse(result["inventory_updated"])
             self.assertEqual(workspace.monitor.inventory_cache("first"), snapshot)
             refreshed = [rows[0] | {"status": {"state": "finished"}}]
             with patch("MTS_Management.cluster.call", side_effect=[
-                    subprocess.TimeoutExpired("ssh", 60), ConnectionError("disconnected"), refreshed]):
+                    subprocess.TimeoutExpired("ssh", 60), ConnectionError("disconnected"),
+                    {"state": "ready", "snapshot": {"rows": refreshed, "updated_at": 200, "revision": "second"}}]):
                 workspace.operation("inventory", {"site": "first"})
             self.assertEqual(workspace.monitor.inventory_cache("first")["rows"], refreshed)
             sites["first"].output_root = "another-output"
             self.assertIsNone(workspace.monitor.inventory_cache("first")["updated_at"])
             sites["first"].output_root = "output"
-            remote.return_value = []
+            remote.return_value = {"state": "ready", "snapshot": {"rows": [], "updated_at": 300, "revision": "third"}}
             workspace.operation("inventory", {"site": "first"})
             self.assertEqual(Workspace().monitor.inventory_cache("first")["rows"], [])
 
     def test_local_refresh_returns_fresh_rows_without_starting_an_inventory_task(self):
-        from MTS_Management.files import write_json
+        from MTS_Management.config import Config
+        from MTS_Management.files import digest, write_json
 
         with tempfile.TemporaryDirectory() as temporary, \
                 patch("MTS_GUI.server.ROOT", Path(temporary)), \
@@ -434,15 +620,24 @@ totalLoad = 3
             output = manager / "output"
             output.mkdir(parents=True)
             (manager / "sites.toml").write_text('[sites.local]\n[sites.remote]\nssh = "remote"\n')
-            config_hash = "a" * 64
+            settings = Config(seed=7).as_dict()
+            settings.pop("vtuFilesPerUnitLoad")
+            settings["nrVTUFrames"] = 100
+            config_hash = digest({"format": "mtscripts-config-v1", "settings": settings})
+            cache = Path(temporary) / ".mts/configurations"
+            cache.mkdir(parents=True)
+            (cache / f"{config_hash}.conf").write_text(
+                f"name = Saved[{config_hash[:20]}]\n" +
+                "\n".join(f"{key} = {value}" for key, value in settings.items()))
             write_json(output / ".run-index.json", {config_hash: "missing-run"})
 
             workspace = Workspace()
             remote = workspace.monitor.inventory_cache("remote", rows=[])
             snapshot = workspace.monitor.refresh_local_inventory(site="local", selection={"site": "local"})
 
-            self.assertEqual([(row["config_hash"], row["status"]["state"]) for row in snapshot["rows"]],
-                             [(config_hash, "missing")])
+            row, = snapshot["rows"]
+            self.assertEqual((row["config_hash"], row["status"]["state"], row["seed"]),
+                             (config_hash, "missing", 7))
             self.assertIsNotNone(snapshot["updated_at"])
             self.assertEqual(Workspace().monitor.inventory_overview(site="local"), snapshot)
             self.assertEqual(workspace.monitor.inventory_cache("remote"), remote)
@@ -466,7 +661,10 @@ totalLoad = 3
             definition.write_text(json.dumps({"name": "Shared", "runs": [
                 {"label": "Expected", "settings": config.as_dict()} for config in configs]}))
             workspace = Workspace()
-            with patch("MTS_Management.cluster.call", side_effect=[rows[:1], []]) as remote:
+            def campaign_snapshot(site, *args, **kwargs):
+                return {"state": "ready", "snapshot": {"rows": rows[:1] if site.name == "first" else []}}
+
+            with patch("MTS_Management.cluster.call", side_effect=campaign_snapshot) as remote:
                 result = workspace.operation("inventory", {"campaign": "Shared"})
             self.assertEqual(result["updated_sites"], ["first", "second"])
             self.assertTrue(all(set(call.kwargs["config_hashes"]) == {c.config_hash for c in configs}
@@ -479,7 +677,12 @@ totalLoad = 3
             overview = workspace.monitor.inventory_overview(campaign="Shared")
             self.assertEqual((overview["expected"], overview["found"], overview["missing"]), (3, 2, 1))
             self.assertEqual({row["site"] for row in overview["rows"] if not row.get("missing")}, set(sites))
-            with patch("MTS_Management.cluster.call", side_effect=[rows[:1], TimeoutError("offline")]):
+            def unavailable_second(site, *args, **kwargs):
+                if site.name == "second":
+                    raise TimeoutError("offline")
+                return campaign_snapshot(site)
+
+            with patch("MTS_Management.cluster.call", side_effect=unavailable_second):
                 result = workspace.operation("inventory", {"campaign": "Shared"})
             self.assertEqual(result["updated_sites"], ["first"])
             self.assertIn("second", result["errors"])

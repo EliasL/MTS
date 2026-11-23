@@ -66,6 +66,7 @@
 </div></fieldset>
 <fieldset class="settings-group"><legend>Execution</legend><div class="fields">
 <div class="field"><label for="run-label">Run label</label><input id="run-label" value="Run" required maxlength="120" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]*"></div>
+<div class="field fresh-run-only"><label for="run-campaign">Campaign</label><select id="run-campaign"><option value="">No campaign</option></select></div>
 <div class="field fresh-run-only"><label for="run-site">Execution site</label><select id="run-site" class="sites"><option>local</option></select></div>
 <div class="field"><label for="run-threads">Threads</label><input id="run-threads" type="number" min="1" step="1" value="1" required></div>
 </div></fieldset>
@@ -141,16 +142,17 @@
 <label class="field check"><input id="campaign-show-all" type="checkbox"> Show all options</label>
 <div id="campaign-axes"></div>
 <p class="notice warning" id="campaign-vtu-warning" role="status" hidden>Running many simulations with VTU files takes a lot of storage. If you do not need to visualize the mesh, consider disabling VTU writing.</p>
+<p id="campaign-size" class="muted" role="status">Campaign size: 0 jobs</p>
 <div class="inline-fields wrap"><button id="campaign-add-axis" type="button">Add parameter</button><button id="campaign-save" type="submit">Save campaign</button></div>
 <hr>
-<div class="fields">
+<div class="fields packed">
 <div class="field"><label for="campaign-saved">Saved campaign</label><select id="campaign-saved"></select></div>
 <div class="field"><label for="campaign-site">Execution site</label><select id="campaign-site" class="sites"><option>local</option></select></div>
 </div>
 <p class="muted">Local campaigns run one simulation at a time in this session.</p>
 <button class="primary" id="campaign-run" type="button" disabled>Run campaign</button>
 </form>
-<template id="campaign-axis"><fieldset class="settings-group settings-item" aria-label="Sweep parameter"><div class="fields row">
+<template id="campaign-axis"><fieldset class="settings-group settings-item" aria-label="Sweep parameter"><div class="campaign-axis-row">
 <label class="field">Parameter<select data-axis="parameter"></select></label>
 <label class="field">Sampling<select data-axis="mode"><option value="linear">Linear</option><option value="log">Logarithmic</option><option value="custom">Custom</option></select></label>
 <label class="field" data-range><span>Start</span><input data-axis="start" type="number" step="any" value="0"></label>
@@ -161,12 +163,21 @@
 </div></fieldset></template>
 </section>
 <section class="view" id="monitor"><div class="intro"><h1>Monitor data</h1></div>
-<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small hidden" id="remove-missing" type="button">Remove all missing</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr><th scope="col"><button class="inventory-sort" data-sort="simulation" type="button">Simulation</button></th><th scope="col">Actions</th><th scope="col"><button class="inventory-sort" data-sort="state" type="button">State</button></th><th scope="col" class="inventory-load"><button class="inventory-sort" data-sort="load" type="button">Load</button></th><th scope="col" class="inventory-date" aria-sort="descending"><button class="inventory-sort" data-sort="date" type="button">Date</button></th><th scope="col" class="inventory-source"><button class="inventory-sort" data-sort="source" type="button">Source</button></th></tr></thead><tbody id="jobs"><tr><td colspan="6" class="empty">Refresh to update data overview.</td></tr></tbody></table></div><div id="inventory-notice" role="status"></div></article></section>
+<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small" id="inventory-columns" type="button" aria-controls="inventory-column-menu" aria-expanded="false">Columns</button><button class="small hidden" id="remove-missing" type="button">Remove all missing</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr id="inventory-header">
+<th scope="col" data-column="simulation"><button class="inventory-sort" data-sort="simulation" type="button">Simulation</button></th>
+<th scope="col" data-column="actions">Actions</th>
+<th scope="col" data-column="state"><button class="inventory-sort" data-sort="state" type="button">State</button></th>
+<th scope="col" data-column="load"><button class="inventory-sort" data-sort="load" type="button">Load</button></th>
+<th scope="col" data-column="etr" title="Last recorded estimated time remaining"><button class="inventory-sort" data-sort="etr" type="button">ETR</button></th>
+<th scope="col" data-column="runtime" title="Last recorded simulation runtime"><button class="inventory-sort" data-sort="runtime" type="button">Runtime</button></th>
+<th scope="col" data-column="date" aria-sort="descending"><button class="inventory-sort" data-sort="date" type="button">Date</button></th>
+<th scope="col" data-column="source"><button class="inventory-sort" data-sort="source" type="button">Source</button></th>
+</tr></thead><tbody id="jobs"><tr><td colspan="8" class="empty">Refresh to update data overview.</td></tr></tbody></table></div><div id="inventory-notice" role="status"></div></article></section>
 <section class="view" id="plot"><div class="intro"><div class="view-tabs" role="tablist" aria-label="Visualization">
 <button id="plot-tab" type="button" role="tab" aria-selected="true" aria-controls="plot-panel">Plot</button>
 <button id="animate-tab" type="button" role="tab" aria-selected="false" aria-controls="animate-panel" tabindex="-1">Animate</button>
 </div></div><form class="card" id="plot-form"><div class="fields">
-<div class="field"><label for="plot-campaign">Selection</label><select id="plot-campaign" required></select></div>
+<div class="field"><label for="plot-campaign">Selection</label><div class="inline-fields plot-selection"><select id="plot-campaign" required></select><button id="plot-csv-refresh" class="small danger" type="button" title="Current csv data is outdated. Click to download the latest csv data." hidden>Refresh</button></div></div>
 <div class="field"><label for="plot-data">Local data</label><input id="plot-data" list="data-folders" placeholder="/path/to/downloaded/runs" required><datalist id="data-folders"></datalist><small>Choose a collection or open a simulation folder.</small></div>
 <div class="field" id="plot-seed-field"><label for="plot-seed">Seeds</label><select id="plot-seed"></select></div>
 </div><label id="plot-other-seeds-field" class="plot-show-all hidden"><input id="plot-other-seeds" type="checkbox"> Include other seeds</label>
@@ -315,7 +326,7 @@
 </details></div>
 <div class="setup-item"><div><details id="slurm-control"><summary>SLURM control</summary>
 <p>Build a command for queued MTS jobs. Review matches before execution. Running jobs are excluded.</p>
-<div class="fields"><div class="field"><label for="slurm-site">On</label><select id="slurm-site"><option value="*">All Slurm sites</option></select></div>
+<div class="fields"><div class="field"><label for="slurm-site">Execution profile</label><select id="slurm-site"><option value="*">All Slurm profiles</option></select></div>
 <div class="field"><label for="slurm-match">Match criteria</label><select id="slurm-match"><option value="all">All criteria</option><option value="any">Any criterion</option></select></div>
 <div class="field"><label for="slurm-action">Action</label><select id="slurm-action"></select></div></div>
 <div id="slurm-criteria"></div><button id="slurm-add-criterion" type="button" class="small">Add criterion</button>
@@ -331,7 +342,7 @@
 <p>Configuration hashes locate folders from their original settings. Each folder contains its configuration. Campaign metadata supplies descriptions of missing settings without changing hashes.</p>
 <p>MTS2D starts directly from its prepared folder. With --resume it selects a completed checkpoint and recovers output. A run-directory lock prevents concurrent writes. Chained allocations use explicit scheduler dependencies.</p>
 <p>Retained binaries are shared between jobs. Campaign metadata records their paths and local archival copies. Update MTS on servers transfers the manager, campaigns and source; queued direct commands continue using their saved binary.</p>
-<p>Scheduler state describes allocations; macro data and termination.json describe scientific progress and completion. Refresh updates cached inventories. Hard reset inventory rereads output without deleting it.</p>
+<p>Scheduler state describes allocations. Macro data and termination.json describe scientific progress and completion. For remote sites, Refresh retrieves a newer inventory or starts a scan. If a scan starts, click Refresh again to retrieve the completed inventory.</p>
 <p>The October 2026 benchmark retains its original Eigen binary and historical worker commands.</p>
 </details></template>
 <dialog id="operation-warning" aria-labelledby="operation-warning-title" aria-describedby="operation-warning-message">
@@ -365,6 +376,7 @@
 </div>
 </form>
 </dialog>
+<div id="inventory-column-menu" popover aria-label="Inventory columns"></div>
 <div id="run-more-menu" popover aria-label="More run actions">
 <button id="run-more-template" class="small" type="button">Use as template</button>
 <button id="run-more-resume" class="small" type="button">Resume</button>

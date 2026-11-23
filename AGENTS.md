@@ -14,11 +14,11 @@
   and execution logic in MTSManager. Plotting reads local scientific data.
   Remote retrieval belongs to MTSManager and is initiated explicitly.
 - Use `MTS_Management.run_records.read_run` to verify the native configuration
-  and manifest. Preserve configuration, executable and checkpoint identities.
-  Keep analysis-only interpretation of recorded settings out of fresh execution.
-- Run focused checks in the affected components. The workspace smoke check
-  uses an isolated local site, a tiny native run and the normal plot-data path.
-  See [Testing.md](tests/Testing.md) for the build and test commands.
+  and manifest for analysis. Use `read_run_for_execution` when preparing or
+  resuming a run. Preserve configuration, executable and checkpoint identities.
+  Keep temporary setting conversions in the recorded-settings reader.
+- Run focused checks locally in the affected components. See
+  [Testing.md](tests/Testing.md) for the build and test commands.
 
 # Scientific code and testing
 

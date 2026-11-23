@@ -1,4 +1,5 @@
 import {axisIssue, fixedFields, legendAliases, limits, plotChoices, syncAxisLabels} from './plot_controls.js';
+import {configureInventoryColumns} from './inventory_columns.js';
 
 const $ = id => document.getElementById(id);
 for (const panel of ['start', 'monitor']) $(panel).append($('simulation-help').content.cloneNode(true));
@@ -25,6 +26,7 @@ try {
   if (saved?.token === accessToken && Array.isArray(saved.entries)) clientHistory = saved.entries;
 } catch {} // Terminal feedback remains available when browser storage is blocked.
 let plotSchema, plotValid = false, plotRequest = 0, plotCheckRequest = 0, plotTimer;
+let campaignCsvRequest = 0;
 let previewBusy = false, previewAutomatic = true, previewRevision = 0, previewManualPending = false;
 let plotPresets = [], loadedPresetId = null, monitorPlot = null, filePlot = null;
 let animationPresets = [], loadedAnimationPresetId = null, recoveringWorkspace = true, draftTimer, initialRefresh = false;
@@ -33,6 +35,9 @@ let animationHeatmapKind, animationRangeScan, lastAnimationScan;
 let animationPreviewFrame = 'middle', animationPreviewOverride = false;
 const opacityEditor = createOpacityEditor($('animate-opacity-chart'), $('animate-remove-opacity-node'));
 let startOptions, campaignBaseSettings, continuationPlan;
+let loadedCampaign;
+const campaignPresetPrefix = '@campaign:';
+let campaignSizeTimer, campaignSizeRequest = 0;
 let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const siteLabel = name => String(name).toUpperCase();
@@ -140,9 +145,9 @@ document.addEventListener('keydown', event => {
   if (index >= 0) fields[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
 });
 
-function terminalMessage(title, text, state = 'complete') {
+function terminalMessage(title, text, state = 'complete', action) {
   if (state === 'running') $('task-result').textContent = '';
-  const entry = {id: 'browser-' + crypto.randomUUID(), created_at: Date.now(), title, state,
+  const entry = {id: 'browser-' + crypto.randomUUID(), created_at: Date.now(), title, state, action,
     logs: [`[${new Date().toLocaleTimeString()}] ${text}`]};
   clientHistory.push(entry); renderTerminal();
   return entry;
@@ -172,25 +177,21 @@ function view(name) {
     localMonitorRefreshPending = true;
     refreshLocalMonitor();
   }
+  if (name === 'plot' && plotSchema) checkCampaignCsv();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => view(button.dataset.view)));
 try {view(sessionStorage.getItem('mts-panel') || 'overview');} catch {}
 async function operation(action, data = {}) {
   let command = `POST /api/${action}`;
   if (['inventory', 'hard_refresh'].includes(action)) {
-    const sites = data.campaign ? lastState.sites.map(site => site.name) :
-      data.site === '*' ? lastState.sites.map(site => site.name) :
-        lastState.servers?.find(server => server.name === data.site)?.profiles || [data.site];
     command += `\nWorkspace.operation('${action}', ${JSON.stringify(data)})`;
-    command += '\nUp to 3 attempts per site; 60 s per attempt.';
-    command += data.campaign ? '\nRefresh matching campaign configurations on enabled sites.' : '\n' + sites.map(site => `MTS_Management.cluster.call(load_sites(${JSON.stringify(lastState.workspace + '/MTSManager/sites.toml')})[${JSON.stringify(site)}], 'inventory', timeout=60${action === 'hard_refresh' ? ', hard_refresh=True' : ''})`).join('\n');
   }
-  const labels = {plot_monitor: 'Prepare plot data', archive_monitor: 'Archive',
+  const labels = {plot_monitor: 'Prepare plot data', plot_csv_refresh: 'Refresh campaign CSVs', archive_monitor: 'Archive',
     archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further',
     run: 'Start simulation', resume: 'Resume', remove_missing: 'Remove all missing',
     animate: 'Generate animation', animate_preview: 'Preview animation'};
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
-    labels[action] || action, command, 'running');
+    labels[action] || action, command, 'running', action);
   pendingOperation = entry;
   updateActions();
   try {
@@ -350,6 +351,7 @@ function updateActions() {
   $('campaign-run').disabled ||= !$('campaign-saved').value;
   $('campaign-save').disabled = !campaignBaseSettings;
   $('plot-button').disabled ||= !ready || !plotValid;
+  $('plot-csv-refresh').disabled = busy || !ready;
   for (const id of ['animate-button', 'animate-preview-button', 'animate-preview-menu-button']) {
     $(id).disabled ||= !ready || $('animation-settings').hidden;
   }
@@ -434,6 +436,20 @@ function renderTerminalOutput(pre, output) {
   pre.replaceChildren(fragment);
 }
 
+function terminalLogSections(logs, inventory) {
+  const visible = [], details = [];
+  const inventoryDetail = /^(?:POST \/api\/(?:inventory|hard_refresh)$|Workspace\.operation\(|from MTS_Management\.cluster import call, load_sites$|call\(site, |Waiting for .*; directory=|\$ bash |Received \d+ bytes in )/;
+  for (const record of logs) {
+    const line = record.split('\n', 1)[0].replace(/^\[[^\]]+\] /, '');
+    if (line.startsWith('$ ssh ') || (inventory && inventoryDetail.test(line))) {
+      details.push(record);
+    } else {
+      visible.push(record);
+    }
+  }
+  return {visible: visible.join('\n'), details: details.join('\n')};
+}
+
 function renderTerminal(history = backendHistory) {
   try {sessionStorage.setItem('mts-terminal-history', JSON.stringify({token: accessToken, entries: clientHistory}));} catch {}
   backendHistory = history;
@@ -450,13 +466,13 @@ function renderTerminal(history = backendHistory) {
       node.innerHTML = `<summary><span></span>
         <button type="button" class="copy-message" aria-label="Copy terminal message" title="Copy terminal message"></button>
         <button type="button" class="remove-message" aria-label="Delete terminal message" title="Delete terminal message">×</button>
-        </summary><pre></pre>`;
+        </summary><pre></pre><details class="terminal-diagnostics" hidden><summary></summary><pre></pre></details>`;
       const copyButton = node.querySelector('.copy-message');
       let copyFeedbackTimer;
       copyButton.onclick = async event => {
         event.preventDefault(); event.stopPropagation();
         try {
-          await navigator.clipboard.writeText(node.querySelector('pre').textContent);
+          await navigator.clipboard.writeText(node.terminalOutput);
           copyButton.classList.add('copied');
           copyButton.title = 'Copied';
           clearTimeout(copyFeedbackTimer);
@@ -481,10 +497,23 @@ function renderTerminal(history = backendHistory) {
     node.dataset.state = entry.state;
     node.dataset.warning = Boolean(entry.warning);
     node.querySelector('summary span').textContent = `${entry.title} · ${entry.state}`;
-    node.querySelector('summary').title = entry.command || entry.title;
-    const output = entry.logs.join('\n') || 'Starting…', pre = node.querySelector('pre');
-    if (pre.textContent !== output) {
-      renderTerminalOutput(pre, output); pre.scrollTop = pre.scrollHeight; changed = true;
+    const inventory = ['inventory', 'hard_refresh'].includes(entry.action);
+    node.querySelector('summary').title = inventory || entry.command?.startsWith('ssh ') ?
+      entry.title : entry.command || entry.title;
+    const output = entry.logs.join('\n') || 'Starting…';
+    if (node.terminalOutput !== output || node.inventoryLog !== inventory) {
+      node.terminalOutput = output;
+      node.inventoryLog = inventory;
+      const {visible, details} = terminalLogSections(entry.logs, inventory);
+      const pre = node.querySelector('pre'), diagnostics = node.querySelector('.terminal-diagnostics');
+      const display = visible || (entry.state === 'running' || !details ? 'Starting…' : '');
+      pre.hidden = !display;
+      diagnostics.hidden = !details;
+      diagnostics.querySelector('summary').textContent = inventory ? 'Request details' : 'SSH commands';
+      diagnostics.querySelector('pre').textContent = details;
+      if (pre.textContent !== display) {
+        renderTerminalOutput(pre, display); pre.scrollTop = pre.scrollHeight; changed = true;
+      }
     }
   }
   if (!history.length) container.innerHTML = '<p class="muted">No messages.</p>';
@@ -651,6 +680,13 @@ function appendRunActions(container, rows) {
   more.onclick = () => openRunMenu(more, rows);
   container.append(plot, more);
 }
+const inventoryColumns = configureInventoryColumns(
+  $('inventory-header'), $('inventory-columns'), $('inventory-column-menu'), () => {
+    if (inventorySnapshot) {renderInventory(inventorySnapshot.rows); updateActions();}
+    else $('jobs').querySelector('.empty').colSpan = inventoryColumns().length;
+  });
+$('jobs').querySelector('.empty').colSpan = inventoryColumns().length;
+
 for (const button of document.querySelectorAll('.inventory-sort')) {
   button.onclick = () => {
     const key = button.dataset.sort;
@@ -663,8 +699,12 @@ for (const button of document.querySelectorAll('.inventory-sort')) {
 }
 function renderInventory(rows) {
   if (runMoreMenu.matches(':popover-open')) runMoreMenu.hidePopover();
+  const columns = inventoryColumns(), showActions = columns.includes('actions');
   const body = $('jobs'); body.replaceChildren();
-  if (!rows.length) {body.innerHTML = '<tr><td colspan="6" class="empty">No managed simulations were found.</td></tr>'; return;}
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${columns.length}" class="empty">No managed simulations were found.</td></tr>`;
+    return;
+  }
   const lineage = [], items = [], selection = inventorySelection();
   const displayName = row => row.folder.split('/').at(-1).replace(/\[[0-9a-f]{20,64}\]$/, '');
   const sourceLabel = row => row.local_copy ? 'Local copy' + (row.origin_profile ? ' · ' + siteLabel(row.origin_profile) : '') :
@@ -672,6 +712,7 @@ function renderInventory(rows) {
   const timestamp = row => Date.parse(row.run_date || row.status.started_at || '');
   const compareText = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'}).compare;
   const value = {simulation: displayName, state: row => row.status.state, load: row => row.progress.fraction,
+    etr: row => row.progress.remaining_seconds ?? null, runtime: row => row.progress.runtime_seconds ?? null,
     date: row => Number.isNaN(timestamp(row)) ? null : timestamp(row), source: sourceLabel}[inventorySort];
   rows = [...rows].sort((a, b) => {
     const left = value(a), right = value(b);
@@ -691,23 +732,32 @@ function renderInventory(rows) {
     const percentage = row.progress.fraction === null ? '—' : (100 * row.progress.fraction).toFixed(1) + '%';
     const source = sourceLabel(row) || '—';
     const time = timestamp(row), date = Number.isNaN(time) ? '—' : inventoryDateFormat.format(time);
-    tr.innerHTML = `<td>${escape(displayName(row))}</td><td><div class="table-actions"></div></td><td><span class="badge ${status === 'finished' ? 'ready' : status === 'failed' ? 'failed' : ''}">${escape(stateLabel)}</span>${row.termination ? ' <span class="inventory-termination" title="' + escape(row.termination.stopReason) + '">' + escape(row.termination.stopReason) + '</span>' : ''}</td><td class="inventory-load">${percentage}</td><td class="inventory-date">${date}</td><td class="inventory-source">${escape(source)}</td>`;
-    tr.firstElementChild.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}\nState: ${stateLabel}\nLoad: ${percentage}\nDate: ${date}\nSource: ${source}`;
-    if (row.attempt) {
+    const etr = row.progress.remaining_seconds == null ? '—' : row.progress.estimated_remaining;
+    const runtime = row.progress.runtime_seconds == null ? '—' : row.progress.runtime;
+    const state = `<span class="badge ${status === 'finished' ? 'ready' : status === 'failed' ? 'failed' : ''}">${escape(stateLabel)}</span>` +
+      (row.termination ? ` <span class="inventory-termination" title="${escape(row.termination.stopReason)}">${escape(row.termination.stopReason)}</span>` : '');
+    const content = {
+      simulation: escape(displayName(row)), actions: '<div class="table-actions"></div>',
+      state, load: percentage, etr: escape(etr), runtime: escape(runtime), date, source: escape(source),
+    };
+    tr.innerHTML = columns.map(key => `<td data-column="${key}">${content[key]}</td>`).join('');
+    const name = tr.querySelector('[data-column="simulation"]');
+    if (name) name.title = `${row.folder}\nConfiguration: ${row.config_hash}\nCampaign: ${row.campaign || '—'}\nState: ${stateLabel}\nLoad: ${percentage}\nETR: ${etr}\nRuntime: ${runtime}\nDate: ${date}\nSource: ${source}`;
+    const actions = tr.querySelector('.table-actions');
+    if (actions && row.attempt) {
       const logs = document.createElement('button'); logs.className = 'small'; logs.textContent = 'Log';
       logs.onclick = () => operation('logs', {site: row.site, attempt: row.attempt});
-      tr.querySelector('.table-actions').append(logs);
+      actions.append(logs);
       if (['running','queued','prepared','stopping'].includes(status)) {
         const stop = document.createElement('button'); stop.className = 'small danger'; stop.textContent = 'Stop';
         stop.onclick = () => {if (confirm('Stop this simulation attempt?')) operation('stop', {site: row.site, attempt: row.attempt});};
-        tr.querySelector('.table-actions').append(stop);
+        actions.append(stop);
       }
     }
-    if (!row.missing) {
+    if (actions && !row.missing) {
       const folder = document.createElement('button'); folder.className = 'small folder-location';
       folder.textContent = 'Open';
       folder.onclick = () => openFolderLocation(row);
-      const actions = tr.querySelector('.table-actions');
       actions.append(folder); appendRunActions(actions, [row]);
     }
     append(tr);
@@ -716,7 +766,7 @@ function renderInventory(rows) {
     const key = JSON.stringify([selection, ...lineage, id]);
     if (!inventoryOpen.has(key)) inventoryOpen.set(key, kind === 'site' || open);
     const tr = document.createElement('tr'); tr.className = 'inventory-' + kind;
-    const th = document.createElement('th'); th.colSpan = 6; th.scope = 'rowgroup';
+    const th = document.createElement('th'); th.colSpan = columns.length; th.scope = 'rowgroup';
     const button = document.createElement('button'); button.className = 'inventory-toggle';
     const update = () => {
       button.setAttribute('aria-expanded', String(inventoryOpen.get(key)));
@@ -724,12 +774,17 @@ function renderInventory(rows) {
     };
     button.onclick = () => {inventoryOpen.set(key, !inventoryOpen.get(key)); update(); visibility();};
     update(); th.append(button); tr.append(th);
-    if (kind === 'settings' && members.some(row => !row.missing)) {
-      th.colSpan = 1;
-      const actions = document.createElement('td'), buttons = document.createElement('div');
+    if (kind === 'settings' && showActions && members.some(row => !row.missing)) {
+      const buttons = document.createElement('div');
       buttons.className = 'table-actions';
       appendRunActions(buttons, members.filter(row => !row.missing));
-      actions.colSpan = 5; actions.append(buttons); tr.append(actions);
+      if (columns.length === 1) th.append(buttons);
+      else {
+        th.colSpan = 1;
+        const actions = document.createElement('td');
+        actions.colSpan = columns.length - 1;
+        actions.append(buttons); tr.append(actions);
+      }
     }
     append(tr);
     lineage.push(key); render(members); lineage.pop();
@@ -837,6 +892,7 @@ async function refresh() {
       (pendingOperation?.legacy ? pendingOperation : null);
     if (entry) {
       entry.logs = [entry.logs[0], ...task.logs];
+      entry.action ??= task.action;
       entry.state = task.state;
       entry.command = task.command;
       entry.warning = task.warning;
@@ -857,6 +913,7 @@ async function refresh() {
     const revision = `${task.id}:${task.inventory_revision}`;
     if (task.inventory_revision && revision !== lastInventoryUpdate) {
       lastInventoryUpdate = revision; await loadInventory(false);
+      if ($('plot').classList.contains('active')) checkCampaignCsv();
     }
     if (task.state === 'failed') {
       $('task-result').textContent = task.warning ? 'Action required. See the terminal.' : task.error;
@@ -871,7 +928,14 @@ async function refresh() {
       lastResult = task.id; $('task-result').textContent = task.state === 'aborted' ?
         (animation ? 'Animation aborted.' : 'Operation aborted.') :
         task.state === 'partial' ? 'Some server operations failed; see terminal.' : 'Operation completed.';
-      if (task.state === 'aborted' && !animation) await loadInventory(false);
+      if (task.result?.inventory_messages?.length) {
+        $('task-result').textContent = task.result.inventory_messages.join(' ') +
+          (task.state === 'partial' ? ' Some server operations failed. See the terminal.' : '');
+      }
+      if (task.state === 'aborted' && !animation) {
+        if (task.action === 'plot_csv_refresh') checkCampaignCsv();
+        else await loadInventory(false);
+      }
       if (task.result?.missing_removed != null) {
         await loadInventory(false);
         if (task.state === 'complete') $('task-result').textContent = `Removed ${task.result.missing_removed} missing run records.`;
@@ -912,6 +976,15 @@ async function refresh() {
         monitorPlot = task.result;
         await fillPlotSources(state.campaigns || [], follow ? monitorPlot : null);
         if (!previous) view('plot');
+      }
+      if (task.result?.campaign_csv_refresh) {
+        const result = task.result.campaign_csv_refresh;
+        $('task-result').textContent = `Campaign CSVs downloaded for ${result.downloaded} simulations.` +
+          (task.state === 'partial' ? ' Some downloads failed. See the terminal.' : '');
+        if ($('plot-campaign').value === result.campaign && $('plot-data').value.trim() === result.requested_data) {
+          $('plot-data').value = result.data;
+          await loadPlotOptions(false, null, true);
+        }
       }
       if (task.result?.config_hash) {
         $('task-result').textContent = 'Submitted.';
@@ -1205,7 +1278,10 @@ function updateEndLoad() {
 }
 $('run-start-load').oninput = $('run-load').oninput = () => {updateEndLoad(); updateActions();};
 for (const id of ['increment', 'rows', 'cols', 'indenter-radius', 'vtu-rate']) $('run-' + id).oninput = updateActions;
-$('run-write-vtus').onchange = updateActions;
+$('run-write-vtus').onchange = () => {
+  if (isLoadedCampaignBase()) campaignSweepChanged();
+  updateActions();
+};
 $('run-energy-function').onchange = $('run-reconnection').onchange = updateActions;
 $('run-axial-method').onchange = $('run-driven-edge').onchange = renderExperiment;
 for (const edge of rectangleEdges) $('run-edge-' + edge).onchange = updateActions;
@@ -1281,21 +1357,31 @@ function showPreset(settings) {
   $('run-advanced').open = settings.loading !== 'relaxation' ||
     (settings.deformation !== 'sequentialSlip' && (settings.repeat || settings.directions.includes(',')));
   renderExperiment();
+  if (isLoadedCampaignBase()) updateCampaignVtuWarning();
 }
 async function loadStartOptions() {
   startOptions = await api('start_options');
   updateExtraSettingsHelp();
   for (const [id, names, placeholder] of [
     ['simulation-preset', startOptions.presets, 'New configuration'],
+    ['run-campaign', startOptions.campaign_sources ?? startOptions.campaigns, 'No campaign'],
     ['campaign-base', startOptions.presets, 'Choose a saved preset'],
     ['campaign-saved', startOptions.campaigns, 'Choose a saved campaign'],
   ]) {
     const select = $(id), previous = select.value;
     select.replaceChildren(new Option(placeholder, ''), ...names.map(name =>
       new Option(id !== 'campaign-saved' && name === 'Example-simple-shear' ? 'Example simple shear' : name, name)));
-    if (names.includes(previous)) select.value = previous;
+    if (id === 'simulation-preset' && startOptions.campaign_sources?.length) {
+      const group = document.createElement('optgroup');
+      group.label = 'Saved campaigns';
+      group.append(...startOptions.campaign_sources.map(name => new Option(name, campaignPresetPrefix + name)));
+      select.append(group);
+    }
+    if (id === 'campaign-base' && loadedCampaign) addLoadedCampaignBase();
+    if ([...select.options].some(option => option.value === previous)) select.value = previous;
   }
-  if (!$('campaign-axes').children.length) addCampaignAxis();
+  if (!preservesCampaignRuns() && !$('campaign-axes').children.length) addCampaignAxis();
+  queueCampaignSize();
   updateActions();
 }
 function updateExtraSettingsHelp() {
@@ -1351,15 +1437,21 @@ $('simulation-new').onclick = () => {
 };
 $('run-clear-continuation').onclick = $('simulation-new').onclick;
 $('simulation-preset').onchange = async () => {
-  const name = $('simulation-preset').value;
+  const selection = $('simulation-preset').value;
   $('simulation-download').disabled = true;
-  if (!name) return $('simulation-new').click();
+  if (!selection) return $('simulation-new').click();
   try {
-    const {settings} = await api('simulation_preset', {action: 'load', name});
-    if ($('simulation-preset').value !== name) return;
+    if (selection.startsWith(campaignPresetPrefix)) {
+      const name = selection.slice(campaignPresetPrefix.length);
+      const campaign = await api('campaign_settings?' + new URLSearchParams({name}));
+      if ($('simulation-preset').value === selection) await applyCampaignPreset(campaign);
+      return;
+    }
+    const {settings} = await api('simulation_preset', {action: 'load', name: selection});
+    if ($('simulation-preset').value !== selection) return;
     setContinuation(null);
-    $('run-label').value = name;
-    $('simulation-preset-name').value = name;
+    $('run-label').value = selection;
+    $('simulation-preset-name').value = selection;
     showPreset(settings);
     $('simulation-download').disabled = false;
   } catch (error) {message(error.message);}
@@ -1425,6 +1517,7 @@ $('run-form').onsubmit = event => {
       selection: continuationPlan.selection, checkpoint: continuationPlan.checkpoint,
       checkpoint_catalog: continuationPlan.checkpoint_catalog,
     };
+    else if ($('run-campaign').value) data.campaign = $('run-campaign').value;
     if (!continuationPlan && customMesh.modified) {
       const issue = customMesh.issue();
       if (issue) return message(issue);
@@ -1439,9 +1532,21 @@ const commonSweepParameters = {
   startLoad: 'Initial load', totalLoad: 'Additional load', loadIncrement: 'Load increment',
   reconnectionMethod: 'Reconnection', initialGuessNoise: 'Initial noise', epsR: 'Force tolerance', nrThreads: 'Threads',
 };
+function isLoadedCampaignBase() {
+  return Boolean(loadedCampaign && $('campaign-base').value === '@campaign');
+}
+function preservesCampaignRuns() {
+  return isLoadedCampaignBase() && loadedCampaign.preserve_runs;
+}
+function addLoadedCampaignBase() {
+  const select = $('campaign-base');
+  if (![...select.options].some(option => option.value === '@campaign')) {
+    select.add(new Option('Current individual settings', '@campaign'));
+  }
+}
 function fillCampaignParameters(select, value = select.value) {
   const defaults = startOptions.defaults;
-  const slip = campaignBaseSettings?.deformation === 'sequentialSlip';
+  const slip = (isLoadedCampaignBase() ? $('run-deformation').value : campaignBaseSettings?.deformation) === 'sequentialSlip';
   const keys = $('campaign-show-all').checked ?
     ['L', ...Object.keys(defaults).filter(key => key !== 'initialMeshSha256').sort()] : slip ?
       ['directions', ...Object.keys(commonSweepParameters).filter(key => key !== 'startLoad' && key !== 'totalLoad')] :
@@ -1455,17 +1560,50 @@ function updateCampaignParameters() {
 }
 function updateCampaignVtuWarning() {
   const checkbox = $('campaign-vtu');
-  $('campaign-vtu-field').hidden = checkbox.disabled = !campaignBaseSettings?.writeMeshVTUs;
+  let baseWrites = campaignBaseSettings?.writeMeshVTUs;
+  if (isLoadedCampaignBase()) {
+    baseWrites = $('run-write-vtus').checked;
+    if (preservesCampaignRuns() && baseWrites === loadedCampaign.settings.writeMeshVTUs) {
+      baseWrites = loadedCampaign.writes_vtus;
+    }
+  }
+  $('campaign-vtu-field').hidden = checkbox.disabled = !baseWrites;
   const sweep = [...$('campaign-axes').querySelectorAll('[data-axis="parameter"]')]
     .find(select => select.value === 'writeMeshVTUs');
   const writesVTUs = sweep ?
-    sweep.closest('fieldset').querySelector('[data-axis="values"]').value.split('\n').some(value => value.trim() === 'true') :
-    campaignBaseSettings?.writeMeshVTUs;
+    sweep.closest('fieldset').querySelector('[data-axis="values"]').value.split(/[,\s]+/).includes('true') :
+    baseWrites;
   $('campaign-vtu-warning').hidden = !campaignBaseSettings || !writesVTUs ||
     (!checkbox.disabled && checkbox.checked);
 }
 $('campaign-show-all').onchange = updateCampaignParameters;
-$('campaign-vtu').onchange = $('campaign-axes').oninput = $('campaign-axes').onchange = updateCampaignVtuWarning;
+function campaignSweepData() {
+  const override = !$('campaign-vtu').disabled && $('campaign-vtu').checked ? false : null;
+  return {axes: campaignAxes(), writeMeshVTUs: override,
+    ...(isLoadedCampaignBase() ? {source_campaign: loadedCampaign.name, preserve_runs: preservesCampaignRuns()} : {})};
+}
+function queueCampaignSize() {
+  clearTimeout(campaignSizeTimer);
+  const request = ++campaignSizeRequest;
+  const status = $('campaign-size');
+  campaignSizeTimer = setTimeout(async () => {
+    try {
+      const {jobs} = await api('campaign_size', campaignSweepData());
+      if (request !== campaignSizeRequest) return;
+      status.textContent = `Campaign size: ${jobs.toLocaleString()} ${jobs === 1 ? 'job' : 'jobs'}`;
+      status.removeAttribute('title');
+    } catch (error) {
+      if (request !== campaignSizeRequest) return;
+      status.textContent = 'Campaign size: —';
+      status.title = error.message;
+    }
+  }, 160);
+}
+function campaignSweepChanged() {
+  updateCampaignVtuWarning();
+  queueCampaignSize();
+}
+$('campaign-vtu').onchange = $('campaign-axes').oninput = $('campaign-axes').onchange = campaignSweepChanged;
 function addCampaignAxis() {
   const row = $('campaign-axis').content.firstElementChild.cloneNode(true);
   const parameter = row.querySelector('[data-axis="parameter"]'), mode = row.querySelector('[data-axis="mode"]');
@@ -1481,14 +1619,26 @@ function addCampaignAxis() {
       field.querySelector('input').disabled = custom;
     });
     row.querySelector('[data-custom]').hidden = !custom;
-    row.querySelector('[data-axis-hint]').textContent = numeric ? 'Separate numbers with commas or spaces.' :
-      typeof defaults[parameter.value] === 'boolean' ? 'Enter true or false, one per line.' : 'Enter one value per line.';
+    row.querySelector('[data-axis-hint]').textContent = parameter.value === 'directions' ?
+      'Separate quoted sequences with commas, as in "1,2", "2,1".' : 'Separate values with commas.';
   }
   parameter.onchange = mode.onchange = updateMode;
-  row.querySelector('[data-remove]').onclick = () => {row.remove(); updateCampaignVtuWarning();};
+  row.querySelector('[data-remove]').onclick = () => {row.remove(); campaignSweepChanged();};
   updateMode();
   $('campaign-axes').append(row);
   return row;
+}
+function restoreCampaignAxes(axes) {
+  $('campaign-axes').replaceChildren();
+  for (const axis of axes) {
+    const row = addCampaignAxis();
+    for (const input of row.querySelectorAll('[data-axis]')) {
+      if (input.dataset.axis === 'parameter') fillCampaignParameters(input, axis.parameter);
+      else if (Object.hasOwn(axis, input.dataset.axis)) input.value = axis[input.dataset.axis];
+    }
+    row.querySelector('[data-axis="parameter"]').onchange();
+  }
+  campaignSweepChanged();
 }
 $('campaign-base').onchange = async () => {
   campaignBaseSettings = null;
@@ -1496,23 +1646,51 @@ $('campaign-base').onchange = async () => {
   updateCampaignVtuWarning();
   updateActions();
   const name = $('campaign-base').value;
+  if (!preservesCampaignRuns() && !$('campaign-axes').children.length) addCampaignAxis();
+  queueCampaignSize();
   try {
-    const preset = name && await api('simulation_preset', {action: 'load', name});
+    const preset = isLoadedCampaignBase() ? loadedCampaign : name && await api('simulation_preset', {action: 'load', name});
     if ($('campaign-base').value !== name) return;
     campaignBaseSettings = preset?.settings;
     updateCampaignParameters();
-    updateCampaignVtuWarning();
+    campaignSweepChanged();
     updateActions();
   } catch (error) {message(error.message);}
 };
-$('campaign-add-axis').onclick = () => {if (startOptions) addCampaignAxis();};
+async function applyCampaignPreset(campaign) {
+  loadedCampaign = campaign;
+  setContinuation(null);
+  $('simulation-preset-name').value = '';
+  $('run-label').value = campaign.label;
+  showPreset(campaign.settings);
+  if ($('run-extra').value) $('run-advanced').open = true;
+  addLoadedCampaignBase();
+  $('campaign-base').value = '@campaign';
+  $('campaign-name').value = campaign.name;
+  $('run-campaign').value = campaign.name;
+  $('campaign-saved').value = startOptions.campaigns.includes(campaign.name) ? campaign.name : '';
+  for (const id of ['run-site', 'campaign-site']) {
+    const select = $(id);
+    if ([...select.options].some(option => option.value === campaign.site)) select.value = campaign.site;
+  }
+  await $('campaign-base').onchange();
+  restoreCampaignAxes(campaign.axes);
+  terminalMessage('Campaign settings',
+    campaign.preserve_runs ? `Loaded ${campaign.name} with its ${campaign.runs} saved run combinations. Edit the sweep values to select saved runs.` :
+      `Loaded ${campaign.name} with its saved sweep values.`);
+  queueWorkspaceDraft();
+}
+$('campaign-add-axis').onclick = () => {
+  if (!startOptions) return;
+  addCampaignAxis();
+  campaignSweepChanged();
+};
 $('campaign-form').onsubmit = async event => {
   event.preventDefault();
-  const axes = campaignAxes();
   try {
-    const disableVTUs = !$('campaign-vtu').disabled && $('campaign-vtu').checked;
     const result = await api('save_campaign', {name: $('campaign-name').value.trim(),
-      preset: $('campaign-base').value, axes, writeMeshVTUs: disableVTUs ? false : null});
+      preset: $('campaign-base').value, site: $('campaign-site').value, ...campaignSweepData(),
+      ...(isLoadedCampaignBase() ? {base: runConfiguration()} : {})});
     await loadStartOptions();
     $('campaign-saved').value = result.name;
     updateActions();
@@ -1537,6 +1715,7 @@ function showVisualization(tab) {
   const seed = $('plot-seed').options[0];
   if (seed) seed.textContent = tab === 'animate' ? 'All seeds' : 'Mean of available seeds ± sample SD';
   $('animation-settings').disabled = tab !== 'animate';
+  checkCampaignCsv();
   if (tab === 'animate') {
     clearTimeout(plotTimer);
     return loadAnimationOptions();
@@ -1820,6 +1999,8 @@ async function fillPlotSources(campaigns, runSelection = null) {
 }
 async function loadPlotOptions(resetSource, saved = null, keepAxes = false) {
   const request = ++plotRequest; ++plotCheckRequest; ++previewRevision; ++animationRequest; clearTimeout(plotTimer);
+  ++campaignCsvRequest;
+  $('plot-csv-refresh').hidden = true;
   plotSchema = null;
   plotValid = false; updateActions();
   if (resetSource || saved) previewAutomatic = true;
@@ -1883,8 +2064,33 @@ async function loadPlotOptions(resetSource, saved = null, keepAxes = false) {
     plotSchema = null; $('plot-warning').textContent = error.message; updateActions();
     if (recoveringWorkspace && saved) throw error;
   }
-  if (request === plotRequest) loadAnimationOptions();
+  if (request === plotRequest) {
+    checkCampaignCsv();
+    loadAnimationOptions();
+  }
 }
+async function checkCampaignCsv() {
+  const request = ++campaignCsvRequest, button = $('plot-csv-refresh');
+  const campaign = $('plot-campaign').value, data = $('plot-data').value.trim();
+  if (!campaign || campaign.startsWith('@') || $('plot-panel').hidden ||
+      !lastState?.sites.some(site => site.remote)) {
+    button.hidden = true;
+    return;
+  }
+  try {
+    const status = await api('plot_csv_status?' + new URLSearchParams({campaign, data}));
+    if (request === campaignCsvRequest && campaign === $('plot-campaign').value &&
+        data === $('plot-data').value.trim()) button.hidden = !status.outdated;
+  } catch (error) {
+    if (request === campaignCsvRequest) {
+      button.hidden = true;
+      $('plot-warning').textContent = error.message;
+    }
+  }
+}
+$('plot-csv-refresh').onclick = () => operation('plot_csv_refresh', {
+  campaign: $('plot-campaign').value, data: $('plot-data').value.trim(),
+});
 function updatePlotControls(saved = null) {
   if (!plotSchema) return;
   if (typeof saved?.x !== 'string') saved = null;
@@ -1976,7 +2182,6 @@ async function requestPlotPreview(manual) {
   }, 5000);
   try {
     const result = await api('plot_preview', {...selection, automatic: !manual});
-    if (result.manual || result.seconds > 5) previewAutomatic = false;
     if (result.manual || result.busy) {
       previewAutomatic = false;
       $('plot-preview-status').textContent = result.busy ? 'Previous preview is still rendering. Press Update preview when it finishes.' :
@@ -1984,13 +2189,15 @@ async function requestPlotPreview(manual) {
       return;
     }
     if (revision !== previewRevision) return;
+    const resumed = !previewAutomatic && result.seconds < 5;
+    previewAutomatic = result.seconds < 5;
     plotValid = true; showPlotValidation(result);
     const image = $('plot-preview-image');
     image.src = '/previews/' + result.image + '?token=' + encodeURIComponent(accessToken) + '&revision=' + Date.now();
     image.classList.remove('hidden'); image.parentElement.classList.remove('is-stale');
     $('plot-preview-placeholder').classList.add('hidden');
     $('plot-preview-status').textContent = `Preview updated in ${result.seconds.toFixed(2)} s.` +
-      (previewAutomatic ? '' : ' Automatic preview paused; use Update preview.');
+      (resumed ? ' Automatic preview resumed.' : previewAutomatic ? '' : ' Automatic preview paused; use Update preview.');
     queueWorkspaceDraft();
   } catch (error) {
     if (revision === previewRevision) {plotValid = false; $('plot-warning').textContent = error.message; $('plot-preview-status').textContent = 'Preview unavailable.';}
@@ -2097,6 +2304,7 @@ function saveWorkspaceDraft() {
       tab: $('animate-panel').hidden ? 'plot' : 'animate', fields: captureFields(draftForms),
       details: [...document.querySelectorAll('details[id]')].filter(node => node.closest(draftPanels) && node.open).map(node => node.id),
       monitorPlot, filePlot, plot, curve: opacityEditor.points, campaignAxes: campaignAxes(), continuationPlan,
+      loadedCampaign: loadedCampaign?.name,
       animationRangeScan, animationSourceKey, animationLatticeKey, lastAnimationScan,
       inventory: {sort: inventorySort, ascending: inventoryAscending, open: [...inventoryOpen]},
       presets: {plot: loadedPresetId, animation: loadedAnimationPresetId},
@@ -2189,6 +2397,12 @@ async function recoverWorkspace() {
     if ($('jobs-site').value) await loadInventory(false);
   });
   await attempt('simulation and campaign settings', async () => {
+    if (draft.loadedCampaign) {
+      try {
+        loadedCampaign = await api('campaign_settings?' + new URLSearchParams({name: draft.loadedCampaign}));
+        addLoadedCampaignBase();
+      } catch (error) {message('Could not restore the loaded campaign. ' + error.message);}
+    }
     setContinuation(draft.continuationPlan ?? null);
     restoreFields('#run-form, #campaign-form', draft.fields);
     setDirectionChoices($('run-directions').value);
@@ -2200,16 +2414,7 @@ async function recoverWorkspace() {
     renderExperiment();
     if ($('campaign-base').value) await $('campaign-base').onchange();
     skipped.push(...restoreFields('#campaign-form', draft.fields));
-    $('campaign-axes').replaceChildren();
-    for (const axis of draft.campaignAxes) {
-      const row = addCampaignAxis();
-      for (const input of row.querySelectorAll('[data-axis]')) {
-        if (input.dataset.axis === 'parameter') fillCampaignParameters(input, axis.parameter);
-        else if (Object.hasOwn(axis, input.dataset.axis)) input.value = axis[input.dataset.axis];
-      }
-      row.querySelector('[data-axis="parameter"]').onchange();
-    }
-    updateCampaignVtuWarning();
+    restoreCampaignAxes(draft.campaignAxes);
     if (skipped.length) throw new Error('Some options are no longer available.');
   });
   await attempt('setup settings', async () => {
@@ -2346,7 +2551,7 @@ async function loadSlurmOptions() {
   try {
     const previousSite = $('slurm-site').value, previousAction = $('slurm-action').value;
     slurmSchema = await api('slurm_options');
-    $('slurm-site').replaceChildren(new Option('All Slurm sites', '*'), ...slurmSchema.sites.map(name => new Option(siteLabel(name), name)));
+    $('slurm-site').replaceChildren(new Option('All Slurm profiles', '*'), ...slurmSchema.sites.map(name => new Option(siteLabel(name), name)));
     $('slurm-action').replaceChildren(...Object.entries(slurmSchema.actions).map(([key, label]) => new Option(label, key)));
     if (previousSite === '*' || slurmSchema.sites.includes(previousSite)) $('slurm-site').value = previousSite;
     if (previousAction in slurmSchema.actions) $('slurm-action').value = previousAction;
@@ -2558,8 +2763,8 @@ $('ssh-add-form').onsubmit = event => {
     source: $('ssh-source').value, output_root: $('ssh-output').value, mode: $('ssh-mode').value});
 };
 $('copy-terminal').onclick = async () => {
-  const text = [...$('terminal-history').querySelectorAll('details')].map(node =>
-    node.querySelector('summary span').textContent + '\n' + node.querySelector('pre').textContent).join('\n\n');
+  const text = [...$('terminal-history').querySelectorAll(':scope > details')].map(node =>
+    node.querySelector('summary span').textContent + '\n' + node.terminalOutput).join('\n\n');
   try {await navigator.clipboard.writeText(text); $('copy-terminal').textContent = 'Copied';
     setTimeout(() => {$('copy-terminal').textContent = 'Copy all';}, 1500);
   } catch (error) {message('Clipboard access failed: ' + error.message);}

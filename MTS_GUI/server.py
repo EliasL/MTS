@@ -159,6 +159,7 @@ class Workspace:
         from MTS_Management.config import DEFAULTS
         return {"defaults": DEFAULTS,
                 "presets": simulation_setup.preset_names(STATE / "simulation-presets"),
+                "campaign_sources": sorted(self.monitor.campaign_definitions()),
                 "campaigns": sorted(path.parent.name for path in
                                     (ROOT / "MTSManager/campaigns/gui").glob("*/simulations.json"))}
 
@@ -179,17 +180,33 @@ class Workspace:
             raise ExpectedError(f"Update the manager on {site_label(site.name)} in Setup and tools.") from error
         return result["vtu"].encode("ascii")
 
-    def save_campaign(self, data):
-        from MTS_Management.files import locked, write_json
+    def load_campaign(self, name):
+        return simulation_setup.campaign_editor(self.monitor.campaign_path(name))
 
-        definition = simulation_setup.campaign_definition(STATE / "simulation-presets", data)
+    def campaign_size(self, data):
+        source_name = data.get("source_campaign")
+        source = self.monitor.campaign_path(source_name) if source_name else None
+        return {"jobs": simulation_setup.campaign_size(data, source=source)}
+
+    def save_campaign(self, data):
+        from MTS_Management.files import locked, read_json, write_json
+
+        source_name = data.get("source_campaign")
+        source = self.monitor.campaign_path(source_name) if source_name else None
+        definition, recipe = simulation_setup.campaign_definition(STATE / "simulation-presets", data, source=source)
         name = definition["name"]
         directory = ROOT / "MTSManager/campaigns/gui" / name
+        resources = {}
+        if source is not None and (path := source.with_name("resources.json")).is_file():
+            saved = read_json(path)
+            resources = {key: saved[key] for key in ("site", "resources") if key in saved}
+        if site := data.get("site"):
+            resources["site"] = site
         with locked(STATE / ".simulation-campaigns.lock"):
             if name in self.monitor.campaign_definitions():
                 raise ValueError("A campaign with this name already exists. Choose a new name.")
-            write_json(directory / "resources.json", {})
-            write_json(directory / "metadata.json", {"missing_settings": {}, "executables": []})
+            write_json(directory / "resources.json", resources)
+            write_json(directory / "metadata.json", {"missing_settings": {}, "executables": [], "sweep": recipe})
             write_json(directory / "simulations.json", definition)
         return {"name": name, "runs": len(definition["runs"])}
 
@@ -205,7 +222,7 @@ class Workspace:
         from MTS_Management.slurm_control import validate_rule
         rule = validate_rule({k: data[k] for k in ("action", "match", "criteria")})
         if data["site"] != "*" and data["site"] not in self.slurm_options()["sites"]:
-            raise ValueError("Choose an enabled Slurm site.")
+            raise ValueError("Choose an enabled Slurm profile.")
         command = [sys.executable, "-m", "MTS_Management.slurm_control", "--sites", str(ROOT / "MTSManager/sites.toml"),
                    "--site", data["site"], "--action", rule["action"], "--match", rule["match"],
                    "--criteria", json.dumps(rule["criteria"])]
@@ -429,6 +446,8 @@ class Workspace:
                 self.log(f"Continuation submitted in {result['output_folder']}.")
                 return {"config_hash": config.config_hash}
             from .submission import start_run
+            if campaign := data.get("campaign"):
+                self.monitor.campaign_path(campaign)
             return start_run(ROOT / "MTSManager/sites.toml", config, data, self.log)
         if action == "run_campaign":
             from .submission import start_campaign
@@ -436,6 +455,8 @@ class Workspace:
             return start_campaign(ROOT / "MTSManager/sites.toml", path, data["site"], self.log)
         if action == "plot_monitor":
             return self.plots.open_run_plot(data)
+        if action == "plot_csv_refresh":
+            return self.plots.refresh_campaign_csvs(data)
         if action == "animate":
             return self.plots.render_animation(data)
         if action == "animate_preview":
@@ -553,6 +574,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/plot_options":
                 query = parse_qs(urlsplit(self.path).query)
                 self.reply(200, self.server.app.plots.plot_options(query.get("campaign", [""])[0], query.get("data", [None])[0]))
+            elif path == "/api/plot_csv_status":
+                query = parse_qs(urlsplit(self.path).query)
+                outdated = self.server.app.plots.campaign_csv_outdated(
+                    query.get("campaign", [""])[0], query.get("data", [None])[0])
+                self.reply(200, {"outdated": outdated})
             elif path == "/api/animation_options":
                 query = parse_qs(urlsplit(self.path).query)
                 seed = query.get("seed", ["all"])[0]
@@ -563,6 +589,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.slurm_options())
             elif path == "/api/start_options":
                 self.reply(200, self.server.app.start_options())
+            elif path == "/api/campaign_settings":
+                query = parse_qs(urlsplit(self.path).query)
+                self.reply(200, self.server.app.load_campaign(query.get("name", [""])[0]))
             elif path == "/api/plot_check":
                 from MTS_Plotting.campaign_plot import prepared_plot, validate_axes
                 data = json.loads(parse_qs(urlsplit(self.path).query)["selection"][0])
@@ -641,6 +670,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.plots.pick_simulation_folder())
             elif action == "save_campaign":
                 self.reply(200, self.server.app.save_campaign(data))
+            elif action == "campaign_size":
+                self.reply(200, self.server.app.campaign_size(data))
             elif action == "open_run_folder":
                 self.reply(200, self.server.app.monitor.open_run_folder(data))
             elif action == "terminal":
@@ -659,14 +690,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "resume", "run_campaign", "continuation_plan", "plot", "plot_monitor", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "remove_missing", "slurm_plan", "slurm_execute",
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "resume", "run_campaign", "continuation_plan", "plot", "plot_monitor", "plot_csv_refresh", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "remove_missing", "slurm_plan", "slurm_execute",
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
-                title = {"plot_monitor": "Prepare plot data", "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
+                title = {"plot_monitor": "Prepare plot data", "plot_csv_refresh": "Refresh campaign CSVs",
+                         "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
                          "restore_archive": "Restore", "continuation_plan": "Load further",
                          "run": "Start simulation", "remove_missing": "Remove all missing",
                          "animate": "Generate animation", "animate_preview": "Preview animation"}.get(action, action.capitalize())
                 task_id = self.server.app.start(title, lambda: self.server.app.operation(action, data),
-                                                cancellable=action in {"inventory", "hard_refresh", "logs", "animate", "animate_preview"},
+                                                cancellable=action in {"inventory", "hard_refresh", "logs", "plot_csv_refresh", "animate", "animate_preview"},
                                                 action=action)
                 self.reply(202, {"started": action, "task_id": task_id})
             else:
