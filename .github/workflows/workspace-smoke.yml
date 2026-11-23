@@ -1,0 +1,41 @@
+name: Workspace smoke test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libssl-dev
+      - name: Install macOS build libraries
+        if: runner.os == 'macOS'
+        run: |
+          brew install libomp openssl@3
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix libomp):$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - name: Build the simulator with Eigen
+        run: |
+          cmake -S MTS2D -B MTS2D/build/ci -DCMAKE_BUILD_TYPE=Release -DENABLE_NATIVE_ARCH=OFF -DMTS_ENABLE_CHOLMOD=OFF -DMTS_TANGENT_BACKEND=EIGEN
+          cmake --build MTS2D/build/ci --target MTS2D --parallel 2
+      - name: Submit, inspect and plot a local run
+        env:
+          MTS_TEST_BINARY: ${{ github.workspace }}/MTS2D/build/ci/MTS2D
+          MPLBACKEND: Agg
+        run: uv run --no-sync python -m unittest discover -s tests -p test_workspace_smoke.py

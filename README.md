@@ -49,8 +49,9 @@ On macOS this requests Apple's Command Line Tools when needed, then uses an
 existing Homebrew installation for CMake and OpenMP. Finish any Apple dialogs and
 rerun the command if instructed. Install Homebrew separately if it is missing.
 On Ubuntu/Debian it uses apt and may request an administrator password in Terminal.
-Other Linux distributions need a C++17 compiler, CMake, OpenMP, OpenSSL and zlib development
-files installed manually. The Setup page can rebuild the simulator afterward.
+For manual installation, the default build requires CMake 3.23 or newer, a
+C++17 compiler, OpenMP, OpenSSL, zlib, BLAS and LAPACK. The Setup page can rebuild
+the simulator afterward.
 Setup, the manager and the VS Code managed build task share
 `MTS2D/build/release/MTS2D`. Generated build directories are ignored by Git;
 optional Debug builds live in `MTS2D/build/debug`.
@@ -76,6 +77,16 @@ missing components but preserves populated checkouts and local edits. Updating
 the scientific components is an explicit development operation, not a side effect
 of opening the application. Remote execution uses the site profiles in
 `MTSManager/sites.toml`; review their SSH aliases and resources before submitting.
+
+The figure shows the remote campaign workflow. MTSManager submits jobs to Slurm
+over SSH and retrieves selected results for analysis with MTSPlot.
+
+![Remote MTS campaign workflow from submission through Slurm, simulation, data retrieval and plotting](docs/mts-architecture.svg)
+
+You can also [run simulations locally](#local-simulations). MTSManager starts
+MTS2D on your workstation and uses the same run-folder structure.
+See the [manager API](MTSManager/API.md) and
+[simulation process](docs/TheSimulationProcess.md) for details.
 
 ## Development and troubleshooting
 

@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suite', action='append', choices=['simulator', 'manager', 'gui', 'plot'])
     parser.add_argument('--build', action='store_true', help='Build simulator and scientific tests first')
-    parser.add_argument('--build-dir', type=Path, default=root/'MTS2D/build')
+    parser.add_argument('--build-dir', type=Path, default=root/'MTS2D/build/debug')
     parser.add_argument('--timeout', type=float, default=120, help='Seconds allowed per build or suite')
     args = parser.parse_args()
     if args.timeout <= 0:

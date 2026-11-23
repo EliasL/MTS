@@ -17,10 +17,11 @@ GUI/server and plotting suites. It captures full logs in a temporary directory,
 prints suite timings and outcomes, reports skipped tests and returns nonzero on
 failure or timeout. No production jobs are submitted and no images are inspected.
 
-A configured CMake build is required. For an unconfigured checkout:
+A configured Debug build is required for the scientific test executable. From
+the workspace root, configure the standard test directory:
 
 ```sh
-cmake -S MTS2D -B MTS2D/build -DCMAKE_BUILD_TYPE=Release
+(cd MTS2D && cmake --preset debug)
 ```
 
 Use `--suite manager`, `--suite simulator`, `--suite gui` or `--suite plot` for
@@ -28,10 +29,11 @@ focused work. Repeat `--suite` to select several. `--build-dir` selects a differ
 configured simulator build and sets `MTS_TEST_BINARY` for executable integration
 tests. `--timeout` controls the time allowed per build or suite.
 
-The historical Eigen executable test requires the recorded local build at
-`MTSManager/build/MTS2D`. When unavailable, that particular integration test is
-reported as skipped. Fixed fingerprints of all benchmark/pilot configuration
-hashes and synthetic historical-worker tests remain available without it.
+The GitHub Actions smoke workflow builds MTS2D with Eigen from the pinned
+component revisions on Linux and macOS. It checks CLI submission, campaign
+skip decisions, inventory and plotted data. To run that check with a local
+executable, set `MTS_TEST_BINARY` and run
+`python -m unittest discover -s tests -p test_workspace_smoke.py`.
 
 Run only the suites affected by a change, followed by broader verification when
 the change crosses component boundaries. Repeat checks after a relevant change
@@ -58,26 +60,6 @@ Slurm is represented by a scheduler fixture; the generated scripts execute real
 small simulations locally. This checks submission logic and command execution
 without requiring a cluster allocation. It does not test a particular cluster's
 module installation, scheduler configuration or filesystem locking behaviour.
-
-## Suite economy
-
-The expensive archive test has been replaced with a check of the actual build
-input list. Small source snapshot tests still exercise archive serialization,
-installation and preservation of existing compiled files.
-
-The Delaunay test checks every periodic-image/circumcircle comparison, but reports
-one result per triangle. Uniform-deformation protocol checks similarly examine
-every element and report one result per simulated configuration. These changes
-reduce repetitive assertion reporting without sampling away geometry checks.
-
-A visualization-only remeshing example is excluded from automated tests. The
-fully constrained mesh case instead checks actual completion without free
-solver degrees of freedom. Scientific boundary-condition, solver and restart
-combinations are retained because their physical invariants differ.
-
-Optional tests written for the manager-worker API have been consolidated into
-the folder-interface lifecycle tests. That removes silent skips and keeps target
-completion, explicit replay and inventory assertions on an executed path.
 
 ## Adding or changing tests
 

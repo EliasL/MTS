@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="968" viewBox="0 0 1440 968"
+     role="img" aria-labelledby="title description">
+  <title id="title">MTS components and remote campaign execution</title>
+  <desc id="description">On the workstation, a browser GUI, command-line client or Python agent submits a campaign through MTSManager. The local manager sends a JSON request over SSH. The cluster manager prepares run folders, submits recorded commands to Slurm, and returns job IDs. Slurm starts the retained MTS2D executable. MTS2D writes scientific results into each run folder. MTSManager retrieves selected data with rsync, and MTSPlot reads the verified local copies.</desc>
+  <defs>
+    <style>
+      text {font-family: Arial, Helvetica, sans-serif; fill: #17263b}
+      .title {font-size: 40px; font-weight: 700}
+      .subtitle {font-size: 20px; fill: #405168}
+      .zone-title {font-size: 18px; font-weight: 700; letter-spacing: 1px}
+      .card-title {font-size: 24px; font-weight: 700}
+      .body {font-size: 17px; fill: #405168}
+      .flow-label {font-size: 16px; font-weight: 700}
+      .flow-note {font-size: 15px; fill: #405168}
+      .card {fill: #fff; stroke: #bacadc; stroke-width: 1.5}
+      .manager {fill: #eaf1ff; stroke: #8ea9db; stroke-width: 1.5}
+      .data {fill: #e6f5ef; stroke: #83b9a9; stroke-width: 1.5}
+    </style>
+  </defs>
+
+  <rect width="1440" height="968" fill="#fff"/>
+  <text x="32" y="55" class="title">MTS components and remote campaign execution</text>
+  <text x="34" y="89" class="subtitle">Submission and analysis run on the workstation. Slurm schedules MTS2D on the cluster.</text>
+  <rect x="32" y="117" width="594" height="819" rx="20" fill="#f5f8fc" stroke="#d5deea"/>
+  <rect x="814" y="117" width="594" height="819" rx="20" fill="#f5f8fc" stroke="#d5deea"/>
+  <text x="64" y="152" class="zone-title">WORKSTATION</text>
+  <text x="846" y="152" class="zone-title">REMOTE EXECUTION SITE</text>
+
+  <g stroke="#2252a1" stroke-width="2.5">
+    <line x1="190" y1="260" x2="190" y2="302"/>
+    <line x1="466" y1="260" x2="466" y2="302"/>
+    <line x1="594" y1="346" x2="838" y2="346"/>
+    <line x1="950" y1="429" x2="950" y2="475"/>
+    <line x1="1057" y1="536" x2="1135" y2="536"/>
+    <line x1="329" y1="483" x2="329" y2="437"/>
+  </g>
+  <path d="M185 301H195L190 308ZM461 301H471L466 308ZM837 341V351L844 346Z
+           M945 474H955L950 481ZM1134 531V541L1141 536ZM324 438H334L329 431Z"
+        fill="#2252a1"/>
+  <line x1="846" y1="389" x2="602" y2="389" stroke="#59667d" stroke-width="2.5" stroke-dasharray="6 6"/>
+  <path d="M603 384V394L596 389Z" fill="#59667d"/>
+  <g stroke="#157365" stroke-width="2.5">
+    <line x1="1259" y1="593" x2="1259" y2="643"/>
+    <line x1="846" y1="712" x2="602" y2="712"/>
+    <line x1="329" y1="770" x2="329" y2="805"/>
+  </g>
+  <path d="M1254 642H1264L1259 649ZM603 707V717L596 712ZM324 804H334L329 811Z" fill="#157365"/>
+
+  <rect x="64" y="172" width="252" height="88" rx="12" class="card"/>
+  <text x="84" y="207" class="card-title">MTS GUI</text>
+  <text x="84" y="235" class="body">Browser and local server</text>
+  <rect x="342" y="172" width="252" height="88" rx="12" class="card"/>
+  <text x="362" y="207" class="card-title">Agents and scripts</text>
+  <text x="362" y="235" class="body">CLI or Python</text>
+
+  <rect x="64" y="310" width="530" height="119" rx="12" class="manager"/>
+  <text x="84" y="344" class="card-title">MTSManager</text>
+  <text x="84" y="374" class="body">Validates campaign members and selects the site.</text>
+  <text x="84" y="400" class="body">Records submission receipts and retrieves selected results.</text>
+  <rect x="846" y="310" width="530" height="119" rx="12" class="manager"/>
+  <text x="866" y="344" class="card-title">MTSManager</text>
+  <text x="866" y="374" class="body">Stages configuration, manifest and attempt script.</text>
+  <text x="866" y="400" class="body">Submits the recorded command using the retained build.</text>
+
+  <text x="720" y="330" class="flow-label" text-anchor="middle">SSH · JSON request</text>
+  <text x="720" y="414" class="flow-note" text-anchor="middle">Job IDs and inventory</text>
+  <text x="966" y="457" class="flow-label">submit.sh</text>
+  <text x="1101" y="523" class="flow-note" text-anchor="middle">starts</text>
+
+  <rect x="64" y="483" width="530" height="110" rx="12" class="card"/>
+  <text x="84" y="520" class="card-title">Campaign input</text>
+  <text x="84" y="550" class="body">simulations.json lists the run settings.</text>
+  <text x="84" y="575" class="body">Companion files supply resources and supplemental settings.</text>
+
+  <rect x="846" y="483" width="211" height="110" rx="12" class="card"/>
+  <text x="866" y="520" class="card-title">Slurm</text>
+  <text x="866" y="550" class="body">Queues allocations</text>
+  <text x="866" y="575" class="body">and reports status.</text>
+  <rect x="1143" y="483" width="233" height="110" rx="12" class="card"/>
+  <text x="1163" y="520" class="card-title">MTS2D</text>
+  <text x="1163" y="550" class="body">Runs the simulation</text>
+  <text x="1163" y="575" class="body">and writes output.</text>
+
+  <rect x="846" y="651" width="530" height="119" rx="12" class="data"/>
+  <text x="866" y="685" class="card-title">Run folder</text>
+  <text x="866" y="715" class="body">Configuration, manifest and attempt records</text>
+  <text x="866" y="741" class="body">Macro CSV, VTU snapshots, checkpoints and termination</text>
+  <text x="720" y="690" class="flow-label" text-anchor="middle">Explicit retrieval</text>
+  <text x="720" y="735" class="flow-note" text-anchor="middle">MTSManager · rsync</text>
+  <rect x="64" y="651" width="530" height="119" rx="12" class="data"/>
+  <text x="84" y="685" class="card-title">Verified local run data</text>
+  <text x="84" y="715" class="body">Configuration, manifest and selected scientific output</text>
+  <text x="84" y="741" class="body">Retrieval receipt records the source and run identity.</text>
+
+  <rect x="64" y="813" width="530" height="93" rx="12" class="card"/>
+  <text x="84" y="849" class="card-title">MTSPlot</text>
+  <text x="84" y="879" class="body">Reads local data for response plots, timing and mesh movies.</text>
+
+</svg>

@@ -4,14 +4,14 @@
 <h1>Installation</h1>
 <article class="card"><h2>1. Components</h2>
 <label class="guide-option"><input type="radio" name="mode" value="" checked><div>Plotting and simulation management<span>Python packages and component sources.</span></div></label>
-<label class="guide-option"><input type="radio" name="mode" value="--local-sim"><div>Include local simulations<span>Build MTS2D. Requires CMake, C++17, OpenMP, OpenSSL and zlib.</span></div></label>
+<label class="guide-option"><input type="radio" name="mode" value="--local-sim"><div>Include local simulations<span>Build MTS2D with CMake 3.23 or newer, a C++17 compiler, OpenMP, OpenSSL, zlib, BLAS and LAPACK.</span></div></label>
 <label class="guide-option"><input type="radio" name="mode" value="--local-sim --install-build-tools"><div>Install compiler tools and MTS2D<span id="tools-description">Assisted installation on macOS or Ubuntu/Debian.</span></div></label>
 </article>
 <article class="card"><h2>2. Setup</h2><p id="terminal-instructions">Paste this command into a terminal.</p><div class="command-row"><input id="setup-command" readonly aria-label="Setup command"><button id="copy-command">Copy</button></div><p class="muted">Requires Git and internet access. Keep the terminal open during setup.</p></article>
 <article class="card"><h2>3. Launch</h2><p>Open <strong id="launcher-name">MTS.app / MTS.desktop</strong> in this folder. Select <strong>Quit MTS</strong> to stop the server.</p><p>Reopen the same browser address while the server is running. Local storage retains session authorization until Quit MTS. <a href="MTS.html">MTS.html</a> links to the current session.</p><p class="muted" id="launcher-note">Launcher approval may be required.</p></article>
 <details><summary>VS Code</summary>
 <ol><li>Open the top-level MTS folder. Select <code>.venv/bin/python</code> for Python.</li>
-<li>With CMake Tools, select <code>MTS2D/CMakeLists.txt</code> and the <strong>release</strong> preset (CMake ≥ 3.21). On macOS, select Apple Clang at <code>/usr/bin/clang++</code>.</li>
+<li>With CMake Tools, select <code>MTS2D/CMakeLists.txt</code> and the <strong>release</strong> preset. On macOS, select Apple Clang at <code>/usr/bin/clang++</code>.</li>
 <li>Use <strong>Terminal → Run Build Task → Build managed simulator</strong>. This records the build identity required for managed runs at <code>MTS2D/build/release/MTS2D</code>.</li></ol>
 <p>The <strong>debug</strong> preset builds scientific tests in <code>MTS2D/build/debug</code>. Build folders and personal VS Code settings are ignored by Git.</p>
 </details>

@@ -1,3 +1,5 @@
+import {axisIssue, fixedFields, legendAliases, limits, plotChoices, syncAxisLabels} from './plot_controls.js';
+
 const $ = id => document.getElementById(id);
 for (const panel of ['start', 'monitor']) $(panel).append($('simulation-help').content.cloneNode(true));
 let accessToken = location.hash.slice(1);
@@ -1883,26 +1885,6 @@ async function loadPlotOptions(resetSource, saved = null, keepAxes = false) {
   }
   if (request === plotRequest) loadAnimationOptions();
 }
-function axisIssue(x, y) {
-  const params = plotSchema.parameters, quantities = plotSchema.quantities;
-  if (!(x in params) && quantities[x]?.kind !== 'macro') return 'X must be a varied parameter or a saved response column.';
-  if (!(y in quantities)) return 'Y must be a measured quantity.';
-  if (x === y) return 'X and Y must be different quantities.';
-  if (!(x in params) && quantities[y].kind !== 'macro') return 'A timing summary requires a campaign parameter on X.';
-  if ([x, y].some(key => key in quantities && !quantities[key].available)) return 'The selected quantity is unavailable in this local collection.';
-  return '';
-}
-function plotChoices(id, choices, selected, issue, order = []) {
-  const select = $(id);
-  const ranked = choices.map(([key, label]) => ({key, label, reason: issue(key), rank: order.includes(key) ? order.indexOf(key) : order.length}));
-  ranked.sort((a, b) => Number(Boolean(a.reason)) - Number(Boolean(b.reason)) || a.rank - b.rank || a.label.localeCompare(b.label, undefined, {numeric: true}));
-  select.replaceChildren(...ranked.map(({key, label, reason}) => {
-    const option = new Option(label + (reason ? ' (incompatible)' : ''), key);
-    option.className = reason ? 'plot-incompatible' : '';
-    option.title = reason; return option;
-  }));
-  if (ranked.some(option => option.key === selected)) select.value = selected;
-}
 function updatePlotControls(saved = null) {
   if (!plotSchema) return;
   if (typeof saved?.x !== 'string') saved = null;
@@ -1915,7 +1897,7 @@ function updatePlotControls(saved = null) {
   for (const [axis, selected] of [['x', x], ['y', y]]) {
     const common = plotSchema.common_axes[axis];
     const choices = axes.filter(([key]) => $('plot-show-all').checked || common.includes(key) || key === selected);
-    plotChoices('plot-' + axis, choices, selected, key => axis === 'x' ? axisIssue(key, y) : axisIssue(x, key), common);
+    plotChoices('plot-' + axis, choices, selected, key => axis === 'x' ? axisIssue(plotSchema, key, y) : axisIssue(plotSchema, x, key), common);
   }
   for (const id of ['plot-color', 'plot-gradient']) {
     const otherKey = id === 'plot-color' ? 'gradient' : 'color';
@@ -1925,23 +1907,7 @@ function updatePlotControls(saved = null) {
       key => key && (key === x || key === other) ? 'Choose distinct parameters for X, color and gradient.' : '', ['', ...plotSchema.common_axes.x.filter(key => key in params)]);
   }
   $('plot-reduction-field').classList.toggle('hidden', !(x in params) || quantities[y]?.kind !== 'macro');
-  fixedFields(saved?.fixed); legendAliases(saved?.legend_aliases); schedulePlotCheck();
-}
-function fixedFields(saved = null) {
-  const used = [$('plot-x').value, $('plot-color').value, $('plot-gradient').value, 'seed'];
-  const previous = Object.fromEntries([...$('fixed-fields').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.value]));
-  for (const [key, value] of Object.entries(saved || {})) previous[key] = JSON.stringify(value);
-  $('fixed-fields').replaceChildren();
-  for (const [key, values] of Object.entries(plotSchema.parameters)) {
-    if (used.includes(key)) continue;
-    const field = document.createElement('div'); field.className = 'field';
-    const label = document.createElement('label'); label.htmlFor = 'fixed-' + key;
-    label.textContent = 'Hold ' + plotSchema.labels[key] + ' fixed';
-    const select = document.createElement('select'); select.id = label.htmlFor; select.dataset.property = key;
-    select.replaceChildren(...values.map(value => new Option(String(value), JSON.stringify(value))));
-    if (values.some(value => JSON.stringify(value) === previous[key])) select.value = previous[key];
-    select.onchange = schedulePlotCheck; field.append(label, select); $('fixed-fields').append(field);
-  }
+  fixedFields(plotSchema, schedulePlotCheck, saved?.fixed); legendAliases(plotSchema, schedulePlotCheck, saved?.legend_aliases); schedulePlotCheck();
 }
 function plotSelection(draft = false) {
   return {campaign: $('plot-campaign').value, data: $('plot-data').value,
@@ -1957,32 +1923,6 @@ function plotSelection(draft = false) {
     legend_style: $('legend-style').value,
     legend_aliases: Object.fromEntries([...$('legend-aliases').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.value.trim()]))};
 }
-function legendAliases(saved = null) {
-  if (!plotSchema) return;
-  const previous = Object.fromEntries([...$('legend-aliases').querySelectorAll('[data-property]')].map(el => [el.dataset.property, el.value]));
-  const aliases = {...plotSchema.abbreviations, ...previous, ...(saved || {})};
-  $('legend-aliases').replaceChildren();
-  for (const key of Object.keys(plotSchema.parameters)) {
-    const field = document.createElement('div'); field.className = 'field';
-    const label = document.createElement('label'); label.htmlFor = 'legend-alias-' + key; label.textContent = plotSchema.labels[key];
-    const input = document.createElement('input'); input.id = label.htmlFor; input.dataset.property = key; input.value = aliases[key];
-    input.onchange = schedulePlotCheck; field.append(label, input); $('legend-aliases').append(field);
-  }
-  $('legend-aliases').classList.toggle('hidden', $('legend-style').value !== 'custom');
-}
-function syncAxisLabels() {
-  if (!plotSchema) return;
-  const x = $('plot-x').value, y = $('plot-y').value;
-  let ylabel = plotSchema.quantities[y]?.label || plotSchema.labels[y] || y;
-  if (x in plotSchema.parameters && plotSchema.quantities[y]?.kind === 'macro') ylabel = plotSchema.reductions[$('plot-reduction').value] + ': ' + ylabel;
-  const norm = $('plot-normalization').value;
-  if (norm !== 'none') ylabel += ' / ' + (norm === 'L' ? 'L' : '(rows × cols)');
-  const defaults = {x: plotSchema.labels[x] || plotSchema.quantities[x]?.label || x, y: ylabel};
-  for (const axis of ['x', 'y']) {
-    const input = $('plot-' + axis + 'label');
-    if (input.dataset.edited !== 'true') input.value = defaults[axis];
-  }
-}
 function schedulePlotCheck() {
   clearTimeout(plotTimer); ++plotCheckRequest; ++previewRevision;
   plotValid = false; updateActions();
@@ -1992,8 +1932,8 @@ function schedulePlotCheck() {
     $('plot-warning').textContent = 'No macro data is available for this selection. Select the runs again after output is available.';
     return;
   }
-  syncAxisLabels();
-  const issue = axisIssue($('plot-x').value, $('plot-y').value);
+  syncAxisLabels(plotSchema);
+  const issue = axisIssue(plotSchema, $('plot-x').value, $('plot-y').value);
   if (issue) {$('plot-warning').textContent = issue; return;}
   if (!$('plot-data').value) {$('plot-warning').textContent = 'No local data is available. Download campaign results or choose a local collection.'; return;}
   if (recoveringWorkspace) return;
@@ -2024,7 +1964,7 @@ function showPlotValidation(result) {
 }
 async function requestPlotPreview(manual) {
   clearTimeout(plotTimer);
-  if (!plotSchema || axisIssue($('plot-x').value, $('plot-y').value)) return;
+  if (!plotSchema || axisIssue(plotSchema, $('plot-x').value, $('plot-y').value)) return;
   if (previewBusy) {previewManualPending ||= manual; return;}
   const revision = previewRevision;
   let selection;
@@ -2310,7 +2250,7 @@ async function recoverWorkspace() {
     await loadPlotOptions(false, draft.plot, true);
     if (!plotSchema) throw new Error($('plot-warning').textContent);
     const skipped = restoreFields('#plot-panel', draft.fields);
-    if ($('plot-data').value && plotSchema && !axisIssue($('plot-x').value, $('plot-y').value)) {
+    if ($('plot-data').value && plotSchema && !axisIssue(plotSchema, $('plot-x').value, $('plot-y').value)) {
       let spec;
       try {spec = plotSelection();} catch {} // Keep an unfinished axis limit available for editing.
       if (spec) {
@@ -2391,16 +2331,10 @@ $('plot-seed').onchange = () => {schedulePlotCheck(); loadAnimationOptions();};
 for (const id of ['plot-normalization', 'plot-reduction', 'legend-cols', 'legend-loc', 'plot-xscale', 'plot-yscale', 'xlim', 'ylim']) $(id).onchange = schedulePlotCheck;
 for (const axis of ['x', 'y']) $('plot-' + axis + 'label').oninput = event => {event.target.dataset.edited = 'true'; schedulePlotCheck();};
 $('plot-labels-default').onclick = () => {for (const axis of ['x', 'y']) $('plot-' + axis + 'label').dataset.edited = 'false'; schedulePlotCheck();};
-$('legend-style').onchange = () => {legendAliases(); schedulePlotCheck();};
+$('legend-style').onchange = () => {legendAliases(plotSchema, schedulePlotCheck); schedulePlotCheck();};
 $('plot-preview-update').onclick = () => requestPlotPreview(true);
 $('plot-preset-new').onclick = () => savePlotPreset(false);
 $('plot-preset-update').onclick = () => savePlotPreset(true);
-function limits(id) {
-  if (!$(id).value.trim()) return null;
-  const values = $(id).value.split(',').map(Number);
-  if (values.length !== 2 || !values.every(Number.isFinite) || values[0] >= values[1]) throw new Error('Axis limits need two increasing numbers separated by a comma.');
-  return values;
-}
 $('plot-form').onsubmit = event => {
   event.preventDefault();
   try {

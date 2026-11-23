@@ -1,11 +1,32 @@
+# Workspace and automation
+
+- The parent repository owns the launcher, browser interface, workspace
+  documentation and cross-component checks. `MTS2D`, `MTSManager` and `MTSPlot`
+  are independent Git submodules. Check status and instructions in each affected
+  repository. When publishing coordinated changes, publish the component commits
+  before recording their revisions in the parent.
+- Use the [manager API](MTSManager/API.md) for shell and Python automation.
+  The GUI and CLI share `submit_run` and `submit_campaign`. Prefer structured
+  receipts and inventory records over parsing display text or driving the GUI.
+  Check the journal and execution site before retrying an uncertain submission.
+- Keep HTTP and task state in `MTS_GUI/server.py`, monitoring and archives in
+  `MTS_GUI/monitor.py`, plot and animation operations in `MTS_GUI/plots.py`,
+  and execution logic in MTSManager. Plotting reads local scientific data.
+  Remote retrieval belongs to MTSManager and is initiated explicitly.
+- Use `MTS_Management.run_records.read_run` to verify the native configuration
+  and manifest. Preserve configuration, executable and checkpoint identities.
+  Keep analysis-only interpretation of recorded settings out of fresh execution.
+- Run focused checks in the affected components. The workspace smoke check
+  uses an isolated local site, a tiny native run and the normal plot-data path.
+  See [Testing.md](tests/Testing.md) for the build and test commands.
+
 # Scientific code and testing
 
-Read [TheSimulationProcess.md](TheSimulationProcess.md) for the target design and
-[TheSimulationProcess_old.md](TheSimulationProcess_old.md) for the archived
-implementation before changing campaign submission, queued execution,
-configuration/build identity, checkpoints, lifecycle records or server deployment.
-Do not assume target interfaces are implemented; check the source. Keep the
-target document's implementation status consistent with lifecycle changes.
+Read [TheSimulationProcess.md](docs/TheSimulationProcess.md) before changing
+campaign submission, queued execution, configuration/build identity,
+checkpoints, lifecycle records or server deployment. Verify the documented
+behavior against the source and update the document when lifecycle behavior
+changes.
 
 Keep code simple, reuse existing functions, and raise errors for unexpected data
 instead of silently inventing behavior.

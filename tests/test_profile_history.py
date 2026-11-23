@@ -43,7 +43,8 @@ global.sessionStorage = {setItem() {}};
 const container = {children: [], append(node) {this.children.push(node);}, scrollHeight: 1};
 global.$ = () => container;
 global.document = {createElement: () => {
-  const content = Object.fromEntries(['button', 'summary span', 'summary', 'pre'].map(key => [key, {}]));
+  const content = Object.fromEntries(['.copy-message', '.remove-message', 'summary span', 'summary', 'pre']
+    .map(key => [key, {}]));
   return {dataset: {}, querySelector: key => content[key], remove() {
     container.children.splice(container.children.indexOf(this), 1);
   }};
@@ -51,7 +52,7 @@ global.document = {createElement: () => {
 const api = async () => {backendHistory = backendHistory.filter(entry => entry.state === 'running');};
 const refresh = async () => renderTerminal(backendHistory);
 const message = text => {throw new Error(text);};
-eval(source.slice(source.indexOf('function renderTerminal('), source.indexOf('function fillSites(')));
+eval(source.slice(source.indexOf('function terminalBracePairs('), source.indexOf('function fillSites(')));
 eval(source.slice(source.indexOf('async function clearTerminal('), source.indexOf("$('clear-terminal').onclick")));
 renderTerminal();
 const running = container.children[0];

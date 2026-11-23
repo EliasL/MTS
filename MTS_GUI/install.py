@@ -185,10 +185,12 @@ def install_build_tools():
                 values[k] = v.strip('"')
         if values.get("ID") not in {"ubuntu", "debian"}:
             raise RuntimeError("Automatic build-tool installation currently supports Ubuntu/Debian. "
-                               "Install a C++17 compiler, CMake, OpenMP, OpenSSL and zlib development files, "
+                               "Install a C++17 compiler, CMake 3.23 or newer, and development libraries "
+                               "for OpenMP, OpenSSL, zlib, BLAS and LAPACK, "
                                "then use setup.sh --local-sim.")
         run(["sudo", "apt-get", "update"])
-        run(["sudo", "apt-get", "install", "build-essential", "cmake", "zlib1g-dev", "libssl-dev"])
+        run(["sudo", "apt-get", "install", "build-essential", "cmake", "zlib1g-dev", "libssl-dev",
+             "libblas-dev", "liblapack-dev"])
     else:
         raise RuntimeError("MTS currently supports macOS and Linux.")
 

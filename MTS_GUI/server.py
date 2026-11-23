@@ -1,35 +1,25 @@
 """A loopback-only HTTP interface. Simulation lifecycle stays with MTSManager."""
 
 import importlib.util
-from contextlib import closing, nullcontext
-from concurrent.futures import CancelledError, ProcessPoolExecutor, TimeoutError as FutureTimeout
-import multiprocessing
-from dataclasses import asdict
-import hashlib
+from concurrent.futures import CancelledError
 import json
 import mimetypes
 import os
 from pathlib import Path
 import re
 import secrets
-import shlex
-import shutil
-import sqlite3
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .install import ROOT, STATE, COMPONENTS, build_simulator, install_packages, run, write_entry
+from .install import ROOT, STATE, COMPONENTS, build_simulator, install_packages, write_entry
 from . import simulation_setup
-
-
-def site_label(name):
-    return str(name).upper()
+from .monitor import Monitor, site_label
+from .plots import Plots
 
 
 def local_build_status(site_paths):
@@ -66,24 +56,16 @@ class Workspace:
     def __init__(self):
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
-        self.local_inventory_lock = threading.Lock()
         self.task = {"state": "idle", "title": "", "logs": [], "result": None}
         self.history = []
         self.stopping = False
+        self.monitor = Monitor(self, ROOT, STATE)
+        self.plots = Plots(self, ROOT, STATE)
         self.cancel = threading.Event()
-        self.campaign_files = {}
-        self.local_files = {}
         self.ssh_results = []
         self.ssh_proposals = {}
         self.ssh_addresses = {}
         self.ssh_config_stamp = None
-        self.run_plot_sources = {}
-        self.animation_memory = None
-        self.preview_pool = None
-        self.preview_lock = threading.Lock()
-        self.preview_future = None
-        self.preview_key = None
-        self.preview_image = None
         self.slurm_plan = None
 
     def log(self, line, *, command=False):
@@ -98,7 +80,7 @@ class Workspace:
         with self.lock:
             if self.stopping:
                 raise ValueError("MTS is shutting down.")
-            if self.task["state"] == "running" or self.local_inventory_lock.locked():
+            if self.task["state"] == "running" or self.monitor.local_inventory_lock.locked():
                 raise ValueError("An operation is already running. Wait for it to finish.")
             self.task = {"id": secrets.token_hex(8), "state": "running", "title": title,
                          "created_at": time.time() * 1000, "logs": [], "result": None,
@@ -155,10 +137,6 @@ class Workspace:
             self.task["cancel_requested"] = True
             self.cancel.set()
 
-    def manager(self, *args):
-        return run([sys.executable, "-m", "MTS_Management", "--sites",
-                    str(ROOT / "MTSManager/sites.toml"), *map(str, args)], self.log, json_result=True)
-
     def manager_call(self, site_name, action, *, site=None, **options):
         from MTS_Management.cluster import call, load_sites
         site_file = ROOT / "MTSManager/sites.toml"
@@ -172,874 +150,10 @@ class Workspace:
                  f"module={site.management_module!r}, output_root={site.output_root!r}")
         return call(site, action, log=self.log, cancel=self.cancel, **options)
 
-    def inventory_cache(self, site_name, *, rows=None, site=None, config_hashes=None):
-        """Merge scoped results atomically, retaining unrelated rows and refresh times."""
-        from MTS_Management.cluster import load_sites
-        site = site or load_sites(ROOT / "MTSManager/sites.toml")[site_name]
-        identity_settings = asdict(site)
-        identity_settings.pop("manager_directory", None)
-        identity_settings.pop("disabled", None)
-        identity = hashlib.sha256(json.dumps(identity_settings, sort_keys=True).encode()).hexdigest()
-        requested = set(config_hashes) if config_hashes is not None else None
-        scope = hashlib.sha256(json.dumps(sorted(requested)).encode()).hexdigest() if requested is not None else "*"
-        STATE.mkdir(exist_ok=True)
-        with closing(sqlite3.connect(STATE / "inventory.sqlite3")) as database, database:
-            database.execute("CREATE TABLE IF NOT EXISTS inventory "
-                             "(identity TEXT PRIMARY KEY, updated_at REAL NOT NULL, rows TEXT NOT NULL)")
-            database.execute("CREATE TABLE IF NOT EXISTS inventory_refresh "
-                             "(identity TEXT, scope TEXT, updated_at REAL, PRIMARY KEY(identity, scope))")
-            record = database.execute("SELECT updated_at, rows FROM inventory WHERE identity = ?", (identity,)).fetchone()
-            if rows is not None:
-                if not isinstance(rows, list):
-                    raise ValueError("Inventory response must be a list of simulations")
-                if requested is not None:
-                    if any(row["config_hash"] not in requested for row in rows):
-                        raise ValueError("Scoped inventory returned an unrelated configuration")
-                    database.execute("INSERT OR IGNORE INTO inventory_refresh VALUES (?, '*', ?)",
-                                     (identity, record[0] if record else None))
-                    previous = json.loads(record[1]) if record else []
-                    rows = [row for row in previous if row["config_hash"] not in requested] + rows
-                else:
-                    database.execute("DELETE FROM inventory_refresh WHERE identity = ?", (identity,))
-                updated_at = time.time()
-                database.execute("INSERT OR REPLACE INTO inventory VALUES (?, ?, ?)",
-                                 (identity, updated_at, json.dumps(rows)))
-                database.execute("INSERT OR REPLACE INTO inventory_refresh VALUES (?, ?, ?)",
-                                 (identity, scope, updated_at))
-            record = database.execute("SELECT updated_at, rows FROM inventory WHERE identity = ?",
-                                      (identity,)).fetchone()
-            refreshed = dict(database.execute("SELECT scope, updated_at FROM inventory_refresh WHERE identity = ?", (identity,)))
-        return {"site": site_name, "updated_at": refreshed.get(scope, refreshed.get("*", record[0] if record else None)),
-                "rows": json.loads(record[1]) if record else []}
-
-    def campaign_definitions(self):
-        from MTS_Management.campaign import campaign_identity
-        from MTS_Management.data import seed_group_fields
-        definitions = {}
-        for path in sorted((ROOT / "MTSManager/campaigns").rglob("simulations.json")):
-            stamp = path.stat().st_mtime_ns
-            if path not in self.campaign_files or self.campaign_files[path][0] != stamp:
-                name, expected = campaign_identity(path)
-                runs = json.loads(path.read_text())["runs"]
-                groups = {h: seed_group_fields(run["settings"]) for h, run in zip(expected, runs)}
-                self.campaign_files[path] = (stamp, name, expected, groups)
-            _, name, expected, _ = self.campaign_files[path]
-            if name in definitions and definitions[name] != expected:
-                raise ValueError(f"Conflicting campaign definitions: {name}")
-            definitions[name] = expected
-        return definitions
-
-    def local_copies(self):
-        """Inspect managed download collections, without traversing simulation output trees."""
-        from MTS_Management.archive import ARCHIVE_MARKER
-        from MTS_Management.config import Config
-        from MTS_Management.data import seed_group_fields
-        from MTS_Management.files import file_digest, read_json
-        from MTS_Management.inventory import progress, config_metadata_stamp
-        rows = []
-        receipts = {}
-        for manifest in sorted((ROOT / "MTSManager/.state/retrieved").glob("*/*/manifest.json")):
-            folder = manifest.parent
-            if (folder.parent / ARCHIVE_MARKER).is_file():
-                continue
-            termination_path = folder / "termination.json"
-            receipt_path = folder.parent / "snapshot.json"
-            paths = [manifest, folder / "config.conf", folder / "macroData.csv", termination_path, receipt_path]
-            stamp = tuple(p.stat().st_mtime_ns if p.exists() else None for p in paths) + (tuple(tuple(v) for v in config_metadata_stamp()),)
-            if manifest not in self.local_files or self.local_files[manifest][0] != stamp:
-                record = read_json(manifest)
-                config = Config.read(folder / "config.conf", expected_name=folder.name)
-                if config.config_hash != record["config_hash"]:
-                    raise ValueError(f"Local manifest/config mismatch: {folder}")
-                termination = read_json(termination_path)["termination"] if termination_path.exists() else None
-                request = next(folder.glob("attempts/*/request.json"), None)
-                request_data = read_json(request) if request else {}
-                origin = request_data.get("site")
-                origin_folder = request_data.get("output_folder")
-                manifest_sha = file_digest(manifest)
-                if receipt_path not in receipts:
-                    receipts[receipt_path] = read_json(receipt_path) if receipt_path.exists() else {}
-                receipt = receipts[receipt_path]
-                if any(run["config_hash"] == config.config_hash and run["manifest_sha256"] == manifest_sha
-                       for run in receipt.get("runs", [])):
-                    origin = receipt["site"]
-                    origin_folder = str(Path(receipt["source_root"]) / folder.name)
-                row = {"config_hash": config.config_hash, "folder": str(folder), "attempt": None,
-                       **seed_group_fields(config.as_dict()),
-                       "campaign": record.get("campaign"), "manifest_sha256": manifest_sha,
-                       "executable_sha256": record.get("executable_sha256"),
-                       "run_date": record.get("created_at"),
-                       "status": {"state": "finished" if termination else "local copy"},
-                       "termination": termination, "progress": progress(folder, config),
-                       "site": None, "origin_site": origin, "local_copy": True,
-                       "origin_folder": origin_folder,
-                       "origin_state_dir": request_data.get("state_dir", ""),
-                       "local_updated_at": max(v for v in stamp[:-1] if v is not None) / 1e9}
-                self.local_files[manifest] = (stamp, row)
-            rows.append(dict(self.local_files[manifest][1]))
-        return rows
-
-    def inventory_overview(self, *, site=None, campaign=None):
-        from MTS_Management.cluster import load_sites, shell_path
-        from MTS_Management.data import seed_group_fields
-        if site is not None and campaign is not None:
-            raise ValueError("Select either a server or a campaign")
-        profiles = load_sites(ROOT / "MTSManager/sites.toml")
-        snapshots = {name: self.inventory_cache(name, site=profile) for name, profile in profiles.items()}
-        definitions, copies = self.campaign_definitions(), self.local_copies()
-        for row in copies:
-            origin = profiles.get(row["origin_site"])
-            candidates = [name for name, profile in profiles.items() if origin is not None and
-                          profile.ssh == origin.ssh and row["origin_state_dir"].endswith(
-                              "/" + str(Path(profile.directory.removeprefix("~/")) / profile.state_dir).lstrip("/"))]
-            row["origin_profile"] = candidates[0] if len(candidates) == 1 else None
-        expected = definitions.get(campaign, {})
-        matches = lambda row: row.get("campaign") == campaign or row["config_hash"] in expected
-        campaigns = sorted(set(definitions) | {row["campaign"] for row in copies + [
-            row for snapshot in snapshots.values() for row in snapshot["rows"]]
-            if row.get("campaign") and not row.get("archived")})
-        config_hashes = sorted(set(expected) | {row["config_hash"] for row in copies + [
-            row for snapshot in snapshots.values() for row in snapshot["rows"]] if row.get("campaign") == campaign}) if campaign is not None else None
-        if campaign is not None:
-            snapshots = {name: self.inventory_cache(name, site=profile, config_hashes=config_hashes)
-                         for name, profile in profiles.items()}
-        selected = ({name: snapshot for name, snapshot in snapshots.items()
-                     if profiles[name].ssh == profiles[site].ssh} if site is not None else
-                    snapshots)
-        rows = [row | {"site": name} for name, snapshot in selected.items() for row in snapshot["rows"]
-                if not row.get("archived") and (campaign is None or matches(row))]
-        for row in copies:
-            origin = profiles.get(row["origin_site"])
-            if site is not None:
-                relevant = not profiles[site].ssh or (origin is not None and origin.ssh == profiles[site].ssh)
-            else:
-                relevant = matches(row)
-            if not relevant:
-                continue
-            remote = next((r for r in rows if r["config_hash"] == row["config_hash"] and
-                           r.get("manifest_sha256") == row["manifest_sha256"]), None)
-            if remote is not None:
-                remote.setdefault("local_paths", []).append(row["folder"])
-            else:
-                rows.append(row)
-        found = {row["config_hash"] for row in rows if not row.get("missing")}
-        archived = {row["config_hash"] for snapshot in snapshots.values() for row in snapshot["rows"]
-                    if row.get("archived")} if expected else set()
-        if expected:
-            archived.update(self.archived_downloads())
-        archived &= expected.keys()
-        missing = set(expected) - found - archived
-        registered_missing = {row["config_hash"] for row in rows if row.get("missing")}
-        rows.extend({"config_hash": h, "folder": expected[h], "site": None, "attempt": None,
-                     "campaign": campaign, "status": {"state": "missing"}, "termination": None,
-                     "progress": {"fraction": None}, "missing": True} for h in sorted(missing - registered_missing))
-        groups = {h: group for _, _, _, saved in self.campaign_files.values() for h, group in saved.items()}
-        for row in rows:
-            if row.get("local_copy"):
-                profile = profiles.get(row.get("origin_profile") or row["origin_site"])
-                remote_folder = row.get("origin_folder")
-            else:
-                profile = profiles.get(row["site"])
-                remote_folder = row["folder"]
-            if profile and profile.ssh and remote_folder:
-                command = f'cd -- {shell_path(remote_folder)} && exec "$SHELL" -i'
-                row["ssh_command"] = shlex.join(["ssh", "-t", "--", profile.ssh, command])
-            if row["config_hash"] not in groups and not row.get("settings_group"):
-                path = STATE / "configurations" / (row["config_hash"] + ".conf")
-                if not path.exists() and row.get("site") and not profiles[row["site"]].ssh:
-                    path = Path(row["folder"]) / "config.conf"
-                if path.exists():
-                    from MTS_Management.config import Config
-                    config = Config.read(path)
-                    if config.config_hash != row["config_hash"]:
-                        raise ValueError(f"Saved configuration hash mismatch: {path}")
-                    groups[row["config_hash"]] = seed_group_fields(config.as_dict())
-            row.update(groups.get(row["config_hash"], {}))
-        sources = [{"site": name, "label": site_label(name), "updated_at": snapshot["updated_at"]}
-                   for name, snapshot in selected.items()]
-        updated = [source["updated_at"] for source in sources if source["updated_at"] is not None]
-        return {"site": site, "campaign": campaign, "rows": rows, "sources": sources,
-                "updated_at": min(updated) if updated else None, "campaigns": campaigns,
-                "config_hashes": config_hashes,
-                "expected": len(expected) if campaign in definitions else None,
-                "found": len(set(expected) & found), "missing": len(missing),
-                "archived": len(archived - found), "archived_hashes": sorted(archived),
-                "uncached_sites": [site_label(name) for name, snapshot in snapshots.items()
-                                   if snapshot["updated_at"] is None]}
-
-    def open_run_folder(self, data):
-        from MTS_Management.cluster import load_sites, paths
-        from MTS_Management.files import read_json
-
-        folder = Path(data["folder"]).resolve()
-        site = data.get("site")
-        if site is None:
-            root = (ROOT / "MTSManager/.state/retrieved").resolve()
-            valid = folder.parent.parent == root
-        else:
-            profile = load_sites(ROOT / "MTSManager/sites.toml").get(site)
-            valid = bool(profile and not profile.ssh and folder.parent == Path(paths(profile)["output_root"]))
-        if not valid or not folder.is_dir():
-            raise ValueError("Local simulation folder is unavailable. Refresh Monitor data.")
-        if read_json(folder / "manifest.json")["config_hash"] != data["config_hash"]:
-            raise ValueError("Local simulation identity changed. Refresh Monitor data.")
-        command = ["/usr/bin/open", "-a", "Finder"] if sys.platform == "darwin" else ["xdg-open"]
-        subprocess.run([*command, str(folder)], check=True, capture_output=True, text=True, timeout=10)
-        return {"opened": True}
-
     def clear_terminal(self, entry_id=None):
         with self.lock:
             self.history = [entry for entry in self.history
                             if (entry["id"] != entry_id if entry_id else entry["state"] == "running")]
-
-    def campaign_path(self, name):
-        if name not in self.campaign_definitions():
-            raise ValueError("Select a registered campaign.")
-        return next(path for path, (_, campaign, _, _) in self.campaign_files.items()
-                    if campaign == name and path.is_file())
-
-    def selected_inventory_runs(self, data):
-        from MTS_Management.errors import ExpectedError
-        rows = self.inventory_overview(**data["scope"])["rows"]
-        key = lambda row: (row["site"], row["folder"], row["config_hash"], row.get("manifest_sha256"))
-        available = {key(row): row for row in rows if not row.get("missing")}
-        selected = [key(row) for row in data["runs"]]
-        if not selected or len(set(selected)) != len(selected) or not set(selected) <= available.keys():
-            raise ExpectedError("The selection changed. Refresh Monitor data and select the runs again.")
-        return [available[k] for k in selected]
-
-    def continuation_source(self, selection):
-        from MTS_Management.errors import ExpectedError
-
-        rows = self.selected_inventory_runs(selection)
-        if (len(rows) != 1 or not rows[0]["site"] or
-                rows[0]["status"]["state"] not in {"finished", "failed", "stopped"}):
-            raise ExpectedError("Select one stopped run on its execution site.")
-        return rows[0]
-
-    def run_template(self, data):
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.run_template import read_template
-
-        rows = self.selected_inventory_runs(data)
-        if len(rows) != 1:
-            raise ExpectedError("Select one simulation to use as a template.")
-        row = rows[0]
-        selection = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
-        if row["site"] in {None, "local"}:
-            result = read_template(row["folder"], selection)
-        else:
-            try:
-                result = self.manager_call(row["site"], "run_template", selection=selection, timeout=60)
-            except RuntimeError as error:
-                if "Unknown remote operation: run_template" not in str(error):
-                    raise
-                raise ExpectedError(f"Update the manager on {site_label(row['site'])} in Setup and tools.") from error
-        return result | {"site": row["site"] or row.get("origin_site") or "local"}
-
-    def run_conflict(self, data):
-        from MTS_Management.cluster import call, load_sites
-        from MTS_Management.config import Config
-
-        site = load_sites(ROOT / "MTSManager/sites.toml")[data["site"]]
-        config = simulation_setup.simulation_config(data)
-        if checksum := data.get("initial_mesh_sha256"):
-            config = Config(**(config.as_dict() | {"initialMeshSha256": checksum}))
-        return call(site, "run_conflict", settings=config.as_dict(), label=data.get("label") or None, timeout=15)
-
-    def remove_missing_runs(self, scope):
-        from MTS_Management.cluster import load_sites
-        from MTS_Management.errors import ExpectedError
-
-        profiles = load_sites(ROOT / "MTSManager/sites.toml")
-        groups = {}
-        for row in self.inventory_overview(**scope)["rows"]:
-            if row.get("missing") and row["site"]:
-                groups.setdefault(row["site"], []).append(
-                    {key: row[key] for key in ("folder", "config_hash")})
-        removed, errors = 0, {}
-        for name, runs in groups.items():
-            try:
-                result = self.manager_call(name, "remove_missing", runs=runs)
-                hashes = set(result["removed"])
-                removed += len(hashes)
-                keys = {(row["folder"], row["config_hash"]) for row in runs if row["config_hash"] in hashes}
-                for alias, profile in profiles.items():
-                    if profile.ssh != profiles[name].ssh:
-                        continue
-                    overlap = {row["config_hash"] for row in self.inventory_cache(alias, site=profile)["rows"]
-                               if (row["folder"], row["config_hash"]) in keys}
-                    if overlap:
-                        self.inventory_cache(alias, rows=[], site=profile, config_hashes=overlap)
-            except (ConnectionError, subprocess.SubprocessError, RuntimeError) as error:
-                detail = (f"Update the manager on {site_label(name)} in Setup and tools."
-                          if "Unknown remote operation: remove_missing" in str(error) else str(error))
-                errors[name] = detail
-                self.log(detail)
-        if errors and not removed:
-            raise ExpectedError(next(iter(errors.values())))
-        self.log(f"Removed {removed} missing run records from the inventory.")
-        return {"missing_removed": removed, "errors": errors}
-
-    def run_plot_source(self, selection):
-        from MTS_Management.errors import ExpectedError
-
-        if selection not in self.run_plot_sources:
-            raise ExpectedError("Select the simulation again in Monitor data.")
-        return self.run_plot_sources[selection]
-
-    def restart_plot_sources(self, *, restore=False):
-        path = STATE / "restart-plot-sources.json"
-        if not restore:
-            sources = {key: source | {"path": str(source["path"])} for key, source in self.run_plot_sources.items()}
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"version": 1, "sources": sources}))
-            temporary.replace(path)
-            return
-        try:
-            saved = json.loads(path.read_text())
-            if saved["version"] != 1:
-                raise ValueError("Unsupported saved Monitor selection format.")
-            sources = {}
-            for key, source in saved["sources"].items():
-                if (not key.startswith("@") or set(source) != {"path", "manifests", "group", "site", "anchor"}
-                        or not isinstance(source["manifests"], dict) or not isinstance(source["group"], list)
-                        or not isinstance(source["anchor"], dict)):
-                    raise ValueError("Invalid saved Monitor selection.")
-                sources[key] = source | {"path": Path(source["path"])}
-            self.run_plot_sources = sources
-            path.unlink()
-        except FileNotFoundError:
-            return
-        except (ValueError, TypeError, KeyError, AttributeError, OSError) as error:
-            self.history.append({"id": secrets.token_hex(8), "title": "Recover workspace", "state": "failed",
-                                 "created_at": time.time() * 1000,
-                                 "logs": [f"Monitor selections could not be restored. {error}"]})
-
-    def open_run_plot(self, data):
-        from MTS_Management.cluster import fetch_many, load_sites, paths
-        from MTS_Management.data import plot_seed_group
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.files import digest, file_digest
-
-        profiles = load_sites(ROOT / "MTSManager/sites.toml")
-        previous = data.get("selection")
-        if previous:
-            source = self.run_plot_source(previous)
-            profile = profiles.get(source["site"])
-            if source["site"] is not None and profile is None:
-                raise ExpectedError("The server profile is unavailable. Select the simulation again in Monitor data.")
-            anchor, group, local_run = (source[k] for k in ("anchor", "group", "path"))
-            include_seeds = data["include_seeds"]
-            if type(include_seeds) is not bool:
-                raise ValueError("Include other seeds must be true or false.")
-        else:
-            rows = [{key: row[key] for key in ("site", "folder", "config_hash", "manifest_sha256")}
-                    for row in self.selected_inventory_runs(data)]
-            anchor = rows[0]
-            profile = profiles.get(anchor["site"])
-            origin = Path(anchor["folder"])
-            identity = {"folder": str(origin), "manifest_sha256": anchor["manifest_sha256"]}
-            if profile and profile.ssh:
-                try:
-                    result = self.manager_call(profile.name, "plot_seed_group", site=profile, **identity)
-                except RuntimeError as error:
-                    if "Unknown remote operation: plot_seed_group" not in str(error):
-                        raise
-                    self.log(f"Update the manager on {site_label(profile.name)} to detect other seeds on the server.")
-                    result = {"runs": rows}
-                if result.get("error"):
-                    raise ExpectedError(result["error"])
-                group = result["runs"]
-                collection = digest([asdict(profile), sorted(row["manifest_sha256"] for row in group)])
-                local_run = STATE / "plot-downloads" / collection / origin.name
-            else:
-                root = Path(paths(profile)["output_root"]) if profile else origin.parent
-                group = plot_seed_group(root, **identity)
-                local_run = origin
-            members = {(row["folder"], row["manifest_sha256"]) for row in group}
-            if any(row["site"] != anchor["site"] or Path(row["folder"]).parent != origin.parent or
-                   (row["folder"], row["manifest_sha256"]) not in members for row in rows):
-                raise ExpectedError("These runs do not share an output folder and executable. Select an individual run.")
-            include_seeds = len(rows) > 1
-        chosen = group if include_seeds else [anchor]
-        if profile and profile.ssh and (not previous or include_seeds):
-            self.log(f"Downloading macro data from {site_label(profile.name)} ({len(chosen)} runs).")
-            manifests = {row["config_hash"]: row["manifest_sha256"] for row in chosen}
-            fetch_many(profile, manifests, local_run.parent, expected_manifests=manifests, retain_binaries=False)
-        run_manifests = {}
-        for row in chosen:
-            folder = local_run.parent / Path(row["folder"]).name
-            manifest = folder / "manifest.json"
-            if not manifest.is_file() or file_digest(manifest) != row["manifest_sha256"]:
-                raise ExpectedError(f"Run identity changed: {folder}. Select the simulation again in Monitor data.")
-            run_manifests[folder.name] = row["manifest_sha256"]
-        selection = "@" + secrets.token_hex(16)
-        self.run_plot_sources[selection] = {"path": local_run, "manifests": run_manifests, "group": group,
-                                            "site": profile.name if profile and profile.ssh else None,
-                                            "anchor": anchor}
-        return {"plot_selection": selection, "plot_name": local_run.name.rsplit("[", 1)[0],
-                "has_other_seeds": len(group) > 1, "include_seeds": include_seeds,
-                "previous_selection": previous}
-
-    def plot_inputs(self, data):
-        """Resolve a campaign, local file or verified Monitor selection."""
-        name, root = data["campaign"], data.get("data")
-        spec = {k: v for k, v in data.items() if k not in {"campaign", "data", "automatic", "run_manifests"}}
-        if name == "@csv":
-            path = self.local_data_file(root, {".csv"})
-            return path, path, spec
-        if name == "@mesh":
-            from MTS_Management.files import file_digest
-
-            folder = self.mesh_file_run(root)
-            return folder, folder, spec | {"run_manifests": {folder.name: file_digest(folder / "manifest.json")}}
-        if not name.startswith("@"):
-            return self.campaign_path(name), root, spec
-        source = self.run_plot_source(name)
-        if root and Path(root).resolve() != source["path"]:
-            raise ValueError("Select the simulation again in Monitor data.")
-        return source["path"], source["path"], spec | {"run_manifests": source["manifests"]}
-
-    def animation_source(self, data):
-        from MTS_Management.campaign import campaign_entries, campaign_identity
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.files import file_digest
-        from MTS_Plotting.campaign_plot import matching_folders
-
-        name = data["campaign"]
-        if not name or name == "@csv":
-            return None
-        if name == "@mesh":
-            return self.mesh_file_run(data["data"])
-        source, root, spec = self.plot_inputs(data)
-        if name.startswith("@"):
-            if len(spec["run_manifests"]) != 1:
-                return None
-            manifest = source / "manifest.json"
-            if not manifest.is_file() or file_digest(manifest) != spec["run_manifests"][source.name]:
-                raise ExpectedError("The simulation changed. Select it again in Monitor data.")
-            return source
-        if root:
-            seed = data.get("seed", "all")
-            if seed == "all":
-                _, expected = campaign_identity(source)
-            elif type(seed) is int:
-                _, entries = campaign_entries(source)
-                expected = {config.config_hash for config, _ in entries if config["seed"] == seed}
-            else:
-                raise ValueError("Select a saved seed or all seeds.")
-            folders = matching_folders(Path(root).expanduser().resolve(), expected)
-            if len(folders) == 1:
-                return folders[0]
-        return None
-
-    def default_animation_preview(self, campaign, folder):
-        if (folder / "termination.json").is_file():
-            return "middle"
-        anchor = self.run_plot_sources.get(campaign, {}).get("anchor")
-        if anchor and anchor["site"]:
-            from MTS_Management.cluster import load_sites
-
-            site = load_sites(ROOT / "MTSManager/sites.toml").get(anchor["site"])
-            if site is not None and any(
-                    row["folder"] == anchor["folder"] and
-                    row.get("manifest_sha256") == anchor["manifest_sha256"] and
-                    row["status"]["state"] == "finished"
-                    for row in self.inventory_cache(site.name, site=site)["rows"]):
-                return "middle"
-        return "last"
-
-    def animation_options(self, data):
-        from MTS_Plotting.runs import Run
-
-        folder = self.animation_source(data)
-        if folder is None:
-            return {}
-        config = Run.read(folder).config
-        return {"boundary": config["boundary"], "square_model": config["energyFunction"] == "contiSquare",
-                "delaunay_dislocations": config["reconnectionMethod"] == "none",
-                "preview_frame": self.default_animation_preview(data["campaign"], folder)}
-
-    def render_animation(self, data, *, preview=False):
-        from MTS_Management.cluster import fetch_many, load_sites
-        from MTS_Management.data import mesh_snapshots
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.files import file_digest
-        from MTS_Plotting.mesh_movie import (
-            COLOUR_LIMITS_PROGRESS, display_limit_sources, display_scan_frames, frame_schedule,
-            preview_frame_index, tiled_display,
-        )
-        from MTS_Plotting.runs import Run
-
-        folder = self.animation_source(data)
-        if folder is None:
-            raise ExpectedError("Select one simulation to generate an animation.")
-        selection = {"campaign": data["campaign"], "data": data["data"], "seed": data.get("seed", "all")}
-        range_from_last_frame = data.get("range_from_last_frame", True)
-
-        def log_animation(line):
-            if line.startswith(COLOUR_LIMITS_PROGRESS):
-                colour_limits = json.loads(line.removeprefix(COLOUR_LIMITS_PROGRESS))
-                with self.lock:
-                    self.task["animation_scan"] = {"animation_selection": selection, "colour_limits": colour_limits,
-                                                   "range_options": range_options}
-            self.log(line)
-
-        override = STATE / "ffmpeg-path"
-        encoder = override.read_text().strip() if not preview and override.is_file() else None
-        spec = {k: data[k] for k in ("kind", "matrix", "tiling", "playback", "fps", "seconds_per_load", "minimum_seconds", "limit")}
-        spec["range_from_last_frame"] = range_from_last_frame
-        spec.update({key: data[key] for key in ("dpi", "heatmap", "node_colours", "node_size", "show_nodes",
-                                                "show_mesh_lines", "workers", "legend_size", "show_title",
-                                                "colourbar_position", "colourbar_size",
-                                                "title_size", "show_border", "show_legend", "dislocations",
-                                                "dislocation_lattice", "dislocation_method",
-                                                "dislocation_bond_tolerance", "dislocation_scale",
-                                                "dislocation_thickness", "energy_min", "stress_component", "opacity",
-                                                "opacity_curve") if key in data})
-        range_options = {key: spec[key] for key in ("kind", "matrix", "playback", "fps", "seconds_per_load",
-                                                    "minimum_seconds", "range_from_last_frame")}
-        range_options["stress_component"] = spec.get("stress_component", "12")
-        rendering = {k: v for k, v in spec.items() if k != "workers"}
-        source = self.run_plot_sources.get(data["campaign"])
-        output = (STATE / "previews" / f"animation-{secrets.token_hex(8)}.png" if preview else
-                  STATE / "videos" / secrets.token_hex(8) / "mesh.mp4")
-        identity = file_digest(folder / "manifest.json")
-        remote = bool(source and source["site"])
-        with tempfile.TemporaryDirectory(dir=STATE, prefix="animation-") as temporary:
-            staging = Path(temporary)
-            staged_output = staging / "rendered" / output.name
-            if remote:
-                site = load_sites(ROOT / "MTSManager/sites.toml").get(source["site"])
-                if site is None:
-                    raise ExpectedError("The server profile is unavailable. Select the simulation again.")
-                anchor = source["anchor"]
-                try:
-                    result = self.manager_call(site.name, "mesh_snapshots", site=site,
-                                               folder=anchor["folder"], manifest_sha256=anchor["manifest_sha256"])
-                except RuntimeError as error:
-                    if "Unknown remote operation: mesh_snapshots" in str(error):
-                        raise ExpectedError("Update the remote manager in Setup and tools to animate its mesh snapshots.") from error
-                    raise
-                if result.get("error"):
-                    raise ExpectedError(result["error"])
-                catalog = result["frames"]
-            else:
-                catalog = mesh_snapshots(folder)
-            if not catalog:
-                raise ExpectedError("No mesh snapshots are available. Choose a run with saved mesh output.")
-            first = catalog[0]["name"]
-            if remote:
-                first_revision = None
-            else:
-                info = (folder / "data" / first).stat()
-                first_revision = (info.st_mtime_ns, info.st_size)
-            memory_key = (str(folder), identity, first, first_revision, rendering)
-            if not preview and self.animation_memory and self.animation_memory[0] == memory_key:
-                spec["frame_memory"] = self.animation_memory[1]
-            spec.update(preview=preview, frames=catalog)
-            if preview:
-                spec["preview_frame"] = data.get("preview_frame") or self.default_animation_preview(data["campaign"], folder)
-            if remote:
-                indices = frame_schedule(
-                    catalog, playback=spec["playback"], fps=spec["fps"],
-                    seconds_per_load=spec["seconds_per_load"], minimum_seconds=spec["minimum_seconds"])
-                scheduled = [catalog[index] for index in sorted(set(indices))]
-                frames = [frame["name"] for frame in scheduled]
-                identities = {anchor["config_hash"]: anchor["manifest_sha256"]}
-
-                def download_frames(names):
-                    self.log(f"Downloading {len(names)} mesh states from {site_label(site.name)}.")
-                    fetched, = fetch_many(site, identities, staging / "snapshots", expected_manifests=identities,
-                                          retain_binaries=False, mesh_frames=names, cancel=self.cancel)
-                    return fetched
-
-                if preview:
-                    chosen = catalog[preview_frame_index(indices, spec["preview_frame"])]["name"]
-                    kind = spec["kind"]
-                    limits = {"kind": kind, "tiled": tiled_display(Run.read(folder).config, kind, spec["tiling"]),
-                              "limit": spec["limit"], "lower_limit": spec.get("energy_min", 0.),
-                              "range_from_last_frame": range_from_last_frame}
-                    _, _, scans = display_limit_sources(folder, scheduled, **limits)
-                    _, scan_min, scan_max, scan_signed = scans
-                    # The first transfer includes the preview, required VTU colour data and the current CSV.
-                    required = (False, scan_min, range_from_last_frame and scan_max, scan_signed)
-                    downloaded = dict.fromkeys([chosen] + [frame["name"] for frame, _ in display_scan_frames(
-                        scheduled, required, range_from_last_frame=range_from_last_frame)])
-                    folder = download_frames(list(downloaded))
-                    _, _, scans = display_limit_sources(folder, scheduled, **limits)
-                    frames = [frame["name"] for frame, _ in display_scan_frames(
-                        scheduled, scans, range_from_last_frame=range_from_last_frame)
-                        if frame["name"] not in downloaded]
-                if frames:
-                    folder = download_frames(frames)
-            options = staging / "options.json"
-            options.write_text(json.dumps(spec))
-            env = os.environ | {"MPLBACKEND": "Agg"}
-            if encoder:
-                env["MTS_FFMPEG"] = encoder
-            result = run([sys.executable, "-m", "MTS_Plotting.mesh_movie", str(folder), str(staged_output), str(options)],
-                         log_animation, json_result=True, env=env, cancel=self.cancel)
-            staged, published = (staged_output, output) if preview else (staged_output.parent, output.parent)
-            with self.lock:
-                if self.cancel.is_set():
-                    raise CancelledError("Animation aborted.")
-                published.parent.mkdir(parents=True, exist_ok=True)
-                staged.replace(published)
-                self.task["cancellable"] = False
-        if preview:
-            if spec["preview_frame"] == "first":
-                self.animation_memory = (memory_key, result["frame_memory"])
-            result = {"animation_preview": output.name, "energy_range": result.get("energy_range")}
-        else:
-            result["video"] = str(output.relative_to(STATE / "videos"))
-        return result | {"animation_selection": selection}
-
-    def read_inventory(self, name, profile, **options):
-        try:
-            return self.manager_call(name, "inventory", site=profile, timeout=60,
-                                     include_archived=True, **options)
-        except RuntimeError as error:
-            if "unexpected keyword argument 'include_archived'" not in str(error):
-                raise
-            return self.manager_call(name, "inventory", site=profile, timeout=60, **options)
-
-    def refresh_local_inventory(self, *, site, selection):
-        from MTS_Management.cluster import call, load_sites
-        from MTS_Management.errors import ExpectedError
-
-        profiles = load_sites(ROOT / "MTSManager/sites.toml")
-        if site not in profiles or profiles[site].ssh:
-            raise ExpectedError("Select an enabled local server for this refresh.")
-        if "site" in selection and selection["site"] not in profiles:
-            raise ExpectedError("The selected server is unavailable. Select a server again.")
-        with self.lock:
-            if self.stopping:
-                raise ExpectedError("MTS is shutting down.")
-            if self.task["state"] == "running" or not self.local_inventory_lock.acquire(blocking=False):
-                raise ExpectedError("An operation is already running. Wait for it to finish.")
-        try:
-            for name, profile in profiles.items():
-                if not profile.ssh:
-                    rows = call(profile, "inventory", timeout=60, include_archived=True)
-                    self.inventory_cache(name, rows=rows, site=profile)
-            return self.inventory_overview(**selection)
-        except ExpectedError:
-            raise
-        except Exception:
-            traceback.print_exc()
-            raise
-        finally:
-            self.local_inventory_lock.release()
-
-    def archived_downloads(self):
-        from MTS_Management.archive import ARCHIVE_MARKER
-        from MTS_Management.files import read_json
-        root = ROOT / "MTSManager/.state/retrieved"
-        return {read_json(p)["config_hash"] for marker in root.glob("*/" + ARCHIVE_MARKER)
-                for p in marker.parent.glob("*/manifest.json")}
-
-    def archive_history(self):
-        from MTS_Management.cluster import load_sites, paths
-        from MTS_Management.journal import Journal
-
-        profiles = load_sites(ROOT / "MTSManager/sites.toml", include_disabled=True)
-        journal = Journal(STATE / "archive")
-        history = journal.records() if journal.path.is_file() else []
-        restored = {row["archive_id"] for row in history if row["event"] == "restored"}
-        entries = {row["event_id"]: row for row in history if row["event"] == "archived"}
-        local_journals = {}
-        for name, site in profiles.items():
-            if site.ssh:
-                continue
-            location = paths(site)
-            if location["state_dir"] not in local_journals:
-                source = Journal(location["state_dir"])
-                local_journals[location["state_dir"]] = source.records() if source.path.is_file() else []
-            for row in local_journals[location["state_dir"]]:
-                if row["event"] == "archived" and Path(row["output_folder"]).parent == Path(location["output_root"]):
-                    entries.setdefault(row["event_id"], row | {"site": name, "kind": "run"})
-        result = []
-        for key, row in entries.items():
-            site = profiles.get(row.get("site"))
-            if key in restored:
-                status = "Restored"
-            elif row.get("site") is not None and (site is None or site.disabled):
-                status = "Connection unavailable"
-            elif not (site and site.ssh) and not Path(row["archive_folder"]).is_dir():
-                status = "Unavailable"
-            else:
-                status = "Archived"
-            result.append(row | {"status": status})
-        return sorted(result, key=lambda row: row["timestamp"], reverse=True)
-
-    def restore_archive(self, archive_id):
-        from MTS_Management.archive import archive_root, rename_folder, restore_simulation
-        from MTS_Management.cluster import load_sites
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.files import file_digest, locked
-        from MTS_Management.journal import Journal
-
-        row = next((entry for entry in self.archive_history() if entry["event_id"] == archive_id), None)
-        if row is None or row["status"] != "Archived":
-            raise ExpectedError("This archive entry is unavailable. Reload the archive log.")
-        original, archived = Path(row["output_folder"]), Path(row["archive_folder"])
-        name = row.get("site")
-        if row["kind"] == "campaign":
-            root = ROOT / "MTSManager/campaigns"
-            with locked(STATE / ".simulation-campaigns.lock"):
-                if (not original.is_relative_to(root) or original == root or
-                        archived != archive_root(root) / original.name):
-                    raise ValueError("Invalid campaign archive paths")
-                if (not (archived / "simulations.json").is_file() or
-                        file_digest(archived / "simulations.json") != row["definition_sha256"]):
-                    raise ExpectedError("The archived campaign definition is unavailable or has changed.")
-                if row["campaign"] in self.campaign_definitions():
-                    raise ExpectedError("A campaign with this name is already registered.")
-                original.parent.mkdir(parents=True, exist_ok=True)
-                rename_folder(archived, original)
-        elif name is None:
-            if original.parent.parent != (ROOT / "MTSManager/.state/retrieved").resolve():
-                raise ValueError("Invalid download archive paths")
-            restore_simulation(original.parent, STATE, row, downloaded=True)
-        else:
-            profiles = load_sites(ROOT / "MTSManager/sites.toml")
-            run = {k: row.get(k) for k in ("config_hash", "manifest_sha256", "output_folder", "archive_folder")}
-            try:
-                result = self.manager_call(name, "restore", site=profiles[name], timeout=120, run=run)
-            except RuntimeError as error:
-                if "Unknown remote operation: restore" in str(error):
-                    raise ExpectedError(f"Update the manager on {site_label(name)} in Setup and tools, then retry Restore.") from error
-                raise
-            if result.get("error"):
-                raise ExpectedError(result["error"])
-        Journal(STATE / "archive").append("restored", archive_id=archive_id)
-        self.log(f"Restored: {original}")
-        if name is not None:
-            hashes = [row["config_hash"]]
-            try:
-                rows = self.read_inventory(name, profiles[name], config_hashes=hashes)
-                self.inventory_cache(name, rows=rows, site=profiles[name], config_hashes=hashes)
-            except (RuntimeError, ConnectionError, subprocess.SubprocessError) as error:
-                self.log(f"Run restored. Refresh Monitor data to update its record. {error}")
-        with self.lock:
-            self.task["inventory_revision"] = 1
-        return {"restored": str(original)}
-
-    def archive_monitor(self, data):
-        from MTS_Management.archive import archive_simulations
-        from MTS_Management.cluster import load_sites
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.journal import Journal
-
-        profiles = load_sites(ROOT / "MTSManager/sites.toml")
-        groups = {}
-        for row in self.selected_inventory_runs(data):
-            if row["status"]["state"] not in {"finished", "failed", "stopped", "local copy"}:
-                raise ExpectedError("Select inactive simulations to archive.")
-            location = Path(row["folder"]).parent
-            groups.setdefault((row["site"], location), []).append(
-                {k: row[k] for k in ("folder", "config_hash", "manifest_sha256")})
-        moved, errors, hashes = [], {}, set()
-        for (name, location), runs in groups.items():
-            try:
-                if name is None:
-                    if location.parent != (ROOT / "MTSManager/.state/retrieved").resolve():
-                        raise ValueError(f"Invalid download location: {location}")
-                    folders = archive_simulations(location, STATE, runs, downloaded=True)
-                else:
-                    result = self.manager_call(name, "archive", site=profiles[name], timeout=120, runs=runs)
-                    if result.get("error"):
-                        raise ExpectedError(result["error"])
-                    folders = result["folders"]
-                moved.extend(folders)
-                self.log("Archived: " + ", ".join(folders))
-                selected = [row["config_hash"] for row in runs]
-                hashes.update(selected)
-                if name is None or profiles[name].ssh:
-                    journal = Journal(STATE / "archive")
-                    for row, folder in zip(runs, folders, strict=True):
-                        journal.append("archived", kind="run", site=name, archive_folder=folder,
-                                       output_folder=row["folder"], config_hash=row["config_hash"],
-                                       manifest_sha256=row["manifest_sha256"])
-                if name is not None:
-                    rows = [{"config_hash": row["config_hash"], "folder": folder, "archived": True}
-                            for row, folder in zip(runs, folders, strict=True)]
-                    self.inventory_cache(name, rows=rows, site=profiles[name], config_hashes=selected)
-                    keys = {(row["folder"], row["manifest_sha256"]) for row in runs}
-                    for alias, profile in profiles.items():
-                        if alias == name or profile.ssh != profiles[name].ssh:
-                            continue
-                        previous = self.inventory_cache(alias, site=profile)["rows"]
-                        overlap = {row["config_hash"] for row in previous
-                                   if (row["folder"], row.get("manifest_sha256")) in keys}
-                        if overlap:
-                            self.inventory_cache(alias, rows=[row for row in rows if row["config_hash"] in overlap],
-                                                 site=profile, config_hashes=overlap)
-            except (ExpectedError, ConnectionError, subprocess.SubprocessError, RuntimeError) as error:
-                if "Unknown remote operation: archive" in str(error):
-                    error = ExpectedError(f"Update the manager on {site_label(name)} in Setup and tools, then retry Archive.")
-                errors[name or str(location)] = str(error)
-                self.log(str(error))
-        if not moved:
-            raise ExpectedError(next(iter(errors.values())))
-        with self.lock:
-            self.task["inventory_revision"] = 1
-        campaign_notes = []
-        for name, expected in self.campaign_definitions().items():
-            if hashes & expected.keys():
-                try:
-                    self.archive_campaign(name, expected, automatic=True)
-                except ExpectedError as error:
-                    campaign_notes.append(str(error))
-                    self.log(str(error))
-        return {"archived": moved, "errors": errors, "campaign_notes": campaign_notes}
-
-    def archive_campaign(self, name, expected, *, automatic=False):
-        from MTS_Management.archive import archive_root, move_folder
-        from MTS_Management.cluster import across, load_sites
-        from MTS_Management.errors import ExpectedError
-        from MTS_Management.files import file_digest, locked
-        from MTS_Management.journal import Journal
-
-        overview = self.inventory_overview(campaign=name)
-        if not expected or set(overview["archived_hashes"]) != expected.keys():
-            return False
-        profiles = load_sites(ROOT / "MTSManager/sites.toml", include_disabled=True)
-        if automatic:
-            unchecked = sorted(site for site, profile in profiles.items()
-                               if profile.disabled or site_label(site) in overview["uncached_sites"])
-            if unchecked:
-                raise ExpectedError(f"Campaign settings retained for {name}. Verification is pending for {', '.join(unchecked)}. "
-                                    "Use Archive campaign settings after these sites are available.")
-        results = across(list(profiles.values()), "inventory", include_archived=True, config_hashes=list(expected))
-        unverified = sorted(site for site, result in results.items() if "error" in result)
-        if unverified:
-            for site in unverified:
-                self.log(f"{site_label(site)} verification: {results[site]['error']}")
-            raise ExpectedError(f"Campaign settings retained for {name}. Could not verify: {', '.join(unverified)}.")
-        rows = [row for result in results.values() for row in result["data"]]
-        for site, result in results.items():
-            self.inventory_cache(site, rows=result["data"], site=profiles[site], config_hashes=list(expected))
-        if any(not row.get("archived") for row in rows) or any(
-                row["config_hash"] in expected for row in self.local_copies()):
-            return False
-        if not expected.keys() <= ({row["config_hash"] for row in rows} | self.archived_downloads()):
-            return False
-        root = ROOT / "MTSManager/campaigns"
-        with locked(STATE / ".simulation-campaigns.lock"):
-            source = self.campaign_path(name).parent
-            if source == root or any(p.parent != source for p in source.rglob("simulations.json")):
-                raise ExpectedError(f"Campaign settings retained for {name}. The directory contains other campaign definitions.")
-            destination = archive_root(root) / source.name
-            identity = file_digest(source / "simulations.json")
-            move_folder(source, destination)
-            Journal(STATE / "archive").append("archived", kind="campaign", site=None, campaign=name,
-                                              output_folder=str(source), archive_folder=str(destination),
-                                              definition_sha256=identity)
-            self.log(f"Archived campaign settings: {source} → {destination}")
-        return True
 
     def start_options(self):
         from MTS_Management.config import DEFAULTS
@@ -1072,101 +186,12 @@ class Workspace:
         name = definition["name"]
         directory = ROOT / "MTSManager/campaigns/gui" / name
         with locked(STATE / ".simulation-campaigns.lock"):
-            if name in self.campaign_definitions():
+            if name in self.monitor.campaign_definitions():
                 raise ValueError("A campaign with this name already exists. Choose a new name.")
             write_json(directory / "resources.json", {})
             write_json(directory / "metadata.json", {"missing_settings": {}, "executables": []})
             write_json(directory / "simulations.json", definition)
         return {"name": name, "runs": len(definition["runs"])}
-
-    def plot_data_roots(self):
-        from MTS_Management.cluster import load_sites, paths
-        profiles = load_sites(ROOT / "MTSManager/sites.toml")
-        sources = [paths(profile)["output_root"] for profile in profiles.values() if not profile.ssh]
-        sources += list((ROOT / "MTSPlot/data").glob("*"))
-        sources += list((ROOT / "MTSManager/.state/retrieved").glob("*"))
-        return sources
-
-    @staticmethod
-    def local_data_file(value, extensions):
-        path = Path(value or "").expanduser()
-        if not path.is_absolute() or path.suffix.lower() not in extensions or not path.is_file():
-            raise ValueError(f"File unavailable at {value!r}. Enter its full path.")
-        return path.resolve()
-
-    def mesh_file_run(self, value):
-        path = Path(value or "").expanduser()
-        if path.is_absolute() and path.is_dir():
-            folders = (path.resolve(),)
-        else:
-            path = self.local_data_file(value, {".pvd", ".vtu"})
-            folders = (path.parent, path.parent.parent)
-        for folder in folders:
-            if all((folder / name).is_file() for name in ("config.conf", "manifest.json")):
-                return folder
-        missing = [name for name in ("config.conf", "manifest.json") if not (folders[-1] / name).is_file()]
-        raise ValueError(f"Animation requires a managed run. Missing {', '.join(missing)} for {value!r}.")
-
-    def open_simulation_folder(self, data):
-        value, action = data["path"], data["action"]
-        path = value.strip()
-        if len(path) >= 2 and path[0] in {"'", '"'} and path[-1] == path[0]:
-            path = path[1:-1]
-        folder = Path(path).expanduser()
-        if not folder.is_absolute() or not folder.is_dir():
-            raise ValueError(f"Folder unavailable at {value!r}. Choose or enter the full path to a simulation folder.")
-        folder = folder.resolve()
-        if action == "plot":
-            csv = folder / "macroData.csv"
-            if not csv.is_file():
-                raise ValueError(f"Plot requires macroData.csv in {str(folder)!r}.")
-            return {"plot_selection": "@csv", "plot_name": folder.name, "path": str(csv)}
-        if action == "settings":
-            config = folder / "config.conf"
-            if not config.is_file():
-                raise ValueError(f"Load settings requires config.conf in {str(folder)!r}.")
-            try:
-                return simulation_setup.preset(STATE / "simulation-presets",
-                                               {"action": "import", "text": config.read_text()})
-            except ValueError as error:
-                raise ValueError(f"Could not load {str(config)!r}. {error}") from error
-        if action == "animate":
-            from MTS_Management.data import mesh_snapshots
-            from MTS_Plotting.runs import Run
-
-            self.mesh_file_run(str(folder))
-            Run.read(folder)
-            if not mesh_snapshots(folder):
-                raise ValueError(f"Animate requires native VTU snapshots in {str(folder / 'data')!r}.")
-            return {"plot_selection": "@mesh", "plot_name": folder.name, "path": str(folder)}
-        raise ValueError(f"Unknown folder action {action!r}.")
-
-    @staticmethod
-    def pick_simulation_folder():
-        if sys.platform == "darwin":
-            command = ["/usr/bin/osascript", "-e",
-                       'POSIX path of (choose folder with prompt "Choose an MTS simulation folder")']
-        elif zenity := shutil.which("zenity"):
-            command = [zenity, "--file-selection", "--directory", "--title=Choose an MTS simulation folder"]
-        elif kdialog := shutil.which("kdialog"):
-            command = [kdialog, "--getexistingdirectory", str(Path.home()), "--title", "Choose an MTS simulation folder"]
-        else:
-            raise ValueError("Enter the folder path directly or install Zenity or KDialog to browse.")
-        result = subprocess.run(command, text=True, capture_output=True)
-        if not result.returncode:
-            return {"path": result.stdout.removesuffix("\n")}
-        if "(-128)" in result.stderr or result.returncode == 1 and not result.stderr:
-            return {"path": None}
-        raise RuntimeError(f"Could not open the folder picker. Paste the folder path. {result.stderr.strip()}")
-
-    def plot_options(self, campaign, data=None):
-        from MTS_Plotting.campaign_plot import describe
-
-        source, root, spec = self.plot_inputs({"campaign": campaign, "data": data})
-        if "run_manifests" in spec or campaign == "@csv":
-            schema = describe(source, [], root, run_manifests=spec.get("run_manifests"))
-            return schema | {"data": str(Path(data).expanduser().resolve())} if campaign == "@mesh" else schema
-        return describe(source, self.plot_data_roots(), root)
 
     def slurm_options(self):
         from MTS_Management.cluster import load_sites
@@ -1185,63 +210,6 @@ class Workspace:
                    "--site", data["site"], "--action", rule["action"], "--match", rule["match"],
                    "--criteria", json.dumps(rule["criteria"])]
         return {"review": shlex.join(command), "apply": shlex.join(command + ["--apply"])}
-
-    def plot_presets(self, data=None):
-        return self.presets(data, kind="plot")
-
-    def presets(self, data=None, *, kind):
-        from MTS_Management.files import locked, read_json, write_json, now
-        path = STATE / f"{kind}-presets.json"
-        with locked(STATE / f".{kind}-presets.lock"):
-            saved = read_json(path) if path.exists() else {"version": 1, "presets": []}
-            if saved.keys() != {"version", "presets"} or saved["version"] != 1 or not isinstance(saved["presets"], list):
-                raise ValueError(f"Invalid saved {kind} presets.")
-            if data is not None:
-                name, selection = data["name"].strip(), data["selection"]
-                if not name or len(name) > 120 or not isinstance(selection, dict):
-                    raise ValueError("A preset requires a name of 1–120 characters and settings.")
-                if kind == "plot":
-                    self.campaign_path(selection["campaign"])
-                elif not isinstance(selection.get("fields"), dict) or not isinstance(selection.get("curve"), list):
-                    raise ValueError("Invalid animation preset settings.")
-                previous = next((p for p in saved["presets"] if p["id"] == data.get("id")), None)
-                if data.get("id") and previous is None:
-                    raise ValueError("The preset to update no longer exists.")
-                if any(p["name"] == name and p is not previous for p in saved["presets"]):
-                    raise ValueError("A preset with this name already exists. Choose another name or update that preset.")
-                record = {"id": previous["id"] if previous else secrets.token_hex(8), "name": name,
-                          "selection": selection, "updated_at": now()}
-                if previous is None:
-                    saved["presets"].append(record)
-                else:
-                    saved["presets"][saved["presets"].index(previous)] = record
-                write_json(path, saved)
-            return {"presets": sorted(saved["presets"], key=lambda p: p["name"].casefold()),
-                    "saved_id": record["id"] if data is not None else None}
-
-    def plot_preview(self, data):
-        from MTS_Plotting.campaign_plot import preview
-        source, root, spec = self.plot_inputs(data)
-        key = json.dumps((str(source), str(root), spec), sort_keys=True)
-        with self.preview_lock:
-            if self.preview_pool is None:
-                self.preview_pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
-            if self.preview_future is not None and not self.preview_future.done() and key != self.preview_key:
-                return {"busy": True}
-            if key != self.preview_key or self.preview_future is None or self.preview_future.done():
-                directory = STATE / "previews"
-                directory.mkdir(exist_ok=True)
-                path = directory / (secrets.token_hex(8) + ".png")
-                self.preview_future = self.preview_pool.submit(preview, str(source), str(root), str(path), spec)
-                self.preview_key = key
-                self.preview_image = path.name
-            future = self.preview_future
-            image = self.preview_image
-        try:
-            result = future.result(timeout=5 if data.get("automatic", True) else None)
-        except FutureTimeout:
-            return {"manual": True}
-        return result | {"image": image}
 
     def status(self):
         modules = {"MTSManager": "MTS_Management", "MTSPlot": "MTS_Plotting", "Model math": "MTM_Math"}
@@ -1276,7 +244,7 @@ class Workspace:
                 "local_build_status": build_status, "local_current_configuration": local_current_configuration,
                 "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
-                "campaigns": sorted(self.campaign_definitions()) if packages["MTSManager"] else [],
+                "campaigns": sorted(self.monitor.campaign_definitions()) if packages["MTSManager"] else [],
                 "sites": sites, "servers": servers, "task": task, "history": history, "interface_version": 4,
                 "ssh_connections": self.connection_status(site_file) if packages["MTSManager"] and site_file.exists() else [],
                 "setup_command": f'bash "{ROOT}/setup.sh" --local-sim --install-build-tools'}
@@ -1409,58 +377,11 @@ class Workspace:
             self.log("MTS_Management.deployments.update_managers(sites.toml)", command=True)
             return self.update_servers()
         if action in {"inventory", "hard_refresh"}:
-            from MTS_Management.cluster import load_sites
-            profiles = load_sites(ROOT / "MTSManager/sites.toml")
-            campaign = data.get("campaign")
-            selection = {"campaign": campaign} if campaign is not None else {"site": data.get("site", "local")}
-            overview = self.inventory_overview(**selection) if data.get("site") != "*" else None
-            names = (list(profiles) if data.get("site") == "*" else
-                     [s["site"] for s in overview["sources"]])
-            if not names:
-                raise ValueError("No enabled site profiles are available for inventory refresh.")
-            config_hashes = overview["config_hashes"] if campaign is not None else None
-            if campaign is not None and not config_hashes:
-                raise ValueError("No configuration identities are recorded for this campaign. Register its simulations.json first.")
-            errors, updated = {}, []
-            for index, name in enumerate(names, 1):
-                self.check_cancelled()
-                self.log(f"Updating {site_label(name)} ({index}/{len(names)})")
-                try:
-                    options = {"hard_refresh": True} if action == "hard_refresh" else {}
-                    if config_hashes is not None:
-                        options["config_hashes"] = config_hashes
-                    for attempt in range(1, 4):
-                        self.check_cancelled()
-                        self.log(f"Inventory attempt {attempt}/3; timeout 60 s")
-                        try:
-                            rows = self.read_inventory(name, profiles[name], **options)
-                            break
-                        except (subprocess.TimeoutExpired, TimeoutError, ConnectionError) as error:
-                            self.check_cancelled()
-                            if attempt == 3:
-                                raise
-                            self.log(f"{site_label(name)}: {error}; retrying.")
-                    self.check_cancelled()
-                    self.inventory_cache(name, rows=rows, site=profiles[name], config_hashes=config_hashes)
-                    updated.append(name)
-                    with self.lock:
-                        self.task["inventory_revision"] = len(updated)
-                    self.log(f"Inventory updated: {site_label(name)}; {len(rows)} simulations saved locally.")
-                except CancelledError:
-                    raise
-                except Exception as error:
-                    if campaign is None and data.get("site") != "*":
-                        raise
-                    errors[name] = str(error)
-                    detail = getattr(error, "stderr", None)
-                    self.log(f"{site_label(name)} failed: {error}" + (f"\n{detail}" if detail else ""))
-            if not updated:
-                raise ValueError("No server inventories were updated. Previous snapshots retained.")
-            return {"inventory_updated": True, "updated_sites": updated, "errors": errors}
+            return self.monitor.refresh_inventory(action, data)
         if action in {"logs", "stop"}:
             return self.manager_call(data.get("site", "local"), action, attempt=data["attempt"])
         if action == "continuation_plan":
-            row = self.continuation_source(data)
+            row = self.monitor.continuation_source(data)
             keys = ("folder", "config_hash", "manifest_sha256")
             from MTS_Management.errors import ExpectedError
             try:
@@ -1474,10 +395,10 @@ class Workspace:
                 raise ExpectedError(result["error"])
             return {"continuation_plan": result | {"site": row["site"], "selection": data}}
         if action == "remove_missing":
-            return self.remove_missing_runs(data)
+            return self.monitor.remove_missing_runs(data)
         if action == "resume":
             from MTS_Management.errors import ExpectedError
-            row = self.continuation_source(data)
+            row = self.monitor.continuation_source(data)
             if row["status"]["state"] != "failed":
                 raise ExpectedError("Select one run whose latest attempt failed.")
             selection = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
@@ -1495,7 +416,7 @@ class Workspace:
             if continuation := data.get("continuation"):
                 if "initial_mesh" in data:
                     raise ValueError("A continuation uses the original initial mesh.")
-                row = self.continuation_source(continuation["selection"])
+                row = self.monitor.continuation_source(continuation["selection"])
                 if data["site"] != row["site"]:
                     raise ValueError("Continue loading on the original execution site.")
                 source = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
@@ -1507,78 +428,30 @@ class Workspace:
                                            campaign="GUI", continuation=source)
                 self.log(f"Continuation submitted in {result['output_folder']}.")
                 return {"config_hash": config.config_hash}
-            temporary = nullcontext(STATE / "configurations")
-            mesh = data.get("initial_mesh")
-            if "initial_mesh" in data:
-                from MTS_Management.config import Config
-                from MTS_Management.initial_mesh import mesh_checksum
-
-                config = Config(**(config.as_dict() | {"initialMeshSha256": mesh_checksum(mesh)}))
-                temporary = tempfile.TemporaryDirectory(prefix="mts-custom-mesh-")
-            with temporary as directory:
-                folder = Path(directory)
-                folder.mkdir(exist_ok=True)
-                path = folder / (config.config_hash + ".conf")
-                config.write(path, data.get("label") or None)
-                command = ["run", path, "--site", data.get("site", "local"), "--campaign", "GUI"]
-                if mesh is not None:
-                    from MTS_Management.initial_mesh import MESH_FILE, mesh_bytes
-
-                    vtu = path.with_name(MESH_FILE)
-                    vtu.write_bytes(mesh_bytes(mesh))
-                    command += ["--initial-mesh", vtu]
-                if data.get("label"):
-                    command += ["--label", data["label"]]
-                if data.get("site", "local") == "local":
-                    command += ["--mode", "detached"]
-                self.manager(*command)
-            return {"config_hash": config.config_hash}
+            from .submission import start_run
+            return start_run(ROOT / "MTSManager/sites.toml", config, data, self.log)
         if action == "run_campaign":
-            name = simulation_setup.checked_name(data["name"])
-            path = self.campaign_path(name)
-            site = data["site"]
-            command = ["campaign", path, "--site", site]
-            if site == "local":
-                command += ["--mode", "foreground", "--workers", "1"]
-            result = self.manager(*command)
-            skipped = (len(result["skipped"]) if isinstance(result, dict) else
-                       sum(bool(run.get("skipped")) for run in result))
-            conflicts = result["conflicts"] if isinstance(result, dict) else (
-                run for run in result if run.get("conflict"))
-            errors = {run["label"]: run["conflict"] for run in conflicts}
-            if skipped:
-                self.log(f"Skipped {skipped} completed {'run' if skipped == 1 else 'runs'}.")
-            for label, detail in errors.items():
-                self.log(f"{label} — {detail}")
-            return {"campaign": name, "skipped": skipped, "errors": errors}
+            from .submission import start_campaign
+            path = self.monitor.campaign_path(simulation_setup.checked_name(data["name"]))
+            return start_campaign(ROOT / "MTSManager/sites.toml", path, data["site"], self.log)
         if action == "plot_monitor":
-            return self.open_run_plot(data)
+            return self.plots.open_run_plot(data)
         if action == "animate":
-            return self.render_animation(data)
+            return self.plots.render_animation(data)
         if action == "animate_preview":
-            return self.render_animation(data, preview=True)
+            return self.plots.render_animation(data, preview=True)
         if action == "archive_monitor":
-            return self.archive_monitor(data)
+            return self.monitor.archive_monitor(data)
         if action == "restore_archive":
-            return self.restore_archive(data["id"])
+            return self.monitor.restore_archive(data["id"])
         if action == "archive_campaign":
             from MTS_Management.errors import ExpectedError
             name = data["campaign"]
-            if not self.archive_campaign(name, self.campaign_definitions().get(name, {})):
+            if not self.monitor.archive_campaign(name, self.monitor.campaign_definitions().get(name, {})):
                 raise ExpectedError("Campaign settings can be archived after every planned run is archived and no active copies remain.")
             return {"campaign_archived": name}
         if action == "plot":
-            # Matplotlib runs in its own process, isolated from HTTP request threads.
-            folder = STATE / "figures" / secrets.token_hex(6)
-            path = folder / "campaign-plot.pdf"
-            self.log("Reading simulation tables and creating the figure…")
-            source, root, spec = self.plot_inputs(data)
-            result = run([sys.executable, "-m", "MTS_Plotting.campaign_plot", str(source),
-                          str(Path(root).expanduser().resolve()), str(path), json.dumps(spec)],
-                         self.log, json_result=True)
-            for warning in result["warnings"]:
-                self.log(warning)
-            return result | {"pdf": str(path.relative_to(STATE / "figures")), "name": path.name}
+            return self.plots.export_plot(data)
         raise ValueError(f"Unknown operation: {action}")
 
 
@@ -1674,16 +547,16 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(urlsplit(self.path).query)
                 campaign = query.get("campaign", [None])[0]
                 site = query.get("site", [None if campaign is not None else "local"])[0]
-                self.reply(200, self.server.app.inventory_overview(site=site, campaign=campaign))
+                self.reply(200, self.server.app.monitor.inventory_overview(site=site, campaign=campaign))
             elif path == "/api/archive_history":
-                self.reply(200, self.server.app.archive_history())
+                self.reply(200, self.server.app.monitor.archive_history())
             elif path == "/api/plot_options":
                 query = parse_qs(urlsplit(self.path).query)
-                self.reply(200, self.server.app.plot_options(query.get("campaign", [""])[0], query.get("data", [None])[0]))
+                self.reply(200, self.server.app.plots.plot_options(query.get("campaign", [""])[0], query.get("data", [None])[0]))
             elif path == "/api/animation_options":
                 query = parse_qs(urlsplit(self.path).query)
                 seed = query.get("seed", ["all"])[0]
-                self.reply(200, self.server.app.animation_options({
+                self.reply(200, self.server.app.plots.animation_options({
                     "campaign": query.get("campaign", [""])[0], "data": query.get("data", [None])[0],
                     "seed": seed if seed == "all" else int(seed)}))
             elif path == "/api/slurm_options":
@@ -1693,13 +566,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/plot_check":
                 from MTS_Plotting.campaign_plot import prepared_plot, validate_axes
                 data = json.loads(parse_qs(urlsplit(self.path).query)["selection"][0])
-                _, result = prepared_plot(*self.server.app.plot_inputs(data))
+                _, result = prepared_plot(*self.server.app.plots.plot_inputs(data))
                 result = result | {"warnings": result["warnings"] + validate_axes(result, data)}
                 self.reply(200, {k: result[k] for k in ("warnings", "runs", "expected", "mode")})
             elif path == "/api/plot_presets":
-                self.reply(200, self.server.app.plot_presets())
+                self.reply(200, self.server.app.plots.plot_presets())
             elif path == "/api/animation_presets":
-                self.reply(200, self.server.app.presets(kind="animation"))
+                self.reply(200, self.server.app.plots.presets(kind="animation"))
             else:
                 if path.startswith("/videos/"):
                     self.serve_video(path)
@@ -1747,29 +620,29 @@ class Handler(BaseHTTPRequestHandler):
             if action == "slurm_program":
                 self.reply(200, self.server.app.slurm_program(data))
             elif action == "inventory_local":
-                self.reply(200, self.server.app.refresh_local_inventory(**data))
+                self.reply(200, self.server.app.monitor.refresh_local_inventory(**data))
             elif action == "mesh_preview":
                 self.reply(200, self.server.app.mesh_preview(data), "application/vnd.vtk.vtu")
             elif action == "run_template":
-                self.reply(200, self.server.app.run_template(data))
+                self.reply(200, self.server.app.monitor.run_template(data))
             elif action == "run_conflict":
-                self.reply(200, self.server.app.run_conflict(data))
+                self.reply(200, self.server.app.monitor.run_conflict(data))
             elif action == "plot_preview":
-                self.reply(200, self.server.app.plot_preview(data))
+                self.reply(200, self.server.app.plots.plot_preview(data))
             elif action == "plot_presets":
-                self.reply(200, self.server.app.plot_presets(data))
+                self.reply(200, self.server.app.plots.plot_presets(data))
             elif action == "animation_presets":
-                self.reply(200, self.server.app.presets(data, kind="animation"))
+                self.reply(200, self.server.app.plots.presets(data, kind="animation"))
             elif action == "simulation_preset":
                 self.reply(200, simulation_setup.preset(STATE / "simulation-presets", data))
             elif action == "open_simulation_folder":
-                self.reply(200, self.server.app.open_simulation_folder(data))
+                self.reply(200, self.server.app.plots.open_simulation_folder(data))
             elif action == "pick_simulation_folder":
-                self.reply(200, self.server.app.pick_simulation_folder())
+                self.reply(200, self.server.app.plots.pick_simulation_folder())
             elif action == "save_campaign":
                 self.reply(200, self.server.app.save_campaign(data))
             elif action == "open_run_folder":
-                self.reply(200, self.server.app.open_run_folder(data))
+                self.reply(200, self.server.app.monitor.open_run_folder(data))
             elif action == "terminal":
                 self.server.app.clear_terminal(data.get("id"))
                 self.reply(200, {"cleared": True})
@@ -1778,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"requested": True})
             elif action in {"quit", "restart"}:
                 with self.server.app.lock:
-                    if self.server.app.task["state"] == "running" or self.server.app.local_inventory_lock.locked():
+                    if self.server.app.task["state"] == "running" or self.server.app.monitor.local_inventory_lock.locked():
                         raise ValueError("Wait for the current operation to finish before quitting or restarting MTS.")
                     if self.server.app.stopping:
                         raise ValueError("MTS is already shutting down.")
@@ -1814,7 +687,7 @@ def serve(install=False, local_sim=False, restart=False):
                 parts.scheme != "http" or parts.hostname != "127.0.0.1" or not parts.port or not parts.fragment):
             raise RuntimeError("Invalid saved restart session. Reopen MTS with the desktop launcher.")
         port, app.token = parts.port, parts.fragment
-        app.restart_plot_sources(restore=True)
+        app.plots.restart_plot_sources(restore=True)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.app = app
     server.restart_requested = False
@@ -1834,12 +707,11 @@ def serve(install=False, local_sim=False, restart=False):
     try:
         server.serve_forever()
     finally:
-        if app.preview_pool is not None:
-            app.preview_pool.shutdown(wait=False, cancel_futures=True)
+        app.plots.close()
         server.server_close()
         if server.restart_requested:
             try:
-                app.restart_plot_sources()
+                app.plots.restart_plot_sources()
             except (OSError, ValueError, TypeError) as error:
                 print(f"Monitor selections could not be saved for restart. {error}", file=sys.stderr, flush=True)
         else:

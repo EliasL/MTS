@@ -3,7 +3,7 @@
 This document describes preparing, submitting, resuming and inspecting MTS2D
 simulations. Folder execution is recorded as `folder-v1` in build manifests;
 retained builds without that interface use their saved worker path. The archived implementation is
-documented in [TheSimulationProcess_old.md](TheSimulationProcess_old.md).
+documented in [TheSimulationProcess_old.md](https://github.com/EliasL/MTS/blob/57279177abc2de38bc52c6f32bd3526de1e3aceb/TheSimulationProcess_old.md).
 
 ## 1. Components and terminology
 
@@ -271,6 +271,11 @@ and analysis. Missing required information remains an error. The
 `missing_settings` entries described below fill absent parameters; an explicitly
 saved simulation value takes precedence.
 
+Read-only consumers can also interpret native configurations that record
+`nrVTUFrames`. The recorded frame count remains part of the identity. The
+current default rate supplies the missing setting for reader validation.
+New submissions use current settings.
+
 Neither interpretation nor inventory refresh rewrites `config.conf`. MTS2D also
 preserves this identity-bearing file when resolving omitted parameters. Resolved
 execution information is recorded in simulator output. This rule applies to
@@ -377,6 +382,11 @@ Saving a preset or a campaign does not submit a run.
 **More → Use as template** in Monitor data loads the selected run's effective
 settings and verified custom initial VTU into Start simulations for a fresh
 run.
+
+The [manager automation API](../MTSManager/API.md) defines the shared Python
+submission functions used by the GUI and CLI. Both entry points use the same
+job receipts. The [architecture schematic](mts-architecture.svg) shows
+the dispatch and retrieval paths.
 
 **Custom mesh** requests a VTU preview from MTS2D on the selected execution
 site. The browser can remove triangles and restore material with local
@@ -788,10 +798,10 @@ labels, portable build options and a recorded source revision. A definition
 checksum covers simulation settings separately from editable metadata.
 
 Submission receipts record confirmed job IDs and their run/attempt association.
-Resuming an interrupted campaign submission reuses confirmed receipts and checks
-existing run manifests instead of resubmitting accepted jobs. Uncertain outcomes
-require scheduler/receipt inspection. Receipt continuation is distinct from
-MTS2D checkpoint resume.
+The general submission API returns jobs, completed skips and conflicts. A
+benchmark controller can also persist and resume its own confirmed receipts.
+After an interruption, inspect the submission journal and scheduler before
+retrying any uncertain member. Checkpoint resume starts a new attempt for a run.
 
 A campaign is not one scheduler transaction. If a later submission fails, earlier
 accepted jobs remain queued and their receipts remain available. Metadata edits
@@ -900,17 +910,17 @@ code. The archived document describes their pre-transition execution path.
 
 | Area | Source |
 | --- | --- |
-| Local GUI and server operations | [app.js](MTS_GUI/static/app.js), [server.py](MTS_GUI/server.py) |
-| Configuration and identity | [config.py](MTSManager/MTS_Management/config.py), [defaults.json](MTSManager/MTS_Management/defaults.json) |
-| Campaign definitions | [campaign.py](MTSManager/MTS_Management/campaign.py) |
-| CLI and remote operations | [cli.py](MTSManager/MTS_Management/cli.py), [cluster.py](MTSManager/MTS_Management/cluster.py) |
-| Source/build records and retention | [provenance.py](MTSManager/MTS_Management/provenance.py) |
-| Server updates | [deployments.py](MTSManager/MTS_Management/deployments.py) |
-| Preparation and submission | [runner.py](MTSManager/MTS_Management/runner.py) |
-| Submission history | [journal.py](MTSManager/MTS_Management/journal.py) |
-| Inventory | [inventory.py](MTSManager/MTS_Management/inventory.py), [inventory_cache.py](MTSManager/MTS_Management/inventory_cache.py) |
-| Simulator CLI and configuration | [main.cpp](MTS2D/src/main.cpp), [param_parser.cpp](MTS2D/src/Data/param_parser.cpp) |
-| Run-folder startup and checkpoint selection | [run_folder.cpp](MTS2D/src/Simulation/run_folder.cpp) |
-| Startup and loading | [simulation.cpp](MTS2D/src/Simulation/simulation.cpp), [simulation_outputs.cpp](MTS2D/src/Simulation/simulation_outputs.cpp) |
-| Configuration/output handling | [data_export.cpp](MTS2D/src/Data/data_export.cpp), [data_csv.cpp](MTS2D/src/Data/data_csv.cpp) |
-| Checkpoint serialization | [cereal_help.h](MTS2D/src/Data/cereal_help.h) |
+| Local GUI and server operations | [app.js](../MTS_GUI/static/app.js), [server.py](../MTS_GUI/server.py) |
+| Configuration and identity | [config.py](../MTSManager/MTS_Management/config.py), [defaults.json](../MTSManager/MTS_Management/defaults.json) |
+| Campaign definitions | [campaign.py](../MTSManager/MTS_Management/campaign.py) |
+| CLI and remote operations | [cli.py](../MTSManager/MTS_Management/cli.py), [cluster.py](../MTSManager/MTS_Management/cluster.py) |
+| Source/build records and retention | [provenance.py](../MTSManager/MTS_Management/provenance.py) |
+| Server updates | [deployments.py](../MTSManager/MTS_Management/deployments.py) |
+| Preparation and submission | [runner.py](../MTSManager/MTS_Management/runner.py) |
+| Submission history | [journal.py](../MTSManager/MTS_Management/journal.py) |
+| Inventory | [inventory.py](../MTSManager/MTS_Management/inventory.py), [inventory_cache.py](../MTSManager/MTS_Management/inventory_cache.py) |
+| Simulator CLI and configuration | [main.cpp](../MTS2D/src/main.cpp), [param_parser.cpp](../MTS2D/src/Data/param_parser.cpp) |
+| Run-folder startup and checkpoint selection | [run_folder.cpp](../MTS2D/src/Simulation/run_folder.cpp) |
+| Startup and loading | [simulation.cpp](../MTS2D/src/Simulation/simulation.cpp), [simulation_outputs.cpp](../MTS2D/src/Simulation/simulation_outputs.cpp) |
+| Configuration/output handling | [data_export.cpp](../MTS2D/src/Data/data_export.cpp), [data_csv.cpp](../MTS2D/src/Data/data_csv.cpp) |
+| Checkpoint serialization | [cereal_help.h](../MTS2D/src/Data/cereal_help.h) |
