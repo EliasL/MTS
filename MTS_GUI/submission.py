@@ -9,7 +9,9 @@ def start_run(site_file, config, data, log):
 
     name = data.get("site", "local")
     sites = load_sites(site_file)
-    site = replace(sites[name], mode="detached") if name == "local" else sites[name]
+    site = sites[name]
+    if not site.ssh and site.mode != "slurm":
+        site = replace(site, mode="detached")
     return submit_run(site, config, state_dir=submission_state_dir(site_file, sites),
                       campaign=data.get("campaign") or "GUI", label=data.get("label") or None,
                       initial_mesh=data.get("initial_mesh"), log=log)
@@ -20,7 +22,9 @@ def start_campaign(site_file, path, name, log):
     from MTS_Management.submission import submission_state_dir, submit_campaign
 
     sites = load_sites(site_file)
-    site = replace(sites[name], mode="foreground") if name == "local" else sites[name]
+    site = sites[name]
+    if not site.ssh and site.mode != "slurm":
+        site = replace(site, mode="foreground")
     result = submit_campaign(site, path, state_dir=submission_state_dir(site_file, sites), workers=1, log=log)
     skipped = len(result["skipped"])
     errors = {run["label"]: run["conflict"] for run in result["conflicts"]}

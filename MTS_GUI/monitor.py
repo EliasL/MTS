@@ -215,14 +215,14 @@ class Monitor:
             snapshots = {name: self.inventory_cache(name, site=profile, config_hashes=config_hashes)
                          for name, profile in profiles.items()}
         selected = ({name: snapshot for name, snapshot in snapshots.items()
-                     if profiles[name].ssh == profiles[site].ssh} if site is not None else
+                     if name == site or profiles[site].ssh and profiles[name].ssh == profiles[site].ssh} if site is not None else
                     snapshots)
         rows = [row | {"site": name} for name, snapshot in selected.items() for row in snapshot["rows"]
                 if not row.get("archived") and (campaign is None or matches(row))]
         for row in copies:
             origin = profiles.get(row["origin_site"])
             if site is not None:
-                relevant = not profiles[site].ssh or (origin is not None and origin.ssh == profiles[site].ssh)
+                relevant = site == "local" or (origin is not None and origin.ssh and origin.ssh == profiles[site].ssh)
             else:
                 relevant = matches(row)
             if not relevant:
@@ -411,10 +411,11 @@ class Monitor:
             if self.workspace.task["state"] == "running" or not self.local_inventory_lock.acquire(blocking=False):
                 raise ExpectedError("An operation is already running. Wait for it to finish.")
         try:
-            for name, profile in profiles.items():
-                if not profile.ssh:
-                    rows = call(profile, "inventory", timeout=60, include_archived=True)
-                    self.inventory_cache(name, rows=rows, site=profile)
+            names = [site] if "site" in selection else [name for name, profile in profiles.items() if not profile.ssh]
+            for name in names:
+                profile = profiles[name]
+                rows = call(profile, "inventory", timeout=60, include_archived=True)
+                self.inventory_cache(name, rows=rows, site=profile)
             return self.inventory_overview(**selection)
         except ExpectedError:
             raise
@@ -432,10 +433,14 @@ class Monitor:
                 for p in marker.parent.glob("*/manifest.json")}
 
     def archive_history(self):
+        from MTS_Management.archive import archive_root
         from MTS_Management.cluster import load_sites, paths
         from MTS_Management.journal import Journal
+        from MTS_Management.local_output import local_output_settings
 
-        profiles = load_sites(self.root / "MTSManager/sites.toml", include_disabled=True)
+        site_file = self.root / "MTSManager/sites.toml"
+        profiles = load_sites(site_file, include_disabled=True)
+        previous = local_output_settings(site_file)["previous_outputs"]
         journal = Journal(self.state / "archive")
         history = journal.records() if journal.path.is_file() else []
         restored = {row["archive_id"] for row in history if row["event"] == "restored"}
@@ -448,9 +453,13 @@ class Monitor:
             if location["state_dir"] not in local_journals:
                 source = Journal(location["state_dir"])
                 local_journals[location["state_dir"]] = source.records() if source.path.is_file() else []
+            root = Path(location["output_root"])
+            roots = {str(root), *previous.get(name, [])}
             for row in local_journals[location["state_dir"]]:
-                if row["event"] == "archived" and Path(row["output_folder"]).parent == Path(location["output_root"]):
-                    entries.setdefault(row["event_id"], row | {"site": name, "kind": "run"})
+                if row["event"] == "archived" and str(Path(row["output_folder"]).parent) in roots:
+                    folder = Path(row["output_folder"]).name
+                    entries.setdefault(row["event_id"], row | {"site": name, "kind": "run",
+                                       "output_folder": str(root / folder), "archive_folder": str(archive_root(root) / folder)})
         result = []
         for key, row in entries.items():
             site = profiles.get(row.get("site"))

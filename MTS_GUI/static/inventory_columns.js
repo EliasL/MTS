@@ -37,7 +37,7 @@ export function configureInventoryColumns(header, trigger, menu, onChange) {
     onChange();
   }
 
-  function open(left, top) {
+  function open(left, top, fromPointer = false) {
     menu.replaceChildren(...order.map(key => {
       const label = document.createElement('label');
       const input = document.createElement('input');
@@ -52,10 +52,15 @@ export function configureInventoryColumns(header, trigger, menu, onChange) {
       return label;
     }));
     updateChecks();
+    const gap = 4;
+    const abovePointer = fromPointer && top >= 64;
+    const availableHeight = abovePointer ? top : window.innerHeight - (fromPointer ? top : 0);
+    menu.style.maxHeight = `${availableHeight - 2 * gap}px`;
     if (!menu.matches(':popover-open')) menu.showPopover({source: trigger});
     const bounds = menu.getBoundingClientRect();
-    menu.style.left = Math.max(4, Math.min(left, document.documentElement.clientWidth - bounds.width - 4)) + 'px';
-    menu.style.top = Math.max(4, Math.min(top, window.innerHeight - bounds.height - 4)) + 'px';
+    if (fromPointer) top += abovePointer ? -bounds.height - gap : gap;
+    menu.style.left = Math.max(gap, Math.min(left, document.documentElement.clientWidth - bounds.width - gap)) + 'px';
+    menu.style.top = Math.max(gap, Math.min(top, window.innerHeight - bounds.height - gap)) + 'px';
     menu.querySelector('input:enabled')?.focus({preventScroll: true});
   }
   trigger.onclick = () => {
@@ -68,7 +73,13 @@ export function configureInventoryColumns(header, trigger, menu, onChange) {
   });
   header.addEventListener('contextmenu', event => {
     event.preventDefault();
-    open(event.clientX, event.clientY);
+    const {clientX, clientY, buttons} = event;
+    const show = () => requestAnimationFrame(() => open(clientX, clientY, true));
+    if (!buttons) {show(); return;}
+    // Let the opening click finish before the popover can light-dismiss.
+    const release = new AbortController();
+    window.addEventListener('mouseup', () => {release.abort(); show();}, {capture: true, signal: release.signal});
+    window.addEventListener('blur', () => release.abort(), {signal: release.signal});
   });
 
   let dragged = null, target = null;

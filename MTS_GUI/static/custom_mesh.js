@@ -164,25 +164,18 @@ class CustomMeshEditor {
         partners[i] = other;
       } else firstInTile.set(key, i);
     }
-    const cell = position => {
-      const o = 3 * pointByIndex.get(0), x = 3 * pointByIndex.get(cols), y = 3 * pointByIndex.get(rows * stride);
-      return [[position[x] - position[o], position[x + 1] - position[o + 1]],
-        [position[y] - position[o], position[y + 1] - position[o + 1]]];
-    };
     let image = [], loadedImage = [], imageMoved = false;
     if (periodic) {
-      const before = cell(current), after = cell(loaded);
-      const movement = before.map(([x, y], i) => Math.hypot(after[i][0] - x, after[i][1] - y));
-      const adjacent = movement[1] >= movement[0] ? 1 : 0;
-      const outline = ([a, b]) => {
-        const i = 3 * pointByIndex.get(0);
-        const start = [current[i] + [a, b][adjacent][0], current[i + 1] + [a, b][adjacent][1]];
-        return [start, [start[0] + a[0], start[1] + a[1]],
-          [start[0] + a[0] + b[0], start[1] + a[1] + b[1]], [start[0] + b[0], start[1] + b[1]]];
+      const corners = [0, cols, rows * stride + cols, rows * stride].map(key => 3 * pointByIndex.get(key));
+      const [origin, right] = corners;
+      const rightImage = position => {
+        const dx = position[right] - position[origin];
+        const dy = position[right + 1] - position[origin + 1];
+        return corners.map(i => [position[i] + dx, position[i + 1] + dy]);
       };
-      image = outline(before);
-      loadedImage = outline(after);
-      imageMoved = Math.max(...movement) > 1e-10;
+      image = rightImage(current);
+      loadedImage = rightImage(loaded);
+      imageMoved = image.some(([x, y], i) => Math.hypot(loadedImage[i][0] - x, loadedImage[i][1] - y) > 1e-10);
     }
     return {points, original, lattice, current, loaded, fixed, count, rows, cols, boundary,
       drivenEdge, periodic, image, loadedImage, imageMoved, stride, pointByIndex, tile, partners,

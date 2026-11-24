@@ -39,6 +39,7 @@ let loadedCampaign;
 const campaignPresetPrefix = '@campaign:';
 let campaignSizeTimer, campaignSizeRequest = 0;
 let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
+let localOutputBusy = false, localOutputPlan;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const siteLabel = name => String(name).toUpperCase();
 function inventorySelection() {
@@ -189,7 +190,7 @@ async function operation(action, data = {}) {
   const labels = {plot_monitor: 'Prepare plot data', plot_csv_refresh: 'Refresh campaign CSVs', archive_monitor: 'Archive',
     archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further',
     run: 'Start simulation', resume: 'Resume', remove_missing: 'Remove all missing',
-    animate: 'Generate animation', animate_preview: 'Preview animation'};
+    animate: 'Generate animation', animate_preview: 'Preview animation', local_output: 'Change local output'};
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
     labels[action] || action, command, 'running', action);
   pendingOperation = entry;
@@ -204,7 +205,7 @@ async function operation(action, data = {}) {
 }
 async function refreshLocalInventory(site) {
   const selection = inventorySelection(), selected = $('jobs-site').value, request = inventoryRequest;
-  const entry = terminalMessage('Refresh: LOCAL', 'Reading the local run inventory.', 'running');
+  const entry = terminalMessage('Refresh: ' + siteLabel(site), 'Reading the local run inventory.', 'running');
   const started = performance.now();
   pendingOperation = entry;
   updateActions();
@@ -224,14 +225,16 @@ async function refreshLocalInventory(site) {
 }
 function refreshLocalMonitor() {
   if (!localMonitorRefreshPending || firstState || recoveringWorkspace) return;
-  if (!monitorAutoRefresh.checked || !lastState.sites.some(site => site.name === 'local' && !site.remote)) {
+  const selection = inventorySelection();
+  const site = lastState.sites.find(site => !site.remote && (!selection.site || site.name === selection.site));
+  if (!monitorAutoRefresh.checked || !site) {
     localMonitorRefreshPending = false;
     return;
   }
   if (!Object.values(lastState.packages).every(Boolean) || lastState.task.state === 'running' ||
       pendingOperation?.state === 'running') return;
   localMonitorRefreshPending = false;
-  refreshLocalInventory('local');
+  refreshLocalInventory(site.name);
 }
 function inventoryAge() {
   const sources = (inventorySnapshot?.sources || []).filter(source => !inventorySnapshot.campaign ||
@@ -318,20 +321,24 @@ function updateActions() {
     buttonHint(button).title = busyReason || button.dataset.disabledReason || '';
   }
   const installReason = ready ? '' : 'Install the required packages in Setup and tools.';
+  updateLocalOutputControls(busy || !ready);
   for (const id of ['build-simulator', 'overview-build']) {
     $(id).disabled ||= !ready;
     $(id).parentElement.title = busyReason || installReason;
   }
   const siteReason = site => installReason ||
     (!site ? 'Choose an execution site.' :
-      site === 'local' && !lastState.local_build ? 'Build MTS2D from the Overview.' : '');
+      lastState.sites.find(profile => profile.name === site)?.output_available === false ?
+        'Mount the output drive or choose another local site.' :
+        site === 'local' && !lastState.local_build ? 'Build MTS2D from the Overview.' : '');
   const campaignSiteReason = siteReason($('campaign-site').value);
   $('campaign-run').disabled ||= Boolean(campaignSiteReason);
   if (!busy && campaignSiteReason) $('campaign-run').parentElement.title = campaignSiteReason;
   const setupReason = !startOptions ? 'Simulation settings are unavailable. Check MTSManager in Setup and tools.' : '';
   customMesh.refresh();
-  const triangular = $('run-energy-function').value === 'contiTriangular';
-  $('run-triangular-reconnection-warning').hidden = !triangular || $('run-reconnection').value === 'none';
+  const energyFunction = $('run-energy-function').value;
+  $('run-triangular-reconnection-warning').hidden = energyFunction !== 'contiTriangular' || $('run-reconnection').value === 'none';
+  $('run-two-phase-warning').hidden = energyFunction !== 'conti2Phase';
   const vtuRate = $('run-vtu-rate');
   vtuRate.disabled = !$('run-write-vtus').checked;
   const vtuIssue = !vtuRate.disabled && !(vtuRate.valueAsNumber > 0)
@@ -525,7 +532,81 @@ function fillSites(sites) {
     select.replaceChildren(...sites.map(site => new Option((siteLabel(site.label || site.name)) + (site.remote ? ' · remote' : ' · this computer'), site.name)));
     if (sites.some(site => site.name === previous)) select.value = previous;
   });
+  const local = $('local-output-site'), previous = local.value;
+  const profiles = sites.filter(site => !site.remote && site.mode !== 'slurm');
+  local.replaceChildren(...profiles.map(site => new Option(siteLabel(site.name), site.name)));
+  if (profiles.some(site => site.name === previous)) local.value = previous;
 }
+function updateLocalOutputControls(busy) {
+  const profile = lastState.sites.find(site => site.name === $('local-output-site').value);
+  const path = $('local-output-destination').value.trim();
+  $('local-output-current').textContent = profile?.output_root || '';
+  const unavailable = busy || localOutputBusy || !profile;
+  $('local-output-browse').disabled = $('local-output-site').disabled = $('local-output-destination').disabled = unavailable;
+  $('local-output-create').disabled = unavailable || !path || path === profile?.output_root;
+  $('local-output-move').disabled = $('local-output-create').disabled || profile?.output_available === false;
+}
+$('local-output-site').onchange = $('local-output-destination').oninput = updateActions;
+async function reviewLocalOutput(move) {
+  const status = $('local-output-status');
+  const site = $('local-output-site').value, destination = $('local-output-destination').value.trim();
+  localOutputBusy = true;
+  updateActions();
+  status.textContent = 'Checking the destination…';
+  try {
+    const plan = await api('plan_local_output', {site, destination, move});
+    localOutputPlan = {site, move, destination: plan.destination, source: plan.source,
+      approved_attempts: plan.active.map(run => run.attempt)};
+    $('local-output-title').textContent = move ? 'Move local output' : 'Create local site';
+    $('local-output-summary').textContent = move ? `Move ${plan.source} to ${plan.destination}.` :
+      `Use ${plan.destination} for a separate local site.`;
+    const runs = $('local-output-runs');
+    const details = plan.blocked.length ? plan.blocked : plan.active.map(run => `${run.run} · checkpoint load ${run.load}`);
+    runs.replaceChildren(...details.map(text => {
+      const item = document.createElement('li');
+      item.textContent = text;
+      return item;
+    }));
+    runs.hidden = !details.length;
+    if (plan.blocked.length) $('local-output-summary').textContent =
+      'Wait for these runs to finish or create a separate local site.';
+    else if (plan.active.length) $('local-output-summary').textContent +=
+      ' MTS will stop these runs and resume from their latest saved checkpoints. Steps since the checkpoints will be repeated.';
+    $('local-output-name-field').hidden = move;
+    const name = $('local-output-name');
+    name.value = '';
+    name.required = !move;
+    const confirm = $('local-output-confirm');
+    confirm.hidden = Boolean(plan.blocked.length);
+    confirm.textContent = !move ? 'Create local site' : plan.active.length ? 'Stop, move and resume' : 'Move output';
+    status.textContent = '';
+    $('local-output-dialog').showModal();
+  } catch (error) {status.textContent = error.message;}
+  finally {localOutputBusy = false; updateActions();}
+}
+$('local-output-move').onclick = () => reviewLocalOutput(true);
+$('local-output-create').onclick = () => reviewLocalOutput(false);
+$('local-output-cancel').onclick = () => $('local-output-dialog').close();
+$('local-output-form').onsubmit = event => {
+  event.preventDefault();
+  if ($('local-output-confirm').hidden) return;
+  const request = {...localOutputPlan};
+  if (!request.move) request.new_site = $('local-output-name').value.trim();
+  $('local-output-dialog').close();
+  operation('local_output', request);
+};
+$('local-output-browse').onclick = async () => {
+  const status = $('local-output-status');
+  localOutputBusy = true;
+  updateActions();
+  status.textContent = 'Choose a folder in the desktop dialog.';
+  try {
+    const result = await api('pick_simulation_folder', {});
+    if (result.path) $('local-output-destination').value = result.path;
+    status.textContent = '';
+  } catch (error) {status.textContent = error.message;}
+  finally {localOutputBusy = false; updateActions();}
+};
 async function openFolderLocation(row) {
   const actions = [];
   if (row.ssh_command) {
@@ -645,7 +726,8 @@ function openRunMenu(anchor, rows) {
   const stoppable = ['finished', 'failed', 'stopped'];
   const furtherUnavailable = rows.length !== 1 || !rows[0].site || !stoppable.includes(rows[0].status.state);
   const archiveUnavailable = rows.some(row => ![...stoppable, 'local copy'].includes(row.status.state));
-  const canResume = rows.length === 1 && rows[0].site && rows[0].status.state === 'failed';
+  const canResume = rows.length === 1 && rows[0].site && (rows[0].status.state === 'failed' ||
+    rows[0].status.state === 'stopped' && lastState.sites.some(site => site.name === rows[0].site && !site.remote));
   resume.classList.toggle('hidden', !canResume);
   resume.onclick = () => {runMoreMenu.hidePopover(); operation('resume', selectedRuns(rows));};
   further.dataset.unavailable = String(furtherUnavailable);
@@ -988,6 +1070,18 @@ async function refresh() {
       }
       if (task.result?.config_hash) {
         $('task-result').textContent = 'Submitted.';
+        runFolderKey = null;
+      }
+      if (task.result?.local_output) {
+        const result = task.result.local_output;
+        $('local-output-site').value = result.site;
+        $('local-output-destination').value = '';
+        const detail = result.errors.move ? 'Output move failed. ' :
+          `${siteLabel(result.site)} uses ${result.output_root}. `;
+        const resumed = result.resumed.length;
+        $('local-output-status').textContent = detail + (resumed ? `${resumed} ${resumed === 1 ? 'run' : 'runs'} submitted to resume. ` : '') +
+          (task.state === 'partial' ? 'See the terminal for details.' : '');
+        if ($('archive-log').open) await loadArchiveLog();
         runFolderKey = null;
       }
       if (task.result?.continuation_plan) await showContinuation(task.result.continuation_plan);
@@ -1746,14 +1840,16 @@ async function loadAnimationOptions() {
     animationPreviewOverride = false;
   }
   settings.hidden = true; status.textContent = '';
+  $('animate-two-phase-warning').hidden = true;
   updateActions();
   try {
     const options = await api('animation_options?' + new URLSearchParams(selection));
     if (request !== animationRequest || !options.boundary) return;
     if (!animationPreviewOverride) selectAnimationPreview(options.preview_frame);
     const periodic = ['periodic', 'periodicAnchored'].includes(options.boundary);
+    $('animate-two-phase-warning').hidden = options.energy_function !== 'conti2Phase';
     if (key !== animationLatticeKey) {
-      $('animate-defect-lattice').value = options.square_model ? 'square' : 'triangular';
+      $('animate-defect-lattice').value = options.energy_function === 'contiTriangular' ? 'triangular' : 'square';
       $('animate-tiling').value = options.boundary === 'periodic' ? 'tile' : 'cell';
       animationHeatmapKind = null;
       animationLatticeKey = key;

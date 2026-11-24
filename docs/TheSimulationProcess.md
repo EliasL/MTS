@@ -258,6 +258,29 @@ state compatibility. This also applies when it is launched directly, without
 the manager. Selecting CHOLMOD in a binary built without CHOLMOD produces an
 error.
 
+#### Scientific issues
+
+`energyFunction = conti2Phase` selects the experimental Conti potential with
+β = 8/3. The reference sample starts on a square lattice. For a homogeneous
+sample, the square state and the area-preserving triangular state have the
+same stress-free energy density. Both use the same zero of energy, set at the
+square well. Equal well depths permit either symmetry locally. Phase selection
+depends on the loading path, boundary constraints and nucleation across the
+energy barrier. The potential contains a local energy density with no separate
+interfacial energy parameter.
+
+The elastoplastic decomposition still uses the square-lattice convention.
+Interpret `F_E`, `F_P`, `T_p` and the accumulated deformation `T` with caution
+when elements transform or reconnect. Reconnection uses square reference
+geometry and the configured transport rule. Plastic and elastic stopping
+targets require `contiSquare`. Single-lattice dislocation overlays are
+ambiguous across regions of different symmetry. To assess a transformation,
+compare the area-normalized reduced metric with both wells and examine the
+spatial stress. Identify phases in post-processing.
+
+Managed execution requires a build advertising Conti2Phase support at the
+execution site. The build manifest records this capability.
+
 ### 3.2 Existing saved configurations
 
 To deal with existing saved configurations, the original config file is treated
@@ -455,6 +478,30 @@ the binary without SSH or Slurm. Foreground execution waits for the process;
 detached execution runs independently so the GUI can close while it continues.
 The GUI launches individual local runs detached and local campaigns in the
 foreground with one worker.
+
+### 4.1 Local output locations
+
+The Overview can relocate a local site's output or create a separate local
+site that shares its simulator build. The manager reads these machine-specific
+profiles alongside `sites.toml`. Each local site has an independent run index.
+Choose an empty or new directory. Selecting a mounted drive root proposes an
+`MTS` directory on that drive so the archive can remain beside the output on
+the same volume. Mount the drive before using the site.
+
+Before a move, the manager checks live attempt records and run locks. A
+managed detached process can be stopped after approval when its retained
+executable and an existing checkpoint support resume. Wait for other active
+processes or choose a separate output site. The move waits for each stopped
+process and its run lock to clear, copies output and archives to the new
+location, then changes the site's configuration. The old location retains a
+marker that rejects submissions from stale site settings. Existing attempt
+records preserve their original paths, and new attempts use the new path.
+
+The manager submits each stopped run from its latest checkpoint with the same
+configuration and retained executable. Steps after that checkpoint are
+repeated. If the move fails before changing the configured path, the manager
+attempts to resume stopped runs at the source. Inventory is refreshed at the
+effective location.
 
 ## 5. Submission records and the saved command
 
@@ -737,7 +784,8 @@ Malformed CSV/checkpoint data raises an error. Loading and output recovery are
 the same for direct and scheduler-launched MTS2D invocations. The scheduler
 captures resume errors in the attempt log and process exit status.
 
-**More → Resume** submits a new attempt in a failed run's existing folder.
+**More → Resume** submits a new attempt in an existing folder after a failed
+attempt or a stopped local attempt.
 The execution site verifies the saved configuration, inactivity and presence of
 a restart checkpoint before submitting the retained MTS2D binary with
 `--resume`. MTS2D selects the checkpoint when the attempt starts.

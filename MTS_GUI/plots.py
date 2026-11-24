@@ -210,7 +210,9 @@ class Plots:
         if folder is None:
             return {}
         config = Run.read(folder).config
-        return {"boundary": config["boundary"], "square_model": config["energyFunction"] == "contiSquare",
+        energy_function = config["energyFunction"]
+        return {"boundary": config["boundary"], "energy_function": energy_function,
+                "square_model": energy_function == "contiSquare",
                 "delaunay_dislocations": config["reconnectionMethod"] == "none",
                 "preview_frame": self.default_animation_preview(data["campaign"], folder)}
 

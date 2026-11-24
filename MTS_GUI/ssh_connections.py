@@ -406,7 +406,7 @@ def save_profile(site_file, host, data):
         if editing:
             if editing != name or name not in raw or raw[name].get("ssh") != host:
                 raise ValueError("The selected profile changed; reopen the editor")
-        elif name in raw:
+        elif name in load_sites(path, include_disabled=True):
             raise ValueError("A profile with this name already exists")
         # Header spans retain all other profiles and their values. Full TOML
         # validation below rejects unsupported layouts rather than risking data loss.
@@ -422,6 +422,7 @@ def save_profile(site_file, host, data):
         chunks.append(original[cursor:])
         fields = asdict(site)
         fields.pop("name")
+        fields.pop("require_output_root")
         replacement = f"\n[sites.{name}]\n" + "".join(f"{key} = {_toml_value(value)}\n" for key, value in fields.items())
         candidate = "".join(chunks).rstrip() + "\n" + replacement
         if tomllib.loads(candidate) != {"sites": raw | {name: fields}}:

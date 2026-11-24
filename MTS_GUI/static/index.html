@@ -9,7 +9,12 @@
 <div class="workspace-layout"><div class="content"><section class="view active" id="overview"><div class="intro"><h1>Overview</h1><span class="badge" id="ready-badge">Checking installation</span></div>
 <div class="grid three"><article class="card start-card"><h2>Start simulations</h2><button class="primary" data-view="start">Configure</button></article><article class="card start-card"><h2>Monitor data</h2><button data-view="monitor">View</button></article><article class="card start-card"><h2>Plot</h2><button data-view="plot">Plot</button></article></div>
 <article class="card readiness"><div class="section-row"><h2>Installation status</h2><button class="small" data-view="setup">Setup</button></div><div id="readiness-list"></div>
-<div class="readiness-row"><span>Local simulator</span><div class="inline-fields wrap"><span class="badge" id="overview-build-status">Checking</span><button class="small" id="overview-build" type="button" hidden disabled>Build Release</button></div></div></article></section>
+<div class="readiness-row"><span>Local simulator</span><div class="inline-fields wrap"><span class="badge" id="overview-build-status">Checking</span><button class="small" id="overview-build" type="button" hidden disabled>Build Release</button></div></div></article>
+<article class="card" id="local-output"><h2>Local data output path</h2>
+<div class="inline-fields wrap"><label for="local-output-site">Site</label><select id="local-output-site"></select><span class="path" id="local-output-current"></span></div>
+<div class="inline-fields wrap local-output-destination"><label for="local-output-destination">New destination</label><input id="local-output-destination" placeholder="Absolute folder path"><button id="local-output-browse" type="button" class="small">Browse…</button></div>
+<div class="inline-fields wrap"><button id="local-output-move" type="button" disabled>Move current output</button><button id="local-output-create" type="button" disabled>Create local site</button></div>
+<p id="local-output-status" role="status" class="muted"></p></article></section>
 <section class="view" id="start"><div class="intro"><h1>Start simulations</h1></div>
 <form class="card" id="run-form">
 <h2>Individual simulation</h2>
@@ -37,6 +42,7 @@
 <div class="field"><label for="run-reconnection">Reconnection</label><select id="run-reconnection"><option value="none">None</option><option value="edgeFlip">Edge flip</option><option value="delaunay">Delaunay</option></select></div>
 </div></fieldset>
 <p class="notice warning" id="run-triangular-reconnection-warning" role="status" hidden>T is unreliable for deformation history after triangular reconnection.</p>
+<p class="notice warning" id="run-two-phase-warning" role="status" hidden><strong>Scientific issues</strong> — Conti2Phase is experimental. Interpret the elastoplastic decomposition and deformation history T with caution.</p>
 <fieldset id="run-edge-settings" class="settings-group fresh-run-only" hidden><legend>Edge constraints</legend>
 <div class="fields packed">
 <label class="field">Driven edge<select id="run-driven-edge"><option value="top">Top</option><option value="bottom">Bottom</option><option value="left">Left</option><option value="right">Right</option></select></label>
@@ -89,7 +95,7 @@
 <div class="field"><label for="run-vtu-rate">VTU files per unit load</label><input id="run-vtu-rate" type="number" min="0" step="any" value="30" required></div>
 <label class="field check"><input id="run-log-minimization" type="checkbox"> Log during minimization</label>
 <div class="field"><label for="run-minimizer">Minimizer</label><select id="run-minimizer"><option value="LBFGS">L-BFGS</option><option value="CG">Conjugate gradient</option><option value="FIRE">FIRE</option></select></div>
-<div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option></select></div>
+<div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option><option value="conti2Phase">Conti2Phase (experimental)</option></select></div>
 <div class="field"><label for="run-initial-noise">Initial guess noise</label><input id="run-initial-noise" type="number" min="0" step="any" value="0" required></div>
 </div>
 <div class="field-label"><label for="run-extra">MTS2D key = value settings</label>
@@ -209,6 +215,7 @@
 <div class="plot-presets"><h2>Plot presets</h2><div class="inline-fields wrap"><input id="plot-preset-name" aria-label="Preset name" placeholder="Preset name" maxlength="120"><button id="plot-preset-new" type="button">Save as new</button><button id="plot-preset-update" type="button" disabled>Update preset</button></div><p id="plot-preset-status" class="muted" role="status"></p><div id="plot-presets-list"></div></div>
 </div><div id="animate-panel" role="tabpanel" aria-labelledby="animate-tab" hidden>
 <p id="animate-status" class="muted" role="status"></p>
+<p class="notice warning" id="animate-two-phase-warning" role="status" hidden><strong>Scientific issues</strong> — Conti2Phase is experimental. Interpret the elastoplastic decomposition and deformation history T with caution. Dislocation overlays assume one lattice symmetry.</p>
 <fieldset id="animation-settings" class="settings-group" hidden disabled><legend>Animation</legend>
 <div class="fields groups animation-groups">
 <fieldset class="settings-group"><legend>View</legend><div class="fields">
@@ -376,6 +383,11 @@
 </div>
 </form>
 </dialog>
+<dialog id="local-output-dialog" aria-labelledby="local-output-title"><form id="local-output-form">
+<h2 id="local-output-title"></h2><p id="local-output-summary"></p><ul id="local-output-runs" hidden></ul>
+<label class="field" id="local-output-name-field">New site name<input id="local-output-name" maxlength="40" pattern="[A-Za-z][A-Za-z0-9_\-]*"></label>
+<div class="inline-fields wrap"><button id="local-output-confirm" class="primary" type="submit"></button><button id="local-output-cancel" type="button">Cancel</button></div>
+</form></dialog>
 <div id="inventory-column-menu" popover aria-label="Inventory columns"></div>
 <div id="run-more-menu" popover aria-label="More run actions">
 <button id="run-more-template" class="small" type="button">Use as template</button>

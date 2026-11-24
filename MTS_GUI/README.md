@@ -4,6 +4,20 @@ MTS provides a local browser interface for configuring and monitoring
 simulations, inspecting scientific results and exporting figures. Install and
 open it from the workspace root using the [installation guide](../InstallationGuide.html).
 
+## Local data output
+
+In **Overview → Local data output path**, select a local site and enter an
+empty destination folder. Use **Move current output** to transfer the site's
+runs and archives. Use **Create local site** to keep the existing output and
+add a separate destination for future runs. Local sites share the simulator
+build of the site they were created from.
+
+If a move affects running simulations, review their checkpoints and choose
+**Stop, move and resume**. The new attempts resume from their latest saved
+checkpoints, repeating any later steps. Wait for runs without usable
+checkpoints or create a separate site. Selecting a drive root proposes an
+`MTS` folder on that drive.
+
 ## Start a simulation
 
 In **Start simulations**, select an experiment and execution site. Set the mesh
@@ -21,6 +35,9 @@ one run. Local individual runs continue when the GUI closes.
   `1.5,2.5,2.5` for three full slips at the midpoint of the selected edges.
 - Select `contiTriangular` for a staggered triangular mesh. Boundary
   displacement supports top and bottom loading on this lattice.
+- Select **Conti2Phase (experimental)** under **Additional settings → Energy
+  density function** for a square initial sample with equal-depth square and
+  triangular wells. See [Scientific issues](../docs/TheSimulationProcess.md#scientific-issues).
 
 Use **Custom mesh** to preview the sample on the selected execution site.
 Click to remove triangles and Shift-click to restore material from the original
@@ -56,7 +73,8 @@ seed can be included in the plot.
 - **Use as template** loads a run's settings and initial mesh for a fresh run.
 - **Load further** creates a new run folder using a checkpoint from the source.
   It preserves the source run. **Resume** starts a new attempt in the original
-  folder for a failed run with a valid checkpoint.
+  folder for a failed or stopped local run with a valid checkpoint. Failed
+  remote runs also support resume.
 - **Archive** moves an inactive run out of the active output root. **Archive
   log** shows archived runs and supports restoring them. **Remove all missing**
   clears records for folders that are already absent.

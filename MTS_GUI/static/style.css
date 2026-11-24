@@ -165,8 +165,8 @@ details .fields,details textarea{margin-top:12px}
 .terminal-brace[aria-expanded="false"]+.terminal-brace-content,.terminal-brace[aria-expanded="false"]+.terminal-brace-content+span{display:none}
 .terminal-history details[data-warning="true"]{border-color:#b3842b}
 .terminal-history details[data-warning="true"] pre{color:#ffe19a}
-#operation-warning,#archive-warning,#simulation-folder-dialog{width:min(35rem,calc(100% - 32px));padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);color:var(--ink)}
-#operation-warning::backdrop,#archive-warning::backdrop,#simulation-folder-dialog::backdrop{background:#20283080}
+#operation-warning,#archive-warning,#simulation-folder-dialog,#local-output-dialog{width:min(35rem,calc(100% - 32px));padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);color:var(--ink)}
+#operation-warning::backdrop,#archive-warning::backdrop,#simulation-folder-dialog::backdrop,#local-output-dialog::backdrop{background:#20283080}
 .folder-path{display:flex;gap:8px;margin-top:4px}
 .folder-path input{min-width:0;flex:1}
 #simulation-folder-status{overflow-wrap:anywhere;margin:10px 0}
@@ -175,6 +175,11 @@ details .fields,details textarea{margin-top:12px}
 #archive-warning form{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap}
 #setup-readiness{border-bottom:1px solid var(--line)}
 .result{font-size:12px;margin-top:12px}
+.local-output-destination{margin:10px 0}
+#local-output-current{overflow-wrap:anywhere;white-space:normal}
+#local-output-destination{width:min(34rem,100%)}
+#local-output-status:empty{display:none}
+#local-output-summary{overflow-wrap:anywhere}
 .table-wrap{overflow:auto}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;color:var(--muted);font-weight:500;padding:10px 8px;background:#f6f7f8;border-bottom:1px solid var(--line)}
@@ -183,6 +188,7 @@ td:first-child{max-width:300px;overflow-wrap:anywhere}
 .table-actions{display:flex;align-items:center;gap:6px}
 #run-more-menu,#animate-preview-menu,#inventory-column-menu{position:fixed;inset:auto;margin:0;padding:4px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--ink);box-shadow:0 3px 12px #20283030}
 #run-more-menu:popover-open,#animate-preview-menu:popover-open,#inventory-column-menu:popover-open{display:grid;gap:3px}
+#inventory-column-menu{overflow-y:auto}
 #inventory-column-menu label{display:flex;align-items:center;gap:8px;padding:4px 8px}
 #inventory-column-menu input{width:auto;margin:0}
 #run-more-menu .action-hint>button{width:100%;justify-content:flex-start;border-color:transparent}

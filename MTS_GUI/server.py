@@ -239,15 +239,21 @@ class Workspace:
         if packages["MTSManager"] and site_file.exists():
             from MTS_Management.cluster import load_sites, paths
             profiles = load_sites(site_file)
-            sites = [{"name": s.name, "label": site_label(s.name), "remote": bool(s.ssh), "mode": s.mode}
-                     for s in profiles.values()]
             seen = set()
             for profile in profiles.values():
-                host = profile.ssh or "local"
-                if host not in seen:
+                info = {"name": profile.name, "label": site_label(profile.name),
+                        "remote": bool(profile.ssh), "mode": profile.mode}
+                if not profile.ssh:
+                    output = paths(profile)["output_root"]
+                    info.update(output_root=output, output_available=not profile.require_output_root or Path(output).is_dir())
+                sites.append(info)
+                host = profile.ssh or profile.name
+                host_key = (bool(profile.ssh), host)
+                if host_key not in seen:
                     servers.append({"name": profile.name, "label": site_label(host),
-                                    "profiles": [p.name for p in profiles.values() if (p.ssh or "local") == host]})
-                    seen.add(host)
+                                    "profiles": [p.name for p in profiles.values() if p.ssh == profile.ssh] if profile.ssh
+                                    else [profile.name]})
+                    seen.add(host_key)
             if "local" in profiles and not profiles["local"].ssh:
                 build_status, local_current_configuration = local_build_status(paths(profiles["local"]))
         with self.lock:
@@ -259,7 +265,7 @@ class Workspace:
                                                     else "pyproject.toml")).exists() for name in COMPONENTS},
                 "packages": packages, "local_build": build_status != "missing",
                 "local_build_status": build_status, "local_current_configuration": local_current_configuration,
-                "data_folders": [str(p) for p in [ROOT / "MTSManager/output", *sorted(
+                "data_folders": [str(p) for p in [*(Path(s["output_root"]) for s in sites if not s["remote"]), *sorted(
                     (ROOT / "MTSPlot/data").glob("*"))] if p.is_dir()],
                 "campaigns": sorted(self.monitor.campaign_definitions()) if packages["MTSManager"] else [],
                 "sites": sites, "servers": servers, "task": task, "history": history, "interface_version": 4,
@@ -307,6 +313,21 @@ class Workspace:
     def operation(self, action, data):
         safe_data = {k: "[redacted]" if k == "password" else v for k, v in data.items()}
         self.log(f"Workspace.operation({action!r}, {safe_data!r})", command=True)
+        if action == "local_output":
+            from MTS_Management.cluster import load_sites
+            from MTS_Management.local_output import change_local_output
+            site_file = ROOT / "MTSManager/sites.toml"
+            result = change_local_output(site_file, **data, log=self.log)
+            name = result["site"]
+            profile = load_sites(site_file)[name]
+            try:
+                rows = self.monitor.read_inventory(name, profile)
+                self.monitor.inventory_cache(name, rows=rows, site=profile)
+                with self.lock:
+                    self.task["inventory_revision"] = 1
+            except Exception as error:
+                self.log(f"Refresh Monitor data to update {site_label(name)}. {error}\n{traceback.format_exc()}")
+            return {"local_output": result, "errors": result["errors"]}
         if action.startswith("ssh_"):
             from . import ssh_connections as ssh
             site_file = ROOT / "MTSManager/sites.toml"
@@ -416,8 +437,8 @@ class Workspace:
         if action == "resume":
             from MTS_Management.errors import ExpectedError
             row = self.monitor.continuation_source(data)
-            if row["status"]["state"] != "failed":
-                raise ExpectedError("Select one run whose latest attempt failed.")
+            if row["status"]["state"] not in {"failed", "stopped"}:
+                raise ExpectedError("Select one run whose latest attempt failed or stopped.")
             selection = {key: row[key] for key in ("folder", "config_hash", "manifest_sha256")}
             try:
                 result = self.manager_call(row["site"], "resume", timeout=120, selection=selection)
@@ -668,6 +689,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.app.plots.open_simulation_folder(data))
             elif action == "pick_simulation_folder":
                 self.reply(200, self.server.app.plots.pick_simulation_folder())
+            elif action == "plan_local_output":
+                from MTS_Management.local_output import plan_local_output
+                self.reply(200, plan_local_output(ROOT / "MTSManager/sites.toml", **data))
             elif action == "save_campaign":
                 self.reply(200, self.server.app.save_campaign(data))
             elif action == "campaign_size":
@@ -690,13 +714,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.restart_requested = action == "restart"
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "resume", "run_campaign", "continuation_plan", "plot", "plot_monitor", "plot_csv_refresh", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "remove_missing", "slurm_plan", "slurm_execute",
+            elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "resume", "run_campaign", "continuation_plan", "plot", "plot_monitor", "plot_csv_refresh", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "remove_missing", "slurm_plan", "slurm_execute", "local_output",
                             "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
                 title = {"plot_monitor": "Prepare plot data", "plot_csv_refresh": "Refresh campaign CSVs",
                          "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
                          "restore_archive": "Restore", "continuation_plan": "Load further",
                          "run": "Start simulation", "remove_missing": "Remove all missing",
-                         "animate": "Generate animation", "animate_preview": "Preview animation"}.get(action, action.capitalize())
+                         "animate": "Generate animation", "animate_preview": "Preview animation",
+                         "local_output": "Change local output"}.get(action, action.capitalize())
                 task_id = self.server.app.start(title, lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs", "plot_csv_refresh", "animate", "animate_preview"},
                                                 action=action)
