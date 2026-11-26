@@ -33,8 +33,8 @@ one run. Local individual runs continue when the GUI closes.
   sides. Plot vertical reaction force against load for a force–depth curve.
 - **Sequential slip** drives selected edge regions. For example, enter
   `1.5,2.5,2.5` for three full slips at the midpoint of the selected edges.
-- Select `contiTriangular` for a staggered triangular mesh. Boundary
-  displacement supports top and bottom loading on this lattice.
+- Select `contiTriangular` or `triangularCubic` for a staggered triangular mesh.
+  Boundary displacement supports top and bottom loading on this lattice.
 - Select **Conti2Phase (experimental)** under **Additional settings → Energy
   density function** for a square initial sample with equal-depth square and
   triangular wells. See [Scientific issues](../docs/TheSimulationProcess.md#scientific-issues).
@@ -104,12 +104,25 @@ restricted to the common load interval. Select one seed to inspect repeated or
 nonmonotonic loads on incompatible grids. Preview and PDF export use the same
 plot specification. Named presets retain the axes, filters and appearance.
 
-For **Animate**, select one run with saved mesh snapshots. Choose an element
-field, playback schedule and display limits. **VTU files per unit load** in
+For **Animate**, select one run with saved mesh snapshots. In **View**, use
+**Show all options** to list the cell and point fields stored in the selected
+VTU file or the run's latest snapshot. Vector components can be selected
+individually. Point fields colour each triangle by its vertex mean.
+**Reduced lattice angle** reconstructs the lattice metric from the strain
+tensor in full-field VTU snapshots (`C11`, `C12`, `C22`) and the run's
+recorded constitutive reference. The VTU fields `G11`, `G12`, and `G22`
+describe the current mesh edges.
+An ideal triangular lattice gives 60° and an ideal square lattice gives 90°.
+The default colour limits are fixed at these values across frames.
+Choose a playback schedule and display limits. **VTU files per unit load** in
 the simulation settings controls the cadence of regular snapshots. For remote
 runs, MTS retrieves the snapshots needed for rendering. MP4 requires FFmpeg
 with H.264 encoding. MTS uses the system executable or the path in
 `.mts/ffmpeg-path`.
+
+Enable **Symmetric colour limits** for a range centred on zero. Clear it to
+set the lower and upper colour limits independently. Raw VTU fields use
+independent limits by default.
 
 By default, automatic colour limits come from the last saved mesh. Clear
 **Range from last frame** to use the scheduled animation frames. Preview uses
@@ -119,17 +132,20 @@ including the opacity curve.
 
 ## Connections and logs
 
-Use **Setup and tools** to manage SSH connections, site profiles and builds.
-Check connectivity and review the server profile before submission. **Update
-MTS on servers** transfers the manager, campaign files and verified source.
-Compile the simulator on the execution site when the selected build needs an
-update.
+Use **SSH connections** to manage connections and site profiles. Check the
+connection and use **Deploy** on its row to update one server, or **Update MTS
+on servers** to update all enabled servers. Deployment transfers the manager,
+campaign files and verified source. Use **Build** on a server row to compile
+MTS2D Release there, or **Build on servers** to build on all current servers.
+Outdated deployments and profiles using retained executables are skipped.
+Use **Setup and tools** for local builds.
 
 **Slurm control** in the advanced tools holds, releases or cancels reviewed
 queued jobs. **Review matching jobs** queries the live queue and displays the
 matching IDs. **Run reviewed action** rechecks those jobs before proceeding.
 
-The Terminal shows operation progress and diagnostics. **Abort** interrupts
+The Terminal updates recurring progress in place and keeps warnings and
+completion messages in the operation history. **Abort** interrupts
 supported reads and animation tasks. **Restart MTS** reloads the backend and
 restores the browser draft where possible. **Quit MTS** ends the local GUI
 session. Simulation workers have independent lifetimes. Logs are in

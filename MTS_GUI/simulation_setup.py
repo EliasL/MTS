@@ -110,10 +110,14 @@ def axis_values(default, axis):
     if kind not in (int, float) or mode not in {"linear", "log"}:
         raise ValueError("Linear and logarithmic sweeps require a numeric parameter.")
     start, stop, count = float(axis["start"]), float(axis["stop"]), int(str(axis["count"]))
-    if not (math.isfinite(start) and math.isfinite(stop) and 2 <= count <= 1000):
-        raise ValueError("Enter finite endpoints and 2–1000 samples.")
+    if not (math.isfinite(start) and math.isfinite(stop) and 1 <= count <= 1000):
+        raise ValueError("Enter finite endpoints and 1–1000 samples.")
     if mode == "log" and min(start, stop) <= 0:
         raise ValueError("Logarithmic sweep endpoints must be positive.")
+    if count == 1:
+        if start != stop:
+            raise ValueError("Use the same start and stop for a single sample.")
+        return [round(start) if kind is int else start]
     values = [start]
     for i in range(1, count - 1):
         weight = i / (count - 1)

@@ -159,20 +159,22 @@ details .fields,details textarea{margin-top:12px}
 .terminal-history details:not([open]) .copy-message{display:none}
 .terminal-history pre{margin:0;max-height:55vh;overflow:auto;font-size:11px}
 .terminal-history .terminal-diagnostics{margin:0;border-width:1px 0 0;border-radius:0}
-.terminal-brace{display:inline;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-decoration:underline dotted}
-.terminal-brace:hover{background:#ffffff26}
+.terminal-brace,.terminal-path{display:inline;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-decoration:underline dotted}
+.terminal-brace:hover,.terminal-path:hover{background:#ffffff26}
 .terminal-brace[aria-expanded="false"]::after{content:'…}'}
 .terminal-brace[aria-expanded="false"]+.terminal-brace-content,.terminal-brace[aria-expanded="false"]+.terminal-brace-content+span{display:none}
 .terminal-history details[data-warning="true"]{border-color:#b3842b}
 .terminal-history details[data-warning="true"] pre{color:#ffe19a}
-#operation-warning,#archive-warning,#simulation-folder-dialog,#local-output-dialog{width:min(35rem,calc(100% - 32px));padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);color:var(--ink)}
-#operation-warning::backdrop,#archive-warning::backdrop,#simulation-folder-dialog::backdrop,#local-output-dialog::backdrop{background:#20283080}
+#operation-warning,#archive-warning,#campaign-run-warning,#simulation-folder-dialog,#local-output-dialog{width:min(35rem,calc(100% - 32px));padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);color:var(--ink)}
+#operation-warning::backdrop,#archive-warning::backdrop,#campaign-run-warning::backdrop,#simulation-folder-dialog::backdrop,#local-output-dialog::backdrop{background:#20283080}
 .folder-path{display:flex;gap:8px;margin-top:4px}
 .folder-path input{min-width:0;flex:1}
 #simulation-folder-status{overflow-wrap:anywhere;margin:10px 0}
 #operation-warning-message,#archive-destinations{white-space:pre-wrap;overflow-wrap:anywhere}
 #operation-warning form{text-align:right}
 #archive-warning form{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap}
+#campaign-run-warning form{display:grid;gap:12px}
+#campaign-run-warning .inline-fields{justify-content:flex-end}
 #setup-readiness{border-bottom:1px solid var(--line)}
 .result{font-size:12px;margin-top:12px}
 .local-output-destination{margin:10px 0}

@@ -82,6 +82,14 @@ class SSHConnections(unittest.TestCase):
                 code.write_text('raise RuntimeError("must not be imported")\n')
                 expected["scripts"] = digest({code.name: file_digest(code)})
                 self.assertEqual(state(), "current")
+                archive = root / "retained"
+                archive.mkdir()
+                (archive / ".retained").touch()
+                pilot = Site(name="pilot", ssh=site.ssh, directory=site.directory,
+                             source=site.source, executable="retained/MTS2D", python=site.python)
+                targets = ssh.check_deployment([site, pilot], expected)["profiles"]
+                self.assertFalse(targets["test"]["build_target"]["retained"])
+                self.assertTrue(targets["pilot"]["build_target"]["retained"])
                 for path, replacement in [(code, "# different manager\n"),
                                           (source / "SOURCE.json", '{"source_sha256":"source-two"}'),
                                           (campaign, '{"missing_settings":{"tangentBackend":"cholmod"}}')]:

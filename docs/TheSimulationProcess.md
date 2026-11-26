@@ -260,11 +260,25 @@ error.
 
 #### Scientific issues
 
-`energyFunction = conti2Phase` selects the experimental Conti potential with
-β = 8/3. The reference sample starts on a square lattice. For a homogeneous
+`conti_beta` and `conti_kappa` override the distortional parameter β and the
+volumetric coefficient κ. Zero selects the preset β (−1/4 for `contiSquare`,
+4 for `contiTriangular`, and 8/3 for `conti2Phase`) or the `bulkModulus`
+setting for κ (default 4). Nonzero κ must be positive. The preset also selects
+the initial lattice and constitutive reference. These choices are independent
+of the overrides. Zero overrides are omitted from new configuration identities.
+Changing an override requires a fresh run and an executable that supports it.
+
+`energyFunction = triangularCubic` uses the staggered triangular mesh and
+area-normalized triangular reference. Its cubic isochoric energy acts on the
+determinant-one Lagrange-reduced metric. The volumetric term uses the same
+coefficient κ as the Conti models. Set `conti_beta` to zero for this potential.
+
+`energyFunction = conti2Phase` selects an experimental square reference with
+β = 8/3 by default. For a homogeneous
 sample, the square state and the area-preserving triangular state have the
-same stress-free energy density. Both use the same zero of energy, set at the
-square well. Equal well depths permit either symmetry locally. Phase selection
+same stress-free energy density at the default β. The square well sets the
+zero of energy. At β = 1, the triangular well is metastable and has a higher
+energy density. Phase selection
 depends on the loading path, boundary constraints and nucleation across the
 energy barrier. The potential contains a local energy density with no separate
 interfacial energy parameter.
@@ -273,7 +287,7 @@ The elastoplastic decomposition still uses the square-lattice convention.
 Interpret `F_E`, `F_P`, `T_p` and the accumulated deformation `T` with caution
 when elements transform or reconnect. Reconnection uses square reference
 geometry and the configured transport rule. Plastic and elastic stopping
-targets require `contiSquare`. Single-lattice dislocation overlays are
+targets require `contiSquare` with its preset β. Single-lattice dislocation overlays are
 ambiguous across regions of different symmetry. To assess a transformation,
 compare the area-normalized reduced metric with both wells and examine the
 spatial stress. Identify phases in post-processing.
@@ -575,9 +589,16 @@ Local GUI builds select up to five parallel jobs using the available CPUs
 and memory. Builds reuse the configured build directory and its unchanged
 objects and libraries. Apple Clang on ARM uses portable Release flags.
 
+In **SSH connections**, **Build** compiles MTS2D Release on that server.
+**Build on servers** checks all enabled deployments and skips outdated ones.
+Profiles sharing a working build directory build once. Profiles using retained
+executables are skipped. Server builds use two parallel compilation jobs and
+verify the checked source identity under the build lock before compiling.
+
 ### 6.2 Update MTS on servers
 
-The GUI's **Update MTS on servers** action transfers the manager package,
+In **SSH connections**, use **Deploy** on a server row or **Update MTS on
+servers** for all enabled servers. These actions transfer the manager package,
 campaign directories and MTS2D source to their configured locations on each
 cluster. It compares manager code, simulator source and campaign definitions
 before transfer and skips current profiles. Within an outdated installation,
@@ -594,13 +615,15 @@ hosts. If build inputs have uncommitted changes, the GUI reports the required
 Git steps in a dialog and a highlighted terminal entry. The same guidance
 appears when a local build is blocked by uncommitted inputs.
 
-Rsync transfers the recorded build inputs directly to a staging directory.
-The installed source serves as the basis for incremental transfers. The manager
-verifies the staged file list and source checksum before updating the managed
-snapshot. Installation preserves unchanged files and their timestamps, removes
-obsolete listed inputs and verifies the result. Compilation remains a separate
-operation. Prepared configuration files, scientific output and retained binary paths remain available
-to submitted jobs.
+Rsync stages the recorded build inputs and uses the installed source to reuse
+unchanged files on the server. Changed files transfer in full, avoiding rsync's
+block-level delta reconstruction. Before updating the managed snapshot, the
+manager verifies the staged inputs against the source checksum. Installation
+preserves unchanged files and their timestamps, removes obsolete listed inputs,
+and verifies the result. A failed transfer discards its staging directory
+and reports the diagnostic once for profiles sharing that workspace.
+Compilation remains a separate operation. Prepared configuration files,
+scientific output and retained binary paths remain available to submitted jobs.
 
 ## 7. Preparing a run before queueing
 
@@ -896,9 +919,21 @@ Benchmark controllers can additionally require expected run counts, diagnostic
 labels, portable build options and a recorded source revision. A definition
 checksum covers simulation settings separately from editable metadata.
 
+In Start simulations, choose **Update campaign** to revise a GUI campaign
+before submission. The readiness check verifies the selected site's output
+availability, executable and build compatibility before **Run campaign**.
+Submission repeats the check after confirmation. A pre-launch rejection leaves
+the definition editable. Accepted jobs and unresolved submission requests lock
+the definition for editing.
+
 Submission receipts record confirmed job IDs and their run/attempt association.
 The general submission API returns jobs, completed skips and conflicts. A
 benchmark controller can also persist and resume its own confirmed receipts.
+Remote campaign submission sends the saved definition to a detached worker on
+the execution site. The worker uses the site's configured scheduling options
+and records each receipt locally. The client polls progress and collects
+receipts when the worker stops. If contact is lost, **Run campaign** reconnects
+to the same batch, which can continue submitting independently.
 After an interruption, inspect the submission journal and scheduler before
 retrying any uncertain member. Checkpoint resume starts a new attempt for a run.
 

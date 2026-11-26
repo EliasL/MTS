@@ -86,10 +86,10 @@ class CustomMeshEditor {
     const {settings, site, overrides} = data;
     const {rows, cols, boundary, deformation, directions, startLoad, loadIncrement,
       segmentLoad, repeat, energyFunction, drivenEdge, top, bottom, left, right,
-      indenterRadius, reconnectionMethod, totalLoad} = settings;
+      indenterRadius, reconnectionMethod, totalLoad, conti_beta, conti_kappa} = settings;
     const key = JSON.stringify([rows, cols, boundary, deformation, directions, startLoad, loadIncrement,
       segmentLoad, repeat, energyFunction, drivenEdge, top, bottom, left, right,
-      indenterRadius, reconnectionMethod, totalLoad, site, overrides]);
+      indenterRadius, reconnectionMethod, totalLoad, conti_beta, conti_kappa, site, overrides]);
     if (key === this.requestKey) return;
     this.requestKey = key;
     this.controller?.abort();

@@ -340,7 +340,7 @@ class Monitor:
             except RuntimeError as error:
                 if "Unknown remote operation: run_template" not in str(error):
                     raise
-                raise ExpectedError(f"Update the manager on {site_label(row['site'])} in Setup and tools.") from error
+                raise ExpectedError(f"Update the manager on {site_label(row['site'])} using Deploy in SSH connections.") from error
         return result | {"site": row["site"] or row.get("origin_site") or "local"}
 
     def run_conflict(self, data):
@@ -378,7 +378,7 @@ class Monitor:
                     if overlap:
                         self.inventory_cache(alias, rows=[], site=profile, config_hashes=overlap)
             except (ConnectionError, subprocess.SubprocessError, RuntimeError) as error:
-                detail = (f"Update the manager on {site_label(name)} in Setup and tools."
+                detail = (f"Update the manager on {site_label(name)} using Deploy in SSH connections."
                           if "Unknown remote operation: remove_missing" in str(error) else str(error))
                 errors[name] = detail
                 self.workspace.log(detail)
@@ -510,7 +510,7 @@ class Monitor:
                 result = self.workspace.manager_call(name, "restore", site=profiles[name], timeout=120, run=run)
             except RuntimeError as error:
                 if "Unknown remote operation: restore" in str(error):
-                    raise ExpectedError(f"Update the manager on {site_label(name)} in Setup and tools, then retry Restore.") from error
+                    raise ExpectedError(f"Update the manager on {site_label(name)} using Deploy in SSH connections, then retry Restore.") from error
                 raise
             if result.get("error"):
                 raise ExpectedError(result["error"])
@@ -580,7 +580,7 @@ class Monitor:
                                                  site=profile, config_hashes=overlap)
             except (ExpectedError, ConnectionError, subprocess.SubprocessError, RuntimeError) as error:
                 if "Unknown remote operation: archive" in str(error):
-                    error = ExpectedError(f"Update the manager on {site_label(name)} in Setup and tools, then retry Archive.")
+                    error = ExpectedError(f"Update the manager on {site_label(name)} using Deploy in SSH connections, then retry Archive.")
                 errors[name or str(location)] = str(error)
                 self.workspace.log(str(error))
         if not moved:
@@ -670,11 +670,12 @@ class Monitor:
                 if attempt == 3:
                     raise ExpectedError(f"Could not reach the inventory service on {site_label(name)}. "
                                         "Check the SSH connection, then click Refresh.") from error
-                self.workspace.log(f"{site_label(name)}: {error}; retrying request ({attempt + 1}/3).")
+                self.workspace.log(f"{site_label(name)}: {error}; retrying request ({attempt + 1}/3).",
+                                   progress=("inventory-retry", name))
             except RuntimeError as error:
                 if "Unknown remote operation: inventory_refresh" not in str(error):
                     raise
-                raise ExpectedError(f"Update the manager on {site_label(name)} in Setup and tools, "
+                raise ExpectedError(f"Update the manager on {site_label(name)} using Deploy in SSH connections, "
                                     "then click Refresh.") from error
 
     def refresh_inventory(self, action, data):

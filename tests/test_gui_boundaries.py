@@ -24,6 +24,22 @@ from MTS_GUI.server import Handler, ThreadingHTTPServer, Workspace
 
 
 class Boundaries(unittest.TestCase):
+    def test_terminal_updates_progress_without_removing_interleaved_diagnostics(self):
+        workspace = Workspace()
+        with redirect_stdout(StringIO()):
+            workspace.log_build("[ 10%] Building CXX object first.cpp.o", host="magi")
+            workspace.log_build("[ 20%] Building CXX object other.cpp.o", host="pascal")
+            workspace.log_build("first.cpp: warning: unused variable", host="magi")
+            workspace.log_build("[100%] Built target MTS2D", host="magi")
+            workspace.log("Build complete")
+        lines = [line.split("] ", 1)[1] for line in workspace.task["logs"]]
+        self.assertEqual(lines, [
+            "MAGI: [100%] Built target MTS2D",
+            "PASCAL: [ 20%] Building CXX object other.cpp.o",
+            "first.cpp: warning: unused variable",
+            "Build complete",
+        ])
+
     def test_animation_abort_stops_encoder_and_discards_only_the_current_export(self):
         encoder = """
 import signal, sys, time
@@ -192,6 +208,43 @@ directions = -1.1,2.1
                 {(c["seed"], float(f"{c['epsR']:.12g}"), (c["directions"], c["totalLoad"])) for c, _ in runs},
                 set(product([3, 4, 5], [1e-7, 1e-6, 1e-5], [("-1.1,2.1", 2), ("-1.1,2.1,2.5", 3)])),
             )
+
+    def test_campaign_can_be_updated_until_submission_starts(self):
+        from MTS_Management.errors import ExpectedError
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sites = root / "MTSManager/sites.toml"
+            sites.parent.mkdir()
+            sites.write_text('[sites.local]\ndirectory = "."\n')
+            with patch("MTS_GUI.server.ROOT", root), patch("MTS_GUI.server.STATE", root / ".mts"), \
+                    patch("MTS_GUI.submission.check_campaign") as check:
+                workspace = Workspace()
+                draft = {"name": "Sweep", "preset": "Example-simple-shear", "site": "local", "axes": [
+                    {"parameter": "seed", "mode": "custom", "values": "1"},
+                ]}
+                workspace.save_campaign(draft)
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    workspace.save_campaign(draft)
+                draft["axes"][0]["values"] = "2,3"
+                self.assertEqual(workspace.save_campaign(draft | {"update": True})["runs"], 2)
+                self.assertEqual(workspace.start_options()["started_campaigns"], [])
+                build_error = "Build MTS2D at the execution site to use the current configuration."
+                check.side_effect = ExpectedError(build_error)
+                with self.assertRaisesRegex(ExpectedError, "Build MTS2D"):
+                    workspace.operation("run_campaign", {"name": "Sweep", "site": "local"})
+                journal = workspace.campaign_journal()
+                journal.append("campaign_submission_started", campaign="Sweep")
+                request = journal.append("submission_requested", campaign="Sweep")
+                journal.append("submission_error", campaign="Sweep", submission_id=request["event_id"],
+                               error=build_error)
+                restarted = Workspace()
+                self.assertEqual(restarted.start_options()["started_campaigns"], [])
+                self.assertEqual(restarted.save_campaign(draft | {"update": True})["runs"], 2)
+                journal.append("submission_requested", campaign="Sweep")
+                self.assertEqual(restarted.start_options()["started_campaigns"], ["Sweep"])
+                with self.assertRaisesRegex(ValueError, "may have been accepted"):
+                    restarted.save_campaign(draft | {"update": True})
 
     def test_load_campaign_preserves_sparse_members_when_editing_checkpoint_settings(self):
         from MTS_Management.campaign import campaign_entries

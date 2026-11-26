@@ -2,6 +2,7 @@ import {axisIssue, fixedFields, legendAliases, limits, plotChoices, syncAxisLabe
 import {configureInventoryColumns} from './inventory_columns.js';
 
 const $ = id => document.getElementById(id);
+const usesTriangularReference = potential => ['contiTriangular', 'triangularCubic'].includes(potential);
 for (const panel of ['start', 'monitor']) $(panel).append($('simulation-help').content.cloneNode(true));
 let accessToken = location.hash.slice(1);
 try {
@@ -32,10 +33,13 @@ let plotPresets = [], loadedPresetId = null, monitorPlot = null, filePlot = null
 let animationPresets = [], loadedAnimationPresetId = null, recoveringWorkspace = true, draftTimer, initialRefresh = false;
 let animationRequest = 0, animationSourceKey = '', animationLatticeKey = '';
 let animationHeatmapKind, animationRangeScan, lastAnimationScan;
+let animationFieldRequest = 0;
+const vtuFieldPrefix = 'vtu:';
 let animationPreviewFrame = 'middle', animationPreviewOverride = false;
 const opacityEditor = createOpacityEditor($('animate-opacity-chart'), $('animate-remove-opacity-node'));
 let startOptions, campaignBaseSettings, continuationPlan;
 let loadedCampaign;
+let lastCampaignTask, campaignReadiness;
 const campaignPresetPrefix = '@campaign:';
 let campaignSizeTimer, campaignSizeRequest = 0;
 let slurmSchema, slurmReviewedToken = null, slurmPlannedSpec = null;
@@ -59,7 +63,7 @@ function fillMonitorSources(campaigns = lastState?.campaigns || inventorySnapsho
     site => new Option(siteLabel(site.label || site.name), site.name)));
   if ([...hard.options].some(option => option.value === previousHard)) hard.value = previousHard;
 }
-const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-menu-button','animate-button','refresh-jobs','remove-missing','archive-campaign','hard-refresh','update-managers','ssh-check','ssh-install','ssh-add','quit','restart'];
+const actionButtons = ['install-packages','build-simulator','overview-build','run-button','campaign-run','plot-button','animate-preview-button','animate-preview-menu-button','animate-button','refresh-jobs','remove-missing','archive-campaign','hard-refresh','update-managers','build-servers','ssh-check','ssh-install','ssh-add','quit','restart'];
 function buttonHint(button) {
   if (button.parentElement.classList.contains('action-hint')) return button.parentElement;
   const hint = document.createElement('span');
@@ -67,14 +71,13 @@ function buttonHint(button) {
   button.before(hint); hint.append(button);
   return hint;
 }
-for (const id of [...actionButtons, 'simulation-save']) buttonHint($(id));
+for (const id of [...actionButtons, 'simulation-save', 'campaign-save']) buttonHint($(id));
 
 const disabledReasons = {
   'run-button': 'Wait for MTS to load the simulation controls.',
   'simulation-save': 'Wait for MTS to load the simulation settings.',
   'simulation-download': 'Save or select a preset first.',
   'campaign-run': 'Select a saved campaign first.',
-  'campaign-save': 'Select a base preset first.',
   'plot-button': 'Complete the plot configuration first.',
   'plot-preview-update': 'Select valid plot settings and wait for any active preview to finish.',
   'plot-other-seeds': 'Choose a simulation before selecting other seeds.',
@@ -86,6 +89,7 @@ const disabledReasons = {
   'slurm-review': 'Load the Slurm controls first.',
   'slurm-execute': 'Review the matching jobs first.',
   'update-managers': 'Configure an enabled remote execution site first.',
+  'build-servers': 'Configure an enabled remote execution site first.',
 };
 function disabledActionReason(button) {
   return button.parentElement.title || button.dataset.disabledReason ||
@@ -190,7 +194,8 @@ async function operation(action, data = {}) {
   const labels = {plot_monitor: 'Prepare plot data', plot_csv_refresh: 'Refresh campaign CSVs', archive_monitor: 'Archive',
     archive_campaign: 'Archive campaign settings', restore_archive: 'Restore', continuation_plan: 'Load further',
     run: 'Start simulation', resume: 'Resume', remove_missing: 'Remove all missing',
-    animate: 'Generate animation', animate_preview: 'Preview animation', local_output: 'Change local output'};
+    animate: 'Generate animation', animate_preview: 'Preview animation', local_output: 'Change local output',
+    ssh_build: 'Build MTS2D', build_servers: 'Build on servers'};
   const entry = terminalMessage(action === 'inventory' ? 'Refresh: ' + (data.campaign || siteLabel(data.site)) :
     labels[action] || action, command, 'running', action);
   pendingOperation = entry;
@@ -332,13 +337,35 @@ function updateActions() {
         'Mount the output drive or choose another local site.' :
         site === 'local' && !lastState.local_build ? 'Build MTS2D from the Overview.' : '');
   const campaignSiteReason = siteReason($('campaign-site').value);
-  $('campaign-run').disabled ||= Boolean(campaignSiteReason);
-  if (!busy && campaignSiteReason) $('campaign-run').parentElement.title = campaignSiteReason;
+  const campaignSelection = {name: $('campaign-saved').value, site: $('campaign-site').value};
+  const checkKey = JSON.stringify(campaignSelection);
+  if (campaignSelection.name && !campaignSiteReason && !busy && campaignReadiness?.key !== checkKey) {
+    checkCampaignReadiness(campaignSelection, checkKey);
+  }
+  const checking = campaignReadiness?.key === checkKey && campaignReadiness.pending;
+  const campaignProblem = campaignSelection.name && (campaignSiteReason ||
+    (campaignReadiness?.key === checkKey && campaignReadiness.error));
+  const campaignStatus = $('campaign-run-problem');
+  campaignStatus.hidden = !campaignProblem && !checking;
+  campaignStatus.classList.toggle('error', Boolean(campaignProblem));
+  const statusText = campaignProblem || (checking ? 'Checking campaign readiness…' : '');
+  if (campaignStatus.textContent !== statusText) campaignStatus.textContent = statusText;
+  $('campaign-recheck').hidden = !campaignProblem || Boolean(campaignSiteReason);
+  $('campaign-recheck').disabled = busy;
+  $('campaign-run').disabled ||= !campaignSelection.name || !!campaignSiteReason ||
+    campaignReadiness?.key !== checkKey || !campaignReadiness.ready;
+  if (!busy) $('campaign-run').parentElement.title = campaignProblem || (checking ? campaignStatus.textContent : '');
   const setupReason = !startOptions ? 'Simulation settings are unavailable. Check MTSManager in Setup and tools.' : '';
   customMesh.refresh();
   const energyFunction = $('run-energy-function').value;
-  $('run-triangular-reconnection-warning').hidden = energyFunction !== 'contiTriangular' || $('run-reconnection').value === 'none';
+  $('run-triangular-reconnection-warning').hidden = !usesTriangularReference(energyFunction) || $('run-reconnection').value === 'none';
   $('run-two-phase-warning').hidden = energyFunction !== 'conti2Phase';
+  const contiBetaInput = $('run-conti-beta');
+  const usesCubic = energyFunction === 'triangularCubic';
+  contiBetaInput.closest('.field').hidden = usesCubic;
+  contiBetaInput.disabled = usesCubic || Boolean(continuationPlan?.fixed_settings.includes('conti_beta'));
+  const contiBeta = contiBetaInput.valueAsNumber;
+  $('run-conti-well-warning').hidden = !contiBeta || contiBeta === 8 / 3;
   const vtuRate = $('run-vtu-rate');
   vtuRate.disabled = !$('run-write-vtus').checked;
   const vtuIssue = !vtuRate.disabled && !(vtuRate.valueAsNumber > 0)
@@ -355,8 +382,19 @@ function updateActions() {
   $('run-conflict-recheck').hidden = !conflict;
   updateRunActions(continuationPlan ? 'Presets are unavailable while continuing a run.' : configurationReason,
     $('run-button').parentElement.title || runReason || conflict);
-  $('campaign-run').disabled ||= !$('campaign-saved').value;
-  $('campaign-save').disabled = !campaignBaseSettings;
+  const campaignName = $('campaign-name').value.trim();
+  const existing = startOptions?.campaign_sources?.includes(campaignName);
+  const deployed = startOptions?.started_campaigns?.includes(campaignName);
+  const editable = startOptions?.campaigns.includes(campaignName) && !deployed;
+  const saveProblem = existing && !editable ? (deployed ?
+    'This campaign name already exists and its jobs have been submitted or may have been accepted. Choose a new name to save an edited copy.' :
+    'This campaign name already exists. Choose a new name to save an edited copy.') : '';
+  $('campaign-save').textContent = editable ? 'Update campaign' : 'Save campaign';
+  $('campaign-save').disabled = busy || !campaignBaseSettings || (existing && !editable);
+  $('campaign-save').parentElement.title = busyReason || saveProblem ||
+    (!campaignBaseSettings ? 'Select a base preset first.' : '');
+  $('campaign-save-problem').hidden = !saveProblem;
+  if ($('campaign-save-problem').textContent !== saveProblem) $('campaign-save-problem').textContent = saveProblem;
   $('plot-button').disabled ||= !ready || !plotValid;
   $('plot-csv-refresh').disabled = busy || !ready;
   for (const id of ['animate-button', 'animate-preview-button', 'animate-preview-menu-button']) {
@@ -374,7 +412,9 @@ function updateActions() {
   $('slurm-execute').disabled = busy || !slurmReviewedToken;
   $('refresh-jobs').disabled ||= !ready;
   $('hard-refresh').disabled ||= !ready;
-  $('update-managers').disabled ||= !ready || !lastState.sites.some(site => site.remote);
+  for (const id of ['update-managers', 'build-servers']) {
+    $(id).disabled ||= !ready || !lastState.sites.some(site => site.remote);
+  }
 }
 
 function updateRunActions(saveReason, runReason) {
@@ -410,15 +450,43 @@ function terminalBracePairs(output) {
   return pairs;
 }
 
-function renderTerminalOutput(pre, output) {
-  const pairs = terminalBracePairs(output);
-  if (!pairs.size) {pre.textContent = output; return;}
-  const expanded = new Set([...pre.querySelectorAll('.terminal-brace[aria-expanded="true"]')].map(button => button.dataset.offset));
+function renderTerminalOutput(pre, output, workspace, collapseBraces = true) {
+  if (pre.terminalText === output && pre.terminalWorkspace === workspace) return false;
+  const pairs = collapseBraces ? terminalBracePairs(output) : new Map();
+  const expanded = new Set([...pre.querySelectorAll('button[aria-expanded="true"]')].map(button => button.dataset.offset));
   const fragment = document.createDocumentFragment(), sections = [];
   let parent = fragment, start = 0;
-  for (const {index} of output.matchAll(/[{}]/g)) {
+
+  function appendText(end) {
+    const chunk = output.slice(start, end);
+    let next = 0;
+    if (workspace && workspace !== '/') {
+      for (let index = chunk.indexOf(workspace); index !== -1; index = chunk.indexOf(workspace, index + workspace.length)) {
+        const after = index + workspace.length;
+        if ((index && !/[\s"'\x60=:(,\[{<>]/.test(chunk[index - 1])) ||
+            (after < chunk.length && !/[\s/"'\x60:),;\]}>]/.test(chunk[after]))) continue;
+        parent.append(chunk.slice(next, index));
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'terminal-path';
+        button.dataset.offset = 'path:' + (start + index);
+        button.title = workspace;
+        button.setAttribute('aria-label', 'MTS workspace path');
+        const showPath = open => {
+          button.textContent = open ? workspace : '~';
+          button.setAttribute('aria-expanded', open);
+        };
+        showPath(expanded.has(button.dataset.offset));
+        button.onclick = () => showPath(button.getAttribute('aria-expanded') === 'false');
+        parent.append(button);
+        next = after;
+      }
+    }
+    parent.append(chunk.slice(next));
+  }
+
+  for (const {index} of pairs.size ? output.matchAll(/[{}]/g) : []) {
     if (pairs.has(index)) {
-      parent.append(output.slice(start, index));
+      appendText(index);
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'terminal-brace'; button.textContent = '{';
       button.dataset.offset = index;
@@ -430,7 +498,7 @@ function renderTerminalOutput(pre, output) {
       sections.push({end: pairs.get(index), parent});
       parent = content;
     } else if (sections.at(-1)?.end === index) {
-      parent.append(output.slice(start, index));
+      appendText(index);
       parent = sections.pop().parent;
       const closing = document.createElement('span'); closing.textContent = '}';
       parent.append(closing);
@@ -439,8 +507,11 @@ function renderTerminalOutput(pre, output) {
     }
     start = index + 1;
   }
-  fragment.append(output.slice(start));
+  appendText(output.length);
   pre.replaceChildren(fragment);
+  pre.terminalText = output;
+  pre.terminalWorkspace = workspace;
+  return true;
 }
 
 function terminalLogSections(logs, inventory) {
@@ -463,6 +534,7 @@ function renderTerminal(history = backendHistory) {
   history = [...history.filter(entry => !hiddenBackendEntries.has(entry.id) && !clientHistory.some(client => client.task_id === entry.id)),
     ...clientHistory].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
   const container = $('terminal-history'), ids = new Set(history.map(entry => entry.id));
+  const workspace = lastState?.workspace || '';
   let changed = false;
   for (const node of [...container.children]) if (!ids.has(node.dataset.id)) node.remove();
   for (const [index, entry] of history.entries()) {
@@ -508,18 +580,19 @@ function renderTerminal(history = backendHistory) {
     node.querySelector('summary').title = inventory || entry.command?.startsWith('ssh ') ?
       entry.title : entry.command || entry.title;
     const output = entry.logs.join('\n') || 'Starting…';
-    if (node.terminalOutput !== output || node.inventoryLog !== inventory) {
+    if (node.terminalOutput !== output || node.inventoryLog !== inventory || node.terminalWorkspace !== workspace) {
       node.terminalOutput = output;
       node.inventoryLog = inventory;
+      node.terminalWorkspace = workspace;
       const {visible, details} = terminalLogSections(entry.logs, inventory);
       const pre = node.querySelector('pre'), diagnostics = node.querySelector('.terminal-diagnostics');
       const display = visible || (entry.state === 'running' || !details ? 'Starting…' : '');
       pre.hidden = !display;
       diagnostics.hidden = !details;
       diagnostics.querySelector('summary').textContent = inventory ? 'Request details' : 'SSH commands';
-      diagnostics.querySelector('pre').textContent = details;
-      if (pre.textContent !== display) {
-        renderTerminalOutput(pre, display); pre.scrollTop = pre.scrollHeight; changed = true;
+      renderTerminalOutput(diagnostics.querySelector('pre'), details, workspace, false);
+      if (renderTerminalOutput(pre, display, workspace)) {
+        pre.scrollTop = pre.scrollHeight; changed = true;
       }
     }
   }
@@ -981,6 +1054,12 @@ async function refresh() {
       if (task.state !== 'running') entry.legacy = false;
     }
     renderConnections(state.ssh_connections || []);
+    if (['run_campaign', 'build', 'update_managers', 'ssh_deploy', 'ssh_build', 'build_servers'].includes(task.action) &&
+        task.state !== 'running' && lastCampaignTask !== task.id) {
+      lastCampaignTask = task.id;
+      campaignReadiness = undefined;
+      if (task.action === 'run_campaign') await loadStartOptions();
+    }
     updateActions();
     $('task-badge').textContent = task.state;
     $('task-badge').className = 'badge ' + (task.state === 'complete' ? 'ready' : task.state);
@@ -1112,6 +1191,7 @@ $('refresh-jobs').onclick = () => {
 $('remove-missing').onclick = () => operation('remove_missing', inventorySelection());
 $('hard-refresh').onclick = () => operation('hard_refresh', {site: $('hard-refresh-site').value});
 $('update-managers').onclick = () => operation('update_managers');
+$('build-servers').onclick = () => operation('build_servers');
 $('jobs-site').onchange = () => {
   $('archive-campaign').classList.add('hidden');
   $('remove-missing').classList.add('hidden');
@@ -1140,6 +1220,11 @@ $('run-site').onchange = () => {
   terminalMessage('Execution site', 'Selected ' + $('run-site').value + '.'); refresh();
 };
 $('campaign-site').onchange = $('campaign-saved').onchange = updateActions;
+$('campaign-recheck').onclick = () => {
+  campaignReadiness = undefined;
+  updateActions();
+};
+$('campaign-name').oninput = updateActions;
 $('plot-data').onchange = () => loadPlotOptions(false);
 $('plot-campaign').onchange = () => loadPlotOptions(true);
 
@@ -1203,6 +1288,7 @@ const runFields = {
   segmentLoad: 'segment', repeat: 'repeat',
   writeMeshVTUs: 'write-vtus', vtuFilesPerUnitLoad: 'vtu-rate', logDuringMinimization: 'log-minimization',
   minimizer: 'minimizer', energyFunction: 'energy-function', initialGuessNoise: 'initial-noise',
+  conti_beta: 'conti-beta', conti_kappa: 'conti-kappa',
   indenterRadius: 'indenter-radius', indentationContact: 'indentation-contact',
 };
 const rectangleEdges = ['top', 'bottom', 'left', 'right'];
@@ -1226,7 +1312,7 @@ function indentationIssue() {
   if (!Object.hasOwn(startOptions.defaults, 'indenterRadius')) return 'Update MTSManager to use nanoindentation.';
   if ($('run-indenter-radius').valueAsNumber <= 0) return 'Enter a positive indenter radius.';
   if ($('run-increment').valueAsNumber <= 0) return 'Enter a positive depth increment.';
-  const spacing = $('run-energy-function').value === 'contiTriangular' ? Math.sqrt(3) / 2 : 1;
+  const spacing = usesTriangularReference($('run-energy-function').value) ? Math.sqrt(3) / 2 : 1;
   const height = ($('run-rows').valueAsNumber - 1) * spacing;
   if ($('run-start-load').valueAsNumber + runTotalLoad() >= height) {
     return 'The final indentation depth must be less than the sample height.';
@@ -1261,7 +1347,7 @@ function rectangleIssue() {
   if (!['fixed', vertical ? 'fixed_y' : 'fixed_x'].includes($('run-edge-' + driven).value)) {
     return 'Choose a constraint that includes the driven axis.';
   }
-  const triangular = $('run-energy-function').value === 'contiTriangular';
+  const triangular = usesTriangularReference($('run-energy-function').value);
   if (triangular && !vertical) return 'Choose the top or bottom driven edge for a triangular sample.';
   for (const edge of vertical ? ['left', 'right'] : ['top', 'bottom']) {
     if (['fixed', vertical ? 'fixed_y' : 'fixed_x'].includes($('run-edge-' + edge).value)) {
@@ -1411,6 +1497,7 @@ function runConfiguration() {
   for (const key of continuationPlan?.fixed_settings ?? []) {
     if (!hasRunField(key)) settings[key] = continuationPlan.settings[key];
   }
+  if (settings.energyFunction === 'triangularCubic') settings.conti_beta = 0;
   settings.totalLoad = runTotalLoad();
   if (indentationExperiment()) {
     Object.assign(settings, {boundary: 'fixedBottom', loading: 'relaxation', directions: 'vertical',
@@ -1435,7 +1522,7 @@ function showPreset(settings) {
     const input = $('run-' + id);
     if (input.type === 'checkbox') input.checked = settings[key];
     else if (key === 'boundary' && (rectangle || settings.boundary === 'fixedBottom')) input.value = 'fixed';
-    else if (key === 'indenterRadius') input.value = settings[key] ?? input.defaultValue;
+    else if (['indenterRadius', 'conti_beta', 'conti_kappa'].includes(key)) input.value = settings[key] ?? input.defaultValue;
     else if (key === 'indentationContact') input.value = settings[key] ?? 'penalty';
     else input.value = settings[key];
   }
@@ -1448,7 +1535,7 @@ function showPreset(settings) {
       value !== startOptions.defaults[key])
     .map(([key, value]) => key + ' = ' + value).join('\n');
   setDirectionChoices(settings.directions);
-  $('run-advanced').open = settings.loading !== 'relaxation' ||
+  $('run-advanced').open = Boolean(settings.conti_beta || settings.conti_kappa) || settings.loading !== 'relaxation' ||
     (settings.deformation !== 'sequentialSlip' && (settings.repeat || settings.directions.includes(',')));
   renderExperiment();
   if (isLoadedCampaignBase()) updateCampaignVtuWarning();
@@ -1779,12 +1866,27 @@ $('campaign-add-axis').onclick = () => {
   addCampaignAxis();
   campaignSweepChanged();
 };
+async function checkCampaignReadiness(selection, key) {
+  const check = campaignReadiness = {key, pending: true};
+  try {
+    const result = await api('campaign_preflight', selection);
+    check.ready = result.ready;
+  } catch (error) {
+    check.error = error.message;
+  } finally {
+    check.pending = false;
+    if (campaignReadiness === check) updateActions();
+  }
+}
 $('campaign-form').onsubmit = async event => {
   event.preventDefault();
+  if ($('campaign-save').disabled) return;
   try {
     const result = await api('save_campaign', {name: $('campaign-name').value.trim(),
+      update: startOptions.campaigns.includes($('campaign-name').value.trim()),
       preset: $('campaign-base').value, site: $('campaign-site').value, ...campaignSweepData(),
       ...(isLoadedCampaignBase() ? {base: runConfiguration()} : {})});
+    campaignReadiness = undefined;
     await loadStartOptions();
     $('campaign-saved').value = result.name;
     updateActions();
@@ -1792,7 +1894,26 @@ $('campaign-form').onsubmit = async event => {
     await refresh();
   } catch (error) {message(error.message);}
 };
-$('campaign-run').onclick = () => operation('run_campaign', {name: $('campaign-saved').value, site: $('campaign-site').value});
+$('campaign-run').onclick = () => {
+  const selection = {name: $('campaign-saved').value, site: $('campaign-site').value};
+  try {
+    if (localStorage.getItem('mts-campaign-skip-warning') === 'true') {
+      operation('run_campaign', selection);
+      return;
+    }
+  } catch {}
+  const dialog = $('campaign-run-warning'), checkbox = $('campaign-skip-warning');
+  checkbox.checked = false;
+  dialog.returnValue = '';
+  dialog.onclose = () => {
+    if (dialog.returnValue !== 'run') return;
+    if (checkbox.checked) {
+      try {localStorage.setItem('mts-campaign-skip-warning', 'true');} catch {}
+    }
+    operation('run_campaign', selection);
+  };
+  dialog.showModal();
+};
 
 function animationSelection() {
   const seed = isFilePlot() ? 'all' : $('plot-seed').value;
@@ -1838,6 +1959,14 @@ async function loadAnimationOptions() {
     animationSourceKey = key;
     animationRangeScan = null;
     animationPreviewOverride = false;
+    animationFieldRequest++;
+    if ($('animate-kind').value.startsWith(vtuFieldPrefix)) $('animate-kind').value = 'energy';
+    for (const group of $('animate-kind').querySelectorAll('optgroup')) group.remove();
+    const button = $('animate-show-all');
+    button.setAttribute('aria-expanded', 'false');
+    button.textContent = 'Show all options';
+    button.disabled = false;
+    $('animate-field-status').textContent = '';
   }
   settings.hidden = true; status.textContent = '';
   $('animate-two-phase-warning').hidden = true;
@@ -1849,7 +1978,7 @@ async function loadAnimationOptions() {
     const periodic = ['periodic', 'periodicAnchored'].includes(options.boundary);
     $('animate-two-phase-warning').hidden = options.energy_function !== 'conti2Phase';
     if (key !== animationLatticeKey) {
-      $('animate-defect-lattice').value = options.energy_function === 'contiTriangular' ? 'triangular' : 'square';
+      $('animate-defect-lattice').value = usesTriangularReference(options.energy_function) ? 'triangular' : 'square';
       $('animate-tiling').value = options.boundary === 'periodic' ? 'tile' : 'cell';
       animationHeatmapKind = null;
       animationLatticeKey = key;
@@ -1871,10 +2000,59 @@ async function loadAnimationOptions() {
     if (recoveringWorkspace) message('Could not restore the animation selection. ' + error.message);
   }
 }
+async function showAnimationFields(expanded) {
+  const field = $('animate-kind'), button = $('animate-show-all'), status = $('animate-field-status');
+  const groups = field.querySelectorAll('optgroup');
+  if (expanded && !groups.length) {
+    const request = ++animationFieldRequest;
+    button.disabled = true;
+    status.textContent = 'Reading saved VTU fields…';
+    try {
+      const result = await api('animation_options?' + new URLSearchParams({...animationSelection(), fields: '1'}));
+      if (request !== animationFieldRequest) return;
+      for (const [association, label] of [['cell', 'Cell fields'], ['point', 'Point fields (vertex mean)']]) {
+        const group = document.createElement('optgroup');
+        group.label = label;
+        const entries = Object.entries(result.fields?.[association] || {});
+        for (const [name, count] of entries.sort(([a], [b]) => a.localeCompare(b))) {
+          for (let i = 0; i < count; i++) {
+            const component = count === 1 ? null : i;
+            const value = vtuFieldPrefix + JSON.stringify([association, name, component]);
+            group.append(new Option(component === null ? name : `${name} [${i + 1}]`, value));
+          }
+        }
+        if (group.children.length) field.append(group);
+      }
+      expanded = Boolean(field.querySelector('optgroup'));
+      status.textContent = expanded ? '' : 'No saved VTU fields are available. Select a run with mesh output.';
+    } catch (error) {
+      if (request === animationFieldRequest) status.textContent = error.message;
+      return;
+    } finally {
+      if (request === animationFieldRequest) button.disabled = false;
+    }
+  }
+  if (!expanded && field.value.startsWith(vtuFieldPrefix)) field.value = 'energy';
+  for (const group of field.querySelectorAll('optgroup')) group.hidden = !expanded;
+  button.setAttribute('aria-expanded', String(expanded));
+  button.textContent = expanded ? 'Show common options' : 'Show all options';
+  updateAnimationControls();
+}
+$('animate-show-all').onclick = async () => {
+  await showAnimationFields($('animate-show-all').getAttribute('aria-expanded') !== 'true');
+  queueWorkspaceDraft();
+};
+function animationKind() {
+  const value = $('animate-kind').value;
+  return value.startsWith(vtuFieldPrefix) ? 'vtu' : value;
+}
 function animationRangeOptions() {
+  const kind = animationKind();
   return {
-    kind: $('animate-kind').value, matrix: $('animate-matrix').value,
+    kind, matrix: $('animate-matrix').value,
+    ...(kind === 'vtu' ? {vtu_field: JSON.parse($('animate-kind').value.slice(vtuFieldPrefix.length))} : {}),
     stress_component: $('animate-stress-component').value,
+    symmetric: $('animate-symmetric').checked,
     playback: $('animate-playback').value, fps: $('animate-fps').valueAsNumber,
     seconds_per_load: $('animate-rate').disabled ? 15 : $('animate-rate').valueAsNumber,
     minimum_seconds: $('animate-minimum').valueAsNumber,
@@ -1884,40 +2062,48 @@ function animationRangeOptions() {
 function animationRangeMatches(scan) {
   const options = animationRangeOptions();
   return JSON.stringify(scan.animation_selection) === JSON.stringify(animationSelection()) &&
-    Object.keys(options).every(key => options[key] === scan.range_options[key]);
+    Object.keys(options).every(key => key === 'vtu_field' ?
+      JSON.stringify(options[key]) === JSON.stringify(scan.range_options[key]) :
+      options[key] === scan.range_options[key]);
 }
 function updateAnimationLimits() {
-  const kind = $('animate-kind').value;
+  const kind = animationKind();
+  const symmetric = $('animate-symmetric').checked;
   const limits = animationRangeScan && animationRangeMatches(animationRangeScan) ? animationRangeScan.colour_limits : [];
-  const [lower, upper] = [
-    ['animate-energy-min', kind === 'energy' ? limits[0] : null],
-    ['animate-limit', kind !== 'stress' ? limits[1] : null],
-    ['animate-stress-limit', kind === 'stress' ? limits[1] : null],
-  ].map(([id, scanned]) => {
-    const input = $(id);
-    input.placeholder = Number.isFinite(scanned) ? String(Number(scanned.toPrecision(6))) : 'From data';
-    return input.value ? input.valueAsNumber : scanned;
-  });
-  opacityEditor.setLimits(lower, upper);
+  for (const id of ['animate-energy-min', 'animate-colour-min', 'animate-limit', 'animate-stress-limit']) {
+    const input = $(id), scanned = input.disabled ? null : limits[id.endsWith('-min') ? 0 : 1];
+    input.placeholder = kind === 'lattice_angle' ? (id.endsWith('-min') ? '60' : '90') :
+      Number.isFinite(scanned) ? String(Number(scanned.toPrecision(6))) : 'From data';
+  }
+  if (kind === 'energy') {
+    const lower = $('animate-energy-min'), upper = $('animate-limit');
+    const maximum = upper.value ? upper.valueAsNumber : limits[1];
+    opacityEditor.setLimits(symmetric ? -maximum : lower.value ? lower.valueAsNumber : limits[0], maximum);
+  }
 }
 function updateAnimationControls() {
-  const kind = $('animate-kind').value;
+  const kind = animationKind();
   const energy = kind === 'energy', stress = kind === 'stress';
-  const coloured = energy || stress || ['shear', 'matrix'].includes(kind);
+  const coloured = energy || stress || ['shear', 'matrix', 'vtu', 'lattice_angle'].includes(kind);
   const conditional = energy && $('animate-conditional-opacity').checked;
   if (coloured && animationHeatmapKind !== kind) {
     $('animate-heatmap').value = energy ? 'inferno' : 'coolwarm';
+    $('animate-symmetric').checked = ['stress', 'shear', 'matrix'].includes(kind);
     animationHeatmapKind = kind;
   }
+  const symmetric = $('animate-symmetric').checked;
   $('animate-matrix-field').hidden = !['matrix', 'disk'].includes(kind);
   $('animate-stress-component-field').hidden = !stress;
   $('animate-stress-limit-field').hidden = $('animate-stress-limit').disabled = !stress;
   $('animate-limit-field').hidden = $('animate-limit').disabled = stress;
   $('animate-tiling-field').hidden = kind === 'disk';
   $('animate-colouring').hidden = $('animate-colouring').disabled = !coloured;
-  $('animate-energy-min-field').hidden = $('animate-energy-min').disabled = !energy;
-  $('animate-limit-label').textContent = energy ? 'Upper energy limit' : 'Colour limit';
-  $('animate-limit').min = energy ? '' : '0';
+  $('animate-range-from-last-frame-field').hidden = kind === 'lattice_angle';
+  $('animate-energy-min-field').hidden = $('animate-energy-min').disabled = !energy || symmetric;
+  $('animate-colour-min-field').hidden = $('animate-colour-min').disabled = !coloured || energy || symmetric;
+  const limitLabel = symmetric ? 'Colour limit (±)' : 'Upper colour limit';
+  $('animate-limit-label').textContent = $('animate-stress-limit-label').textContent = limitLabel;
+  $('animate-limit').min = $('animate-stress-limit').min = symmetric ? '0' : '';
   $('animate-conditional-field').hidden = !energy;
   $('animate-opacity-editor').hidden = !conditional;
   $('animate-opacity-field').hidden = $('animate-opacity').disabled = conditional;
@@ -1943,10 +2129,11 @@ $('animate-kind').onchange = () => {
   updateAnimationControls();
 };
 for (const id of ['animate-show-nodes', 'animate-playback', 'animate-dislocations', 'animate-defect-method', 'animate-show-title',
-  'animate-show-legend', 'animate-conditional-opacity']) {
+  'animate-show-legend', 'animate-conditional-opacity', 'animate-symmetric']) {
   $(id).onchange = updateAnimationControls;
 }
-for (const id of ['animate-energy-min', 'animate-limit', 'animate-rate', 'animate-minimum', 'animate-fps',
+for (const id of ['animate-energy-min', 'animate-colour-min', 'animate-limit', 'animate-stress-limit', 'animate-rate',
+  'animate-minimum', 'animate-fps',
   'animate-range-from-last-frame', 'animate-stress-component', 'animate-matrix']) {
   $(id).oninput = updateAnimationLimits;
 }
@@ -1954,15 +2141,16 @@ function runAnimation(action, previewFrame) {
   const fields = ['animate-fps', 'animate-rate', 'animate-minimum', 'animate-workers', 'animate-node-size',
     'animate-legend-size', 'animate-colourbar-size', 'animate-title-size', 'animate-defect-scale',
     'animate-defect-thickness', 'animate-defect-tolerance', 'animate-limit', 'animate-stress-limit',
-    'animate-energy-min', 'animate-opacity'];
+    'animate-energy-min', 'animate-colour-min', 'animate-opacity'];
   if (fields.some(id => !$(id).reportValidity())) return;
   const number = id => $(id).valueAsNumber;
-  const kind = $('animate-kind').value;
+  const kind = animationKind();
   const limit = kind === 'stress' ? 'animate-stress-limit' : 'animate-limit';
   operation(action, {...animationSelection(), ...animationRangeOptions(), preview_frame: previewFrame,
     tiling: $('animate-tiling').value,
     limit: $('animate-colouring').hidden || !$(limit).value ? null : number(limit),
     energy_min: $('animate-energy-min').disabled || !$('animate-energy-min').value ? null : number('animate-energy-min'),
+    colour_min: $('animate-colour-min').disabled || !$('animate-colour-min').value ? null : number('animate-colour-min'),
     opacity: $('animate-colouring').hidden || $('animate-opacity').disabled ? 100 : number('animate-opacity'),
     opacity_curve: $('animate-opacity-editor').hidden ? null : opacityEditor.points,
     dpi: Number($('animate-dpi').value), heatmap: $('animate-heatmap').value,
@@ -2332,17 +2520,22 @@ function renderAnimationPresets() {
     const row = document.createElement('div'), label = document.createElement('span'), button = document.createElement('button');
     row.className = 'plot-preset-row'; label.textContent = preset.name;
     button.type = 'button'; button.className = 'small'; button.textContent = 'Load';
-    button.onclick = () => {
+    button.onclick = async () => {
       const status = $('animation-preset-status');
       try {
+        if (preset.selection.fields['animate-kind']?.startsWith(vtuFieldPrefix)) await showAnimationFields(true);
         opacityEditor.restore(preset.selection.curve);
         $('animate-range-from-last-frame').checked = $('animate-range-from-last-frame').defaultChecked;
         const skipped = restoreFields(animationFields, {
           'animate-colourbar-position': 'auto',
           'animate-colourbar-size': $('animate-colourbar-size').defaultValue,
+          'animate-colour-min': '',
           ...preset.selection.fields,
         });
-        animationHeatmapKind = $('animate-kind').value;
+        animationHeatmapKind = animationKind();
+        if (!Object.hasOwn(preset.selection.fields, 'animate-symmetric')) {
+          $('animate-symmetric').checked = animationHeatmapKind !== 'energy';
+        }
         animationRangeScan = null;
         updateAnimationControls();
         loadedAnimationPresetId = preset.id;
@@ -2563,6 +2756,10 @@ async function recoverWorkspace() {
     if (skipped.length) throw new Error('Some options are no longer available.');
   });
   await attempt('animation settings', async () => {
+    animationSourceKey = draft.animationSourceKey || '';
+    animationLatticeKey = draft.animationLatticeKey || '';
+    await showVisualization(draft.tab === 'animate' ? 'animate' : 'plot');
+    if (draft.fields['animate-kind']?.startsWith(vtuFieldPrefix)) await showAnimationFields(true);
     const skipped = restoreFields(animationFields, draft.fields);
     if (!Object.hasOwn(draft.fields, 'animate-stress-limit') && !$('animate-energy-min').value) {
       $('animate-energy-min').value = $('animate-energy-min').defaultValue;
@@ -2570,11 +2767,11 @@ async function recoverWorkspace() {
     opacityEditor.restore(draft.curve);
     animationRangeScan = draft.animationRangeScan;
     lastAnimationScan = draft.lastAnimationScan;
-    animationSourceKey = draft.animationSourceKey || '';
-    animationLatticeKey = draft.animationLatticeKey || '';
-    animationHeatmapKind = $('animate-kind').value;
+    animationHeatmapKind = animationKind();
+    if (!Object.hasOwn(draft.fields, 'animate-symmetric')) {
+      $('animate-symmetric').checked = animationHeatmapKind !== 'energy';
+    }
     updateAnimationControls();
-    await showVisualization(draft.tab === 'animate' ? 'animate' : 'plot');
     if (skipped.length) throw new Error('Some options are no longer available.');
   });
   await attempt('workspace details', async () => {
@@ -2827,6 +3024,16 @@ function renderConnections(rows) {
         deployment === 'missing' ? 'MTS is not installed. Deploy it to this server.' :
         'Check this connection and its deployed version first.';
       deploy.title = reason; deploy.dataset.disabledReason = reason;
+      const build = button('Build', () => operation('ssh_build', {host: row.host}));
+      const targets = Object.values(row.deployment?.profiles || {});
+      const retained = targets.length > 0 && targets.every(profile => profile.build_target?.retained);
+      const buildReason = status !== 'Connected' || deployment === 'unknown' ? 'Check this connection first.' :
+        deployment !== 'current' ? 'Deploy the current MTS version before building.' :
+        retained ? 'These profiles use retained executables.' : '';
+      build.dataset.disabledConnection = String(row.disabled);
+      build.dataset.unavailable = String(Boolean(buildReason));
+      build.dataset.disabledReason = buildReason;
+      build.title = buildReason || 'Build MTS2D Release on this server.';
     }
     if (row.repair && !row.disabled) button(row.fingerprint ? 'Accept host key' : 'Retry host key',
       () => operation(row.fingerprint ? 'ssh_accept' : 'ssh_scan', {host: row.host, fingerprint: row.fingerprint}));

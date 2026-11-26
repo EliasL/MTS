@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 from stat import S_ISREG
@@ -203,18 +204,55 @@ class Plots:
                 return "middle"
         return "last"
 
-    def animation_options(self, data):
+    def animation_options(self, data, *, fields=False):
         from MTS_Plotting.runs import Run
 
         folder = self.animation_source(data)
         if folder is None:
             return {}
         config = Run.read(folder).config
+        if fields:
+            from MTS_Management.data import mesh_snapshots, vtu_fields
+            from MTS_Management.errors import ExpectedError
+
+            source = self.run_plot_sources.get(data["campaign"])
+            if source and source["site"]:
+                result = self.remote_mesh_catalog(source, fields=True)
+                if "fields" not in result:
+                    raise ExpectedError("Use Deploy in SSH connections to enable VTU field selection on this server.")
+                return result
+            path = Path(data.get("data") or "").expanduser()
+            if data["campaign"] == "@mesh" and path.suffix.lower() == ".vtu" and path.is_file():
+                return {"fields": vtu_fields(path)}
+            catalog = mesh_snapshots(folder)
+            return {"fields": vtu_fields(folder / "data" / catalog[-1]["name"]) if catalog else {}}
         energy_function = config["energyFunction"]
         return {"boundary": config["boundary"], "energy_function": energy_function,
                 "square_model": energy_function == "contiSquare",
                 "delaunay_dislocations": config["reconnectionMethod"] == "none",
                 "preview_frame": self.default_animation_preview(data["campaign"], folder)}
+
+    def remote_mesh_catalog(self, source, *, site=None, fields=False):
+        from MTS_Management.cluster import call, load_sites
+        from MTS_Management.errors import ExpectedError
+
+        site = site or load_sites(self.root / "MTSManager/sites.toml").get(source["site"])
+        if site is None:
+            raise ExpectedError("The server profile is unavailable. Select the simulation again.")
+        anchor = source["anchor"]
+        identity = {"folder": anchor["folder"], "manifest_sha256": anchor["manifest_sha256"]}
+        try:
+            if fields:
+                result = call(site, "mesh_snapshots", **identity, fields=True)
+            else:
+                result = self.workspace.manager_call(site.name, "mesh_snapshots", site=site, **identity)
+        except RuntimeError as error:
+            if "Unknown remote operation: mesh_snapshots" in str(error):
+                raise ExpectedError("Update the remote manager using Deploy in SSH connections to animate its mesh snapshots.") from error
+            raise
+        if result.get("error"):
+            raise ExpectedError(result["error"])
+        return result
 
     def render_animation(self, data, *, preview=False):
         from MTS_Management.cluster import fetch_many, load_sites
@@ -222,7 +260,7 @@ class Plots:
         from MTS_Management.errors import ExpectedError
         from MTS_Management.files import file_digest
         from MTS_Plotting.mesh_movie import (
-            COLOUR_LIMITS_PROGRESS, display_limit_sources, display_scan_frames, frame_schedule,
+            COLOUR_LIMITS_PROGRESS, colour_limit_options, display_limit_sources, display_scan_frames, frame_schedule,
             preview_frame_index, tiled_display,
         )
         from MTS_Plotting.runs import Run
@@ -239,7 +277,8 @@ class Plots:
                 with self.workspace.lock:
                     self.workspace.task["animation_scan"] = {"animation_selection": selection, "colour_limits": colour_limits,
                                                    "range_options": range_options}
-            self.workspace.log(line)
+            rendering = re.fullmatch(r"Rendered \d+/\d+ mesh states\.", line)
+            self.workspace.log(line, progress="animation-frames" if rendering else None)
 
         override = self.state / "ffmpeg-path"
         encoder = override.read_text().strip() if not preview and override.is_file() else None
@@ -252,10 +291,13 @@ class Plots:
                                                 "dislocation_lattice", "dislocation_method",
                                                 "dislocation_bond_tolerance", "dislocation_scale",
                                                 "dislocation_thickness", "energy_min", "stress_component", "opacity",
-                                                "opacity_curve") if key in data})
+                                                "opacity_curve", "vtu_field", "symmetric", "colour_min") if key in data})
         range_options = {key: spec[key] for key in ("kind", "matrix", "playback", "fps", "seconds_per_load",
                                                     "minimum_seconds", "range_from_last_frame")}
         range_options["stress_component"] = spec.get("stress_component", "12")
+        range_options["symmetric"] = colour_limit_options(spec)["symmetric"]
+        if spec["kind"] == "vtu":
+            range_options["vtu_field"] = spec.get("vtu_field")
         rendering = {k: v for k, v in spec.items() if k != "workers"}
         source = self.run_plot_sources.get(data["campaign"])
         output = (self.state / "previews" / f"animation-{secrets.token_hex(8)}.png" if preview else
@@ -270,16 +312,7 @@ class Plots:
                 if site is None:
                     raise ExpectedError("The server profile is unavailable. Select the simulation again.")
                 anchor = source["anchor"]
-                try:
-                    result = self.workspace.manager_call(site.name, "mesh_snapshots", site=site,
-                                               folder=anchor["folder"], manifest_sha256=anchor["manifest_sha256"])
-                except RuntimeError as error:
-                    if "Unknown remote operation: mesh_snapshots" in str(error):
-                        raise ExpectedError("Update the remote manager in Setup and tools to animate its mesh snapshots.") from error
-                    raise
-                if result.get("error"):
-                    raise ExpectedError(result["error"])
-                catalog = result["frames"]
+                catalog = self.remote_mesh_catalog(source, site=site)["frames"]
             else:
                 catalog = mesh_snapshots(folder)
             if not catalog:
@@ -313,13 +346,13 @@ class Plots:
                 if preview:
                     chosen = catalog[preview_frame_index(indices, spec["preview_frame"])]["name"]
                     kind = spec["kind"]
-                    limits = {"kind": kind, "tiled": tiled_display(Run.read(folder).config, kind, spec["tiling"]),
-                              "limit": spec["limit"], "lower_limit": spec.get("energy_min", 0.),
+                    limits = {**colour_limit_options(spec),
+                              "tiled": tiled_display(Run.read(folder).config, kind, spec["tiling"]),
                               "range_from_last_frame": range_from_last_frame}
                     _, _, scans = display_limit_sources(folder, scheduled, **limits)
                     _, scan_min, scan_max, scan_signed = scans
                     # The first transfer includes the preview, required VTU colour data and the current CSV.
-                    required = (False, scan_min, range_from_last_frame and scan_max, scan_signed)
+                    required = (False, scan_min, scan_max and (kind != "energy" or range_from_last_frame), scan_signed)
                     downloaded = dict.fromkeys([chosen] + [frame["name"] for frame, _ in display_scan_frames(
                         scheduled, required, range_from_last_frame=range_from_last_frame)])
                     folder = download_frames(list(downloaded))

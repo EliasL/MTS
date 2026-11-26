@@ -57,6 +57,7 @@ class Workspace:
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
         self.task = {"state": "idle", "title": "", "logs": [], "result": None}
+        self.progress_lines = {}
         self.history = []
         self.stopping = False
         self.monitor = Monitor(self, ROOT, STATE)
@@ -68,13 +69,28 @@ class Workspace:
         self.ssh_config_stamp = None
         self.slurm_plan = None
 
-    def log(self, line, *, command=False):
+    def log(self, line, *, command=False, progress=None):
         with self.lock:
             if command or str(line).startswith("$ "):
                 self.task["command"] = str(line).removeprefix("$ ")
             line = f"[{time.strftime('%H:%M:%S')}] {line}"
-            self.task["logs"] = (self.task["logs"] + [line])[-1500:]
+            logs = self.task["logs"]
+            if progress is not None and progress in self.progress_lines:
+                logs[self.progress_lines[progress]] = line
+            else:
+                if progress is not None:
+                    self.progress_lines[progress] = len(logs)
+                logs.append(line)
+                if len(logs) > 1500:
+                    del logs[0]
+                    self.progress_lines = {key: index - 1 for key, index in self.progress_lines.items() if index}
         print(line, flush=True)
+
+    def log_build(self, line, *, host="local"):
+        compiling = re.match(r"^\[\s*(?:\d+%|\d+/\d+)\]\s+(?:Building|Linking|Built target|Generating)\b", line)
+        if compiling and host != "local":
+            line = f"{site_label(host)}: {line}"
+        self.log(line, progress=("build", host) if compiling else None)
 
     def start(self, title, function, *, cancellable=False, action=None):
         with self.lock:
@@ -85,6 +101,7 @@ class Workspace:
             self.task = {"id": secrets.token_hex(8), "state": "running", "title": title,
                          "created_at": time.time() * 1000, "logs": [], "result": None,
                          "cancellable": cancellable, "action": action}
+            self.progress_lines.clear()
             self.cancel.clear()
             self.history.append(self.task)
             task_id = self.task["id"]
@@ -155,11 +172,40 @@ class Workspace:
             self.history = [entry for entry in self.history
                             if (entry["id"] != entry_id if entry_id else entry["state"] == "running")]
 
+    def campaign_journal(self):
+        from MTS_Management.cluster import load_sites
+        from MTS_Management.journal import Journal
+        from MTS_Management.submission import submission_state_dir
+
+        path = ROOT / "MTSManager/sites.toml"
+        return Journal(submission_state_dir(path, load_sites(path) if path.is_file() else {}))
+
+    def started_campaigns(self):
+        journal = self.campaign_journal()
+        records = journal.records() if journal.path.is_file() else []
+        # Temporary compatibility for receipts written before pre-launch rejection had its own event.
+        rejected = {entry.get("submission_id") for entry in records
+                    if entry["event"] in {"submission_rejected", "submission_skipped", "submission_conflict"}
+                    or (entry["event"] == "submission_error" and entry.get("error") ==
+                        "Build MTS2D at the execution site to use the current configuration.")}
+        return {entry["campaign"] for entry in records if entry.get("campaign") and (
+            entry["event"] in {"submission_accepted", "submitted", "queued", "running"}
+            or (entry["event"] == "submission_requested" and entry["event_id"] not in rejected))}
+
+    def campaign_preflight(self, data):
+        from .submission import check_campaign
+
+        name = simulation_setup.checked_name(data["name"])
+        path = self.monitor.campaign_path(name)
+        check_campaign(ROOT / "MTSManager/sites.toml", path, data["site"])
+        return {"ready": True}
+
     def start_options(self):
         from MTS_Management.config import DEFAULTS
         return {"defaults": DEFAULTS,
                 "presets": simulation_setup.preset_names(STATE / "simulation-presets"),
                 "campaign_sources": sorted(self.monitor.campaign_definitions()),
+                "started_campaigns": sorted(self.started_campaigns()),
                 "campaigns": sorted(path.parent.name for path in
                                     (ROOT / "MTSManager/campaigns/gui").glob("*/simulations.json"))}
 
@@ -177,7 +223,7 @@ class Workspace:
         except RuntimeError as error:
             if "Unknown remote operation: mesh_preview" not in str(error):
                 raise
-            raise ExpectedError(f"Update the manager on {site_label(site.name)} in Setup and tools.") from error
+            raise ExpectedError(f"Update the manager on {site_label(site.name)} using Deploy in SSH connections.") from error
         return result["vtu"].encode("ascii")
 
     def load_campaign(self, name):
@@ -204,9 +250,17 @@ class Workspace:
             resources["site"] = site
         with locked(STATE / ".simulation-campaigns.lock"):
             if name in self.monitor.campaign_definitions():
-                raise ValueError("A campaign with this name already exists. Choose a new name.")
+                if self.monitor.campaign_path(name) != directory / "simulations.json" or not data.get("update"):
+                    raise ValueError("A campaign with this name already exists. Choose a new name.")
+                if name in self.started_campaigns():
+                    raise ValueError("This campaign name already exists and its jobs have been submitted or may have been accepted. Choose a new name to save an edited copy.")
+                previous = directory / "resources.json"
+                if previous.is_file():
+                    resources = read_json(previous) | resources
+            metadata = directory / "metadata.json"
+            descriptions = read_json(metadata) if metadata.is_file() else {"missing_settings": {}, "executables": []}
             write_json(directory / "resources.json", resources)
-            write_json(directory / "metadata.json", {"missing_settings": {}, "executables": [], "sweep": recipe})
+            write_json(metadata, descriptions | {"sweep": recipe})
             write_json(directory / "simulations.json", definition)
         return {"name": name, "runs": len(definition["runs"])}
 
@@ -364,6 +418,9 @@ class Workspace:
                 if checked.get("deployment", {}).get("state") not in {"missing", "mismatch"}:
                     raise ValueError("Deployment is current or has not been verified")
                 return self.update_servers(host)
+            if action == "ssh_build":
+                from MTS_Management.deployments import build_servers
+                return build_servers(site_file, host=host, log=self.log, build_log=self.log_build)
             if action == "ssh_scan":
                 proposal = ssh.scan_key(host)
                 self.ssh_proposals[host] = proposal
@@ -388,7 +445,7 @@ class Workspace:
         if action == "install":
             return install_packages(self.log)
         if action == "build":
-            return build_simulator(self.log)
+            return build_simulator(self.log_build)
         if action == "slurm_plan":
             from MTS_Management.slurm_control import run_sites
             program = self.slurm_program(data)
@@ -414,6 +471,9 @@ class Workspace:
         if action == "update_managers":
             self.log("MTS_Management.deployments.update_managers(sites.toml)", command=True)
             return self.update_servers()
+        if action == "build_servers":
+            from MTS_Management.deployments import build_servers
+            return build_servers(ROOT / "MTSManager/sites.toml", log=self.log, build_log=self.log_build)
         if action in {"inventory", "hard_refresh"}:
             return self.monitor.refresh_inventory(action, data)
         if action in {"logs", "stop"}:
@@ -445,7 +505,7 @@ class Workspace:
             except RuntimeError as error:
                 if "Unknown remote operation: resume" not in str(error):
                     raise
-                raise ExpectedError(f"Update the manager on {site_label(row['site'])} in Setup and tools.") from error
+                raise ExpectedError(f"Update the manager on {site_label(row['site'])} using Deploy in SSH connections.") from error
             if result.get("error"):
                 raise ExpectedError(result["error"])
             return {"config_hash": row["config_hash"]}
@@ -471,9 +531,14 @@ class Workspace:
                 self.monitor.campaign_path(campaign)
             return start_run(ROOT / "MTSManager/sites.toml", config, data, self.log)
         if action == "run_campaign":
+            from MTS_Management.files import locked
             from .submission import start_campaign
-            path = self.monitor.campaign_path(simulation_setup.checked_name(data["name"]))
-            return start_campaign(ROOT / "MTSManager/sites.toml", path, data["site"], self.log)
+            site_file = ROOT / "MTSManager/sites.toml"
+            with locked(STATE / ".simulation-campaigns.lock"):
+                self.campaign_preflight(data)
+                path = self.monitor.campaign_path(data["name"])
+                return start_campaign(site_file, path, data["site"], self.log,
+                                      report_progress=lambda line: self.log(line, progress="campaign"))
         if action == "plot_monitor":
             return self.plots.open_run_plot(data)
         if action == "plot_csv_refresh":
@@ -605,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
                 seed = query.get("seed", ["all"])[0]
                 self.reply(200, self.server.app.plots.animation_options({
                     "campaign": query.get("campaign", [""])[0], "data": query.get("data", [None])[0],
-                    "seed": seed if seed == "all" else int(seed)}))
+                    "seed": seed if seed == "all" else int(seed)}, fields=query.get("fields") == ["1"]))
             elif path == "/api/slurm_options":
                 self.reply(200, self.server.app.slurm_options())
             elif path == "/api/start_options":
@@ -694,6 +759,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, plan_local_output(ROOT / "MTSManager/sites.toml", **data))
             elif action == "save_campaign":
                 self.reply(200, self.server.app.save_campaign(data))
+            elif action == "campaign_preflight":
+                self.reply(200, self.server.app.campaign_preflight(data))
             elif action == "campaign_size":
                 self.reply(200, self.server.app.campaign_size(data))
             elif action == "open_run_folder":
@@ -715,13 +782,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"restarting": self.server.restart_requested})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             elif action in {"install", "build", "inventory", "hard_refresh", "update_managers", "logs", "stop", "run", "resume", "run_campaign", "continuation_plan", "plot", "plot_monitor", "plot_csv_refresh", "animate", "animate_preview", "archive_monitor", "archive_campaign", "restore_archive", "remove_missing", "slurm_plan", "slurm_execute", "local_output",
-                            "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy"}:
+                            "ssh_check", "ssh_add", "ssh_toggle", "ssh_accept", "ssh_install", "ssh_scan", "ssh_configure", "ssh_profile", "ssh_inspect", "ssh_deploy",
+                            "ssh_build", "build_servers"}:
                 title = {"plot_monitor": "Prepare plot data", "plot_csv_refresh": "Refresh campaign CSVs",
                          "archive_monitor": "Archive", "archive_campaign": "Archive campaign settings",
                          "restore_archive": "Restore", "continuation_plan": "Load further",
                          "run": "Start simulation", "remove_missing": "Remove all missing",
                          "animate": "Generate animation", "animate_preview": "Preview animation",
-                         "local_output": "Change local output"}.get(action, action.capitalize())
+                         "local_output": "Change local output", "ssh_build": "Build MTS2D",
+                         "build_servers": "Build on servers"}.get(action, action.capitalize())
                 task_id = self.server.app.start(title, lambda: self.server.app.operation(action, data),
                                                 cancellable=action in {"inventory", "hard_refresh", "logs", "plot_csv_refresh", "animate", "animate_preview"},
                                                 action=action)

@@ -9,6 +9,9 @@
   The GUI and CLI share `submit_run` and `submit_campaign`. Prefer structured
   receipts and inventory records over parsing display text or driving the GUI.
   Check the journal and execution site before retrying an uncertain submission.
+- Minimize new SSH connections. For multi-run or long-running operations,
+  send one request to the remote MTS manager and let it run the task locally.
+  Use durable receipts and infrequent status checks for progress and recovery.
 - Keep HTTP and task state in `MTS_GUI/server.py`, monitoring and archives in
   `MTS_GUI/monitor.py`, plot and animation operations in `MTS_GUI/plots.py`,
   and execution logic in MTSManager. Plotting reads local scientific data.
@@ -21,6 +24,14 @@
   [Testing.md](tests/Testing.md) for the build and test commands.
 
 # Scientific code and testing
+
+Use [Lundheim's thesis summary](docs/ThesisLundheim/Summary.md) and its
+page links to check MTM conventions before changing scientific diagnostics.
+Distinguish the current lattice Gram matrix from the mesh-edge Gram matrix
+and from strain relative to a material reference. For lattice-angle plots,
+reconstruct the reduced lattice metric from the saved strain and recorded
+constitutive reference.
+Verify field definitions at the recorded simulator revision.
 
 Read [TheSimulationProcess.md](docs/TheSimulationProcess.md) before changing
 campaign submission, queued execution, configuration/build identity,

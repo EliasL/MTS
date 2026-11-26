@@ -42,7 +42,7 @@
 <div class="field"><label for="run-reconnection">Reconnection</label><select id="run-reconnection"><option value="none">None</option><option value="edgeFlip">Edge flip</option><option value="delaunay">Delaunay</option></select></div>
 </div></fieldset>
 <p class="notice warning" id="run-triangular-reconnection-warning" role="status" hidden>T is unreliable for deformation history after triangular reconnection.</p>
-<p class="notice warning" id="run-two-phase-warning" role="status" hidden><strong>Scientific issues</strong> — Conti2Phase is experimental. Interpret the elastoplastic decomposition and deformation history T with caution.</p>
+<p class="notice warning" id="run-two-phase-warning" role="status" hidden><strong>Scientific issues</strong> — Conti2Phase is experimental. Interpret the elastoplastic decomposition and deformation history T with caution. <span id="run-conti-well-warning" hidden>The beta override sets unequal square and triangular well energies.</span></p>
 <fieldset id="run-edge-settings" class="settings-group fresh-run-only" hidden><legend>Edge constraints</legend>
 <div class="fields packed">
 <label class="field">Driven edge<select id="run-driven-edge"><option value="top">Top</option><option value="bottom">Bottom</option><option value="left">Left</option><option value="right">Right</option></select></label>
@@ -73,7 +73,7 @@
 <fieldset class="settings-group"><legend>Execution</legend><div class="fields">
 <div class="field"><label for="run-label">Run label</label><input id="run-label" value="Run" required maxlength="120" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]*"></div>
 <div class="field fresh-run-only"><label for="run-campaign">Campaign</label><select id="run-campaign"><option value="">No campaign</option></select></div>
-<div class="field fresh-run-only"><label for="run-site">Execution site</label><select id="run-site" class="sites"><option>local</option></select></div>
+<div class="field fresh-run-only"><label for="run-site">Execution site</label><select id="run-site" class="sites"><option value="local">LOCAL</option></select></div>
 <div class="field"><label for="run-threads">Threads</label><input id="run-threads" type="number" min="1" step="1" value="1" required></div>
 </div></fieldset>
 </div>
@@ -95,7 +95,9 @@
 <div class="field"><label for="run-vtu-rate">VTU files per unit load</label><input id="run-vtu-rate" type="number" min="0" step="any" value="30" required></div>
 <label class="field check"><input id="run-log-minimization" type="checkbox"> Log during minimization</label>
 <div class="field"><label for="run-minimizer">Minimizer</label><select id="run-minimizer"><option value="LBFGS">L-BFGS</option><option value="CG">Conjugate gradient</option><option value="FIRE">FIRE</option></select></div>
-<div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option><option value="conti2Phase">Conti2Phase (experimental)</option></select></div>
+<div class="field fresh-run-only"><label for="run-energy-function">Energy density function</label><select id="run-energy-function"><option value="contiSquare">contiSquare</option><option value="contiTriangular">contiTriangular</option><option value="triangularCubic">triangularCubic</option><option value="conti2Phase">Conti2Phase (experimental)</option></select></div>
+<div class="field fresh-run-only"><label for="run-conti-beta">Conti β (0 = preset)</label><input id="run-conti-beta" type="number" step="any" value="0" required></div>
+<div class="field fresh-run-only"><label for="run-conti-kappa">Bulk coefficient κ (0 = default)</label><input id="run-conti-kappa" type="number" min="0" step="any" value="0" required></div>
 <div class="field"><label for="run-initial-noise">Initial guess noise</label><input id="run-initial-noise" type="number" min="0" step="any" value="0" required></div>
 </div>
 <div class="field-label"><label for="run-extra">MTS2D key = value settings</label>
@@ -149,27 +151,30 @@
 <div id="campaign-axes"></div>
 <p class="notice warning" id="campaign-vtu-warning" role="status" hidden>Running many simulations with VTU files takes a lot of storage. If you do not need to visualize the mesh, consider disabling VTU writing.</p>
 <p id="campaign-size" class="muted" role="status">Campaign size: 0 jobs</p>
+<p id="campaign-save-problem" class="notice error" role="status" hidden></p>
 <div class="inline-fields wrap"><button id="campaign-add-axis" type="button">Add parameter</button><button id="campaign-save" type="submit">Save campaign</button></div>
 <hr>
 <div class="fields packed">
 <div class="field"><label for="campaign-saved">Saved campaign</label><select id="campaign-saved"></select></div>
-<div class="field"><label for="campaign-site">Execution site</label><select id="campaign-site" class="sites"><option>local</option></select></div>
+<div class="field"><label for="campaign-site">Execution site</label><select id="campaign-site" class="sites"><option value="local">LOCAL</option></select></div>
 </div>
 <p class="muted">Local campaigns run one simulation at a time in this session.</p>
+<p id="campaign-run-problem" class="notice" role="status" hidden></p>
 <button class="primary" id="campaign-run" type="button" disabled>Run campaign</button>
+<button id="campaign-recheck" type="button" hidden>Check again</button>
 </form>
 <template id="campaign-axis"><fieldset class="settings-group settings-item" aria-label="Sweep parameter"><div class="campaign-axis-row">
 <label class="field">Parameter<select data-axis="parameter"></select></label>
 <label class="field">Sampling<select data-axis="mode"><option value="linear">Linear</option><option value="log">Logarithmic</option><option value="custom">Custom</option></select></label>
 <label class="field" data-range><span>Start</span><input data-axis="start" type="number" step="any" value="0"></label>
 <label class="field" data-range><span>Stop</span><input data-axis="stop" type="number" step="any" value="1"></label>
-<label class="field" data-range><span>Count</span><input data-axis="count" type="number" min="2" max="1000" value="2"></label>
+<label class="field" data-range><span>Count</span><input data-axis="count" type="number" min="1" max="1000" value="2"></label>
 <label class="field" data-custom>Values<textarea data-axis="values" rows="2"></textarea><small data-axis-hint></small></label>
 <button class="small" data-remove type="button" aria-label="Remove parameter">Remove</button>
 </div></fieldset></template>
 </section>
 <section class="view" id="monitor"><div class="intro"><h1>Monitor data</h1></div>
-<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">local</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small" id="inventory-columns" type="button" aria-controls="inventory-column-menu" aria-expanded="false">Columns</button><button class="small hidden" id="remove-missing" type="button">Remove all missing</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr id="inventory-header">
+<article class="card" id="jobs-card"><div class="section-row"><h2>Run inventory</h2><div class="inline-fields"><select id="jobs-site" aria-label="Server or campaign"><option value="site:local">LOCAL</option></select><button class="small" id="refresh-jobs">Refresh</button><button class="small" id="inventory-columns" type="button" aria-controls="inventory-column-menu" aria-expanded="false">Columns</button><button class="small hidden" id="remove-missing" type="button">Remove all missing</button><button class="small hidden" id="archive-campaign">Archive campaign settings</button></div></div><div id="inventory-updated" class="muted" role="status">Refresh to update data overview.</div><p id="inventory-coverage" class="muted"></p><div class="table-wrap"><table><thead><tr id="inventory-header">
 <th scope="col" data-column="simulation"><button class="inventory-sort" data-sort="simulation" type="button">Simulation</button></th>
 <th scope="col" data-column="actions">Actions</th>
 <th scope="col" data-column="state"><button class="inventory-sort" data-sort="state" type="button">State</button></th>
@@ -219,7 +224,11 @@
 <fieldset id="animation-settings" class="settings-group" hidden disabled><legend>Animation</legend>
 <div class="fields groups animation-groups">
 <fieldset class="settings-group"><legend>View</legend><div class="fields">
-<div class="field"><label for="animate-kind">View</label><select id="animate-kind"><option value="energy">Energy</option><option value="stress">Stress</option><option value="none">None</option><option value="shear">Integer shear</option><option value="matrix">Matrix components</option><option value="disk">Poincaré disk</option></select></div>
+<div class="field">
+<div class="inline-fields"><button id="animate-show-all" class="small" type="button" aria-expanded="false" aria-controls="animate-kind">Show all options</button></div>
+<label for="animate-kind">Field</label><select id="animate-kind"><option value="energy">Energy</option><option value="stress">Stress</option><option value="none">None</option><option value="shear">Integer shear</option><option value="matrix">Matrix components</option><option value="disk">Poincaré disk</option><option value="lattice_angle">Reduced lattice angle</option></select>
+<small id="animate-field-status" role="status"></small>
+</div>
 <div class="field" id="animate-stress-component-field" hidden><label for="animate-stress-component">Cauchy stress component</label><select id="animate-stress-component"><option value="12">xy</option><option value="11">xx</option><option value="22">yy</option></select></div>
 <div class="field" id="animate-matrix-field" hidden><label for="animate-matrix">Matrix</label><select id="animate-matrix"><option value="T">Total deformation T</option><option value="T_p">Plastic history Tₚ</option><option value="F_E">Elastic deformation Fₑ</option><option value="F_P">Plastic deformation Fₚ</option><option value="F">Deformation gradient F</option></select></div>
 <div class="field" id="animate-tiling-field"><label for="animate-tiling">Tiling</label><select id="animate-tiling"><option value="tile">Tile fixed viewport</option><option value="cell">Single sample</option></select></div>
@@ -250,13 +259,15 @@
 </div></div>
 </fieldset>
 <fieldset id="animate-colouring" class="settings-group"><legend>Mesh colouring</legend>
+<label class="plot-show-all"><input id="animate-symmetric" type="checkbox"> Symmetric colour limits</label>
 <div class="fields">
 <div class="field" id="animate-heatmap-field"><label for="animate-heatmap">Heatmap</label><select id="animate-heatmap"><option value="coolwarm">Coolwarm</option><option value="inferno">Inferno</option><option value="viridis">Viridis</option><option value="magma">Magma</option></select></div>
+<div class="field" id="animate-energy-min-field"><label for="animate-energy-min">Lower colour limit</label><input id="animate-energy-min" type="number" step="any" value="0" placeholder="From data"></div>
+<div class="field" id="animate-colour-min-field" hidden><label for="animate-colour-min">Lower colour limit</label><input id="animate-colour-min" type="number" step="any" placeholder="From data"></div>
 <div class="field" id="animate-limit-field"><label for="animate-limit" id="animate-limit-label">Colour limit</label><input id="animate-limit" type="number" step="any" placeholder="From data"></div>
-<div class="field" id="animate-stress-limit-field" hidden><label for="animate-stress-limit">Stress limit (±)</label><input id="animate-stress-limit" type="number" min="0" step="any" placeholder="From data"></div>
-<div class="field" id="animate-energy-min-field"><label for="animate-energy-min">Lower energy limit</label><input id="animate-energy-min" type="number" step="any" value="0" placeholder="From data"></div>
+<div class="field" id="animate-stress-limit-field" hidden><label for="animate-stress-limit" id="animate-stress-limit-label">Colour limit (±)</label><input id="animate-stress-limit" type="number" min="0" step="any" placeholder="From data"></div>
 </div>
-<label class="plot-show-all"><input id="animate-range-from-last-frame" type="checkbox" checked> Range from last frame</label>
+<label id="animate-range-from-last-frame-field" class="plot-show-all"><input id="animate-range-from-last-frame" type="checkbox" checked> Range from last frame</label>
 <label id="animate-conditional-field" class="plot-show-all"><input id="animate-conditional-opacity" type="checkbox"> Conditional opacity</label>
 <div id="animate-opacity-field" class="field"><label for="animate-opacity">Opacity (%)</label><input id="animate-opacity" type="number" min="0" max="100" value="100" required></div>
 <div id="animate-opacity-editor" hidden>
@@ -312,7 +323,7 @@
 <div class="plot-presets"><h2>Animation presets</h2><div class="inline-fields wrap"><input id="animation-preset-name" aria-label="Preset name" placeholder="Preset name" maxlength="120"><button id="animation-preset-new" type="button">Save as new</button><button id="animation-preset-update" type="button" disabled>Update preset</button></div><p id="animation-preset-status" class="muted" role="status"></p><div id="animation-presets-list"></div></div>
 </fieldset></div>
 </form></section>
-<section class="view" id="ssh"><div class="intro"><h1>SSH connections</h1><button id="ssh-check">Check connections</button></div>
+<section class="view" id="ssh"><div class="intro"><h1>SSH connections</h1><div class="inline-fields wrap"><button id="ssh-check">Check connections</button><button id="update-managers">Update MTS on servers</button><button id="build-servers">Build on servers</button></div></div>
 <article class="card"><p class="muted">Check account access and deployed versions. Check connections checks enabled sites in parallel; individual checks also support disabled sites. Deploy: grey until checked, green when current, red when an update is needed, white when absent.</p><div id="ssh-list"></div></article><article id="ssh-editor" class="card hidden"></article>
 <form class="card" id="ssh-key-form"><h2>Install SSH key</h2><p>Generate an Ed25519 key and install its public key using the account password. The private key remains on this computer. Password and keyboard-interactive authentication are supported; additional MFA prompts require manual setup.</p><div class="fields"><div class="field"><label for="ssh-key-host">Connection</label><select id="ssh-key-host" required></select></div><div class="field"><label for="ssh-password">Account password</label><input id="ssh-password" type="password" autocomplete="off" required></div></div><button id="ssh-install" type="submit">Install and verify key</button></form>
 <form class="card" id="ssh-add-form"><h2>Add SSH connection</h2><div class="fields">
@@ -325,7 +336,7 @@
 <div class="setup-item"><div><h3>Compiler tools</h3><p>Optional installation. See the <a href="/InstallationGuide.html" target="_blank" rel="noopener">installation guide</a>.</p><pre id="tools-command">bash setup.sh --local-sim --install-build-tools</pre></div></div></article>
 <details class="card" id="advanced-tools"><summary>Advanced</summary>
 <div class="setup-item"><label><input id="monitor-auto-refresh" type="checkbox" checked> Refresh local inventory when opening Monitor data</label></div>
-<div class="setup-item"><div><h3>Inventory</h3><p>Rebuild the selected server inventories and reread finished simulations. Simulation files are retained.</p><div class="inline-fields"><select id="hard-refresh-site" aria-label="Hard reset server"><option value="local">local</option></select><button id="hard-refresh" class="danger">Hard reset inventory</button></div></div></div>
+<div class="setup-item"><div><h3>Inventory</h3><p>Rebuild the selected server inventories and reread finished simulations. Simulation files are retained.</p><div class="inline-fields"><select id="hard-refresh-site" aria-label="Hard reset server"><option value="local">LOCAL</option></select><button id="hard-refresh" class="danger">Hard reset inventory</button></div></div></div>
 <div class="setup-item"><details id="archive-log"><summary>Archive log</summary>
 <p>Restore archived simulations and campaign settings to their original locations.</p>
 <p id="archive-log-status" class="muted" role="status"></p>
@@ -340,7 +351,6 @@
 <div class="inline-fields slurm-actions"><button id="slurm-generate" type="button">Generate program</button><button id="slurm-review" type="button">Review matching jobs</button><button id="slurm-execute" type="button" disabled>Run reviewed action</button></div>
 <p id="slurm-status" class="muted" role="status">No scheduler action has been requested.</p><pre id="slurm-program">Generate a program from the selected criteria.</pre><pre id="slurm-results" class="hidden"></pre>
 </details></div></div>
-<div class="setup-item"><div><h3>Server software</h3><p>Transfer MTSManager, campaign files and MTS2D source to the configured servers. Retained binaries remain available to queued jobs.</p><button id="update-managers">Update MTS on servers</button></div></div>
 </details></section>
 </div><aside class="activity card" id="activity" aria-label="Operation log"><div class="section-row"><h2>Terminal</h2><button id="copy-terminal" class="small">Copy all</button><button id="clear-terminal" class="small">Clear terminal</button><span id="task-badge" class="badge">Idle</span><button id="abort" class="small danger hidden" disabled>Abort</button></div><div id="terminal-history" class="terminal-history"><p class="muted">No messages.</p></div><div id="task-result" class="result" role="status"></div></aside></div>
 </main></div>
@@ -356,6 +366,14 @@
 <h2 id="operation-warning-title">Action required</h2>
 <p id="operation-warning-message"></p>
 <form method="dialog"><button autofocus>Close</button></form>
+</dialog>
+<dialog id="campaign-run-warning" aria-labelledby="campaign-run-warning-title" aria-describedby="campaign-run-warning-message">
+<h2 id="campaign-run-warning-title">Run campaign</h2>
+<p id="campaign-run-warning-message">After a campaign has started, it cannot be modified. Make sure settings are correct.</p>
+<form method="dialog">
+<label class="plot-show-all"><input type="checkbox" id="campaign-skip-warning"> Don't warn again</label>
+<div class="inline-fields wrap"><button value="cancel" autofocus>Cancel</button><button class="primary" value="run">Run campaign</button></div>
+</form>
 </dialog>
 <dialog id="archive-warning" aria-labelledby="archive-warning-title" aria-describedby="archive-warning-message">
 <h2 id="archive-warning-title">Archive simulations</h2>
